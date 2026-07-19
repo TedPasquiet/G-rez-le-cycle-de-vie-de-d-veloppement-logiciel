@@ -1,4 +1,4 @@
-* {
+:80 {
 	root * /app/front
 	encode gzip
 	try_files {path} /index.html
