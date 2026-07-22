@@ -6,6 +6,7 @@ import java.util.List;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
+import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -54,6 +55,7 @@ public class Person {
     this.lastName = lastName;
   }
 
+  @Column(unique = true)
   private String email;
 
   public String getEmail() {
@@ -86,6 +88,10 @@ public class Person {
 
   @ManyToMany(mappedBy = "persons")
   private List<Organization> organizations;
+
+  public List<Organization> getOrganizations() {
+    return organizations;
+  }
 
   @Temporal(TemporalType.TIMESTAMP)
   @CreationTimestamp
