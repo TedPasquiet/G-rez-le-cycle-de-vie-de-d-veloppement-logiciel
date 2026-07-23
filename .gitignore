@@ -1,0 +1,8 @@
+.DS_Store
+
+# Caches et rapports produits par les outils qualité / sécurité
+.gradle/
+.sonar/
+.scannerwork/
+.trivycache/
+trivy-*-report.json

@@ -1,5 +1,6 @@
 plugins {
 	id 'java'
+	id 'checkstyle'
 	id 'org.springframework.boot' version '3.2.5'
 	id 'io.spring.dependency-management' version '1.1.4'
 	id 'com.adarshr.test-logger' version '4.0.0'
@@ -10,6 +11,18 @@ version = '0.0.1-SNAPSHOT'
 
 java {
 	sourceCompatibility = '17'
+}
+
+// Linting statique du source Java. Ruleset : back/config/checkstyle/checkstyle.xml
+checkstyle {
+	toolVersion = '10.17.0'
+	configFile = file("${rootDir}/config/checkstyle/checkstyle.xml")
+	// Bloque le build sur une violation. Passer à true pour un mode purement
+	// consultatif (rapport publié sans faire échouer la CI).
+	ignoreFailures = false
+	// Le linting concerne le code de production ; les tests suivent des
+	// conventions plus souples (fixtures, noms verbeux).
+	sourceSets = [sourceSets.main]
 }
 
 repositories {
