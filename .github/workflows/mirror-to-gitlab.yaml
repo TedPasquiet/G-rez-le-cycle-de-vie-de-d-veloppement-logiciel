@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - develop
 
 jobs:
   mirror:
@@ -19,4 +20,4 @@ jobs:
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
         run: |
           git remote add gitlab https://oauth2:${GITLAB_TOKEN}@gitlab.com/pasquietted/G-rez-le-cycle-de-vie-de-d-veloppement-logiciel.git
-          git push gitlab HEAD:main
+          git push gitlab HEAD:${{ github.ref_name }}
