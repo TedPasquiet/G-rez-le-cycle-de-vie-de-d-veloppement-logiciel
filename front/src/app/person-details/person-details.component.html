@@ -4,9 +4,7 @@
       <div class="level-left">
         <h2 class="title level-item is-size-2">
           <span *ngIf="isNew">New person</span>
-          <span *ngIf="!isNew"
-            >Person "{{ person.firstName }} {{ person.lastName }}"</span
-          >
+          <span *ngIf="!isNew">Person "{{ person.firstName }} {{ person.lastName }}"</span>
         </h2>
       </div>
       <div class="level-right">
@@ -31,13 +29,12 @@
     <div class="columns">
       <div class="column">
         <div class="field">
-          <label class="label">First name *</label>
+          <label class="label" for="person-firstName">First name *</label>
           <div class="control">
             <input
+              id="person-firstName"
               class="input {{
-                firstName.invalid && (firstName.dirty || firstName.touched)
-                  ? 'is-danger'
-                  : ''
+                firstName.invalid && (firstName.dirty || firstName.touched) ? 'is-danger' : ''
               }}"
               required
               type="text"
@@ -51,19 +48,16 @@
             *ngIf="firstName.invalid && (firstName.dirty || firstName.touched)"
             class="help is-danger"
           >
-            <span *ngIf="firstName.errors?.['required']"
-              >First name is required.</span
-            >
+            <span *ngIf="firstName.errors?.['required']">First name is required.</span>
           </p>
         </div>
         <div class="field">
-          <label class="label">Last name *</label>
+          <label class="label" for="person-lastName">Last name *</label>
           <div class="control">
             <input
+              id="person-lastName"
               class="input {{
-                lastName.invalid && (lastName.dirty || lastName.touched)
-                  ? 'is-danger'
-                  : ''
+                lastName.invalid && (lastName.dirty || lastName.touched) ? 'is-danger' : ''
               }}"
               required
               type="text"
@@ -77,20 +71,15 @@
             *ngIf="lastName.invalid && (lastName.dirty || lastName.touched)"
             class="help is-danger"
           >
-            <span *ngIf="lastName.errors?.['required']"
-              >Last name is required.</span
-            >
+            <span *ngIf="lastName.errors?.['required']">Last name is required.</span>
           </p>
         </div>
         <div class="field">
-          <label class="label">Email</label>
+          <label class="label" for="person-email">Email</label>
           <div class="control">
             <input
-              class="input {{
-                email.invalid && (email.dirty || email.touched)
-                  ? 'is-danger'
-                  : ''
-              }}"
+              id="person-email"
+              class="input {{ email.invalid && (email.dirty || email.touched) ? 'is-danger' : '' }}"
               type="email"
               placeholder="jdoe@gmail.com"
               [(ngModel)]="person.email"
@@ -98,24 +87,16 @@
               #email="ngModel"
             />
           </div>
-          <p
-            *ngIf="email.invalid && (email.dirty || email.touched)"
-            class="help is-danger"
-          >
-            <span *ngIf="email.errors?.['email']"
-              >Email must be a valid email address.</span
-            >
+          <p *ngIf="email.invalid && (email.dirty || email.touched)" class="help is-danger">
+            <span *ngIf="email.errors?.['email']">Email must be a valid email address.</span>
           </p>
         </div>
         <div class="field">
-          <label class="label">Phone</label>
+          <label class="label" for="person-phone">Phone</label>
           <div class="control">
             <input
-              class="input {{
-                phone.invalid && (phone.dirty || phone.touched)
-                  ? 'is-danger'
-                  : ''
-              }}"
+              id="person-phone"
+              class="input {{ phone.invalid && (phone.dirty || phone.touched) ? 'is-danger' : '' }}"
               [(ngModel)]="person.phone"
               name="phone"
               #phone="ngModel"
@@ -123,24 +104,18 @@
               placeholder="+1 (988) 112-8197"
             />
           </div>
-          <p
-            *ngIf="phone.invalid && (phone.dirty || phone.touched)"
-            class="help is-danger"
-          >
-            <span *ngIf="phone.errors?.['tel']"
-              >Phone must be a valid phone number.</span
-            >
+          <p *ngIf="phone.invalid && (phone.dirty || phone.touched)" class="help is-danger">
+            <span *ngIf="phone.errors?.['tel']">Phone must be a valid phone number.</span>
           </p>
         </div>
       </div>
       <div class="column">
         <div class="field">
-          <label class="label">Bio</label>
+          <label class="label" for="person-bio">Bio</label>
           <div class="control">
             <textarea
-              class="textarea {{
-                bio.invalid && (bio.dirty || bio.touched) ? 'is-danger' : ''
-              }}"
+              id="person-bio"
+              class="textarea {{ bio.invalid && (bio.dirty || bio.touched) ? 'is-danger' : '' }}"
               [(ngModel)]="person.bio"
               name="bio"
               #bio="ngModel"
@@ -155,10 +130,7 @@
         <div class="field has-addons">
           <div class="control is-expanded">
             <div class="select is-large is-fullwidth">
-              <select
-                [(ngModel)]="selectedOrganization"
-                [ngModelOptions]="{ standalone: true }"
-              >
+              <select [(ngModel)]="selectedOrganization" [ngModelOptions]="{ standalone: true }">
                 <option [ngValue]="null">Add organization</option>
                 <option [ngValue]="org" *ngFor="let org of organizations">
                   {{ org.name }}
@@ -167,12 +139,8 @@
             </div>
           </div>
           <p class="control">
-            <button class="button is-primary is-large">
-              <span
-                class="has-text-weight-bold"
-                (click)="addSelectedOrganization()"
-                >+</span
-              >
+            <button class="button is-primary is-large" (click)="addSelectedOrganization()">
+              <span class="has-text-weight-bold">+</span>
             </button>
           </p>
         </div>
@@ -180,11 +148,7 @@
           <tbody>
             <tr *ngFor="let org of organizations">
               <td>
-                <a
-                  class="is-size-4"
-                  [routerLink]="['/organizations', org.id]"
-                  >{{ org.name }}</a
-                >
+                <a class="is-size-4" [routerLink]="['/organizations', org.id]">{{ org.name }}</a>
               </td>
               <td>
                 <button
