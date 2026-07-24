@@ -1,0 +1,11 @@
+.DS_Store
+
+# Dépendances de l'outillage racine (husky, commitlint, lint-staged, prettier)
+/node_modules/
+
+# Caches et rapports produits par les outils qualité / sécurité
+.gradle/
+.sonar/
+.scannerwork/
+.trivycache/
+trivy-*-report.json

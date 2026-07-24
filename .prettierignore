@@ -1,0 +1,14 @@
+# Dépendances et artefacts de build
+**/node_modules
+front/dist
+front/.angular
+front/coverage
+back/build
+back/bin
+back/.gradle
+
+# Fichiers verrouillés / générés
+**/package-lock.json
+
+# Documentation binaire
+*.odt

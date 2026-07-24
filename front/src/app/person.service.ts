@@ -2,39 +2,40 @@ import { Injectable } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { Organization } from './organization.service';
 import { HttpClient } from '@angular/common/http';
-import { API_BASE_URL } from './config'
+import { API_BASE_URL } from './config';
 
 @Injectable({ providedIn: 'root' })
 export class PersonService {
-  constructor(private client: HttpClient) {
-  }
+  constructor(private client: HttpClient) {}
 
   async fetchById(id: number) {
-    const response = await this.client.get(`${API_BASE_URL}/persons/${id}`)
-    const person = await firstValueFrom(response) as Person
-    const organizations = await this.fetchPersonOrganizations(person.id as number)
-    person.organizations = organizations
-    return person
+    const response = await this.client.get(`${API_BASE_URL}/persons/${id}`);
+    const person = (await firstValueFrom(response)) as Person;
+    const organizations = await this.fetchPersonOrganizations(person.id as number);
+    person.organizations = organizations;
+    return person;
   }
 
   async fetchAll() {
-    const response = await this.client.get(`${API_BASE_URL}/persons`)
-    const result = await firstValueFrom(response) as any
-    const persons = result["_embedded"].persons as Person[]
-    return persons
+    const response = await this.client.get(`${API_BASE_URL}/persons`);
+    const result = (await firstValueFrom(response)) as { _embedded: { persons: Person[] } };
+    const persons = result._embedded.persons;
+    return persons;
   }
 
   async fetchPersonOrganizations(id: number) {
-    const response = await this.client.get(`${API_BASE_URL}/persons/${id}/organizations`)
-    const result = await firstValueFrom(response) as any
-    const organizations = result["_embedded"].organizations as Organization[]
-    return organizations
+    const response = await this.client.get(`${API_BASE_URL}/persons/${id}/organizations`);
+    const result = (await firstValueFrom(response)) as {
+      _embedded: { organizations: Organization[] };
+    };
+    const organizations = result._embedded.organizations;
+    return organizations;
   }
 
   async deleteById(id: number) {
-    const response = await this.client.delete(`${API_BASE_URL}/persons/${id}`)
-    await firstValueFrom(response)
-    return
+    const response = await this.client.delete(`${API_BASE_URL}/persons/${id}`);
+    await firstValueFrom(response);
+    return;
   }
 
   async save(person: Person) {
@@ -46,7 +47,7 @@ export class PersonService {
         bio: person.bio,
         phone: person.phone,
         email: person.email,
-      })
+      });
     } else {
       response = await this.client.put(`${API_BASE_URL}/persons/${person.id}`, {
         firstName: person.firstName,
@@ -54,28 +55,26 @@ export class PersonService {
         bio: person.bio,
         phone: person.phone,
         email: person.email,
-      })
+      });
     }
 
-    person = await firstValueFrom(response) as Person
+    person = (await firstValueFrom(response)) as Person;
 
-    const organizations = await this.fetchPersonOrganizations(person.id as number)
-    person.organizations = organizations
+    const organizations = await this.fetchPersonOrganizations(person.id as number);
+    person.organizations = organizations;
 
-    return person
+    return person;
   }
-
 }
 
-
 export interface Person {
-  id?: number
-  firstName: string
-  lastName: string
-  email: string
-  phone: string
-  bio: string
-  createdAt: Date
-  updatedAt?: Date
+  id?: number;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  bio: string;
+  createdAt: Date;
+  updatedAt?: Date;
   organizations: Organization[];
 }
