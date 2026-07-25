@@ -1,0 +1,44 @@
+# Serveur SonarQube local, séparé de la stack applicative.
+#
+#   docker compose -f docker-compose.sonar.yml up -d
+#   http://localhost:9000  (admin / admin au premier démarrage)
+#
+# Puis, depuis back/ :
+#   ./gradlew sonar -Dsonar.token=<token généré dans l'UI>
+#
+# Note : SonarQube exige vm.max_map_count >= 262144 sur l'hôte Linux
+#   sudo sysctl -w vm.max_map_count=262144
+services:
+  sonarqube:
+    image: sonarqube:10-community
+    depends_on:
+      - sonar-db
+    ports:
+      - '9000:9000'
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonar-db:5432/sonar
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: sonar
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  sonar-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sonar
+      POSTGRES_PASSWORD: sonar
+      POSTGRES_DB: sonar
+    volumes:
+      - sonar_db_data:/var/lib/postgresql/data
+
+volumes:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:
+  sonar_db_data:

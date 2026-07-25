@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC
+  "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+  "https://checkstyle.org/dtds/configuration_1_3.dtd">
+
+<!--
+  Ruleset Checkstyle de MicroCRM.
+
+  Volontairement pragmatique : on cible les vrais défauts (imports morts,
+  blocs vides, equals/hashCode, @Override manquant, conventions de nommage)
+  plutôt que le formatage pur (indentation, espaces), déjà couvert par l'IDE
+  et sans valeur ajoutée en revue. Documentation : https://checkstyle.org/checks.html
+-->
+<module name="Checker">
+  <property name="charset" value="UTF-8"/>
+  <property name="severity" value="error"/>
+  <property name="fileExtensions" value="java"/>
+
+  <!-- Pas de tabulation dans le code source. -->
+  <module name="FileTabCharacter">
+    <property name="eachLine" value="true"/>
+  </module>
+
+  <!-- Fichier terminé par un saut de ligne. -->
+  <module name="NewlineAtEndOfFile"/>
+
+  <!-- Longueur de ligne raisonnable (générique, laisse de la marge). -->
+  <module name="LineLength">
+    <property name="max" value="140"/>
+    <property name="ignorePattern" value="^package.*|^import.*|href|@see"/>
+  </module>
+
+  <module name="TreeWalker">
+
+    <!-- Imports -->
+    <module name="AvoidStarImport"/>
+    <module name="UnusedImports"/>
+    <module name="RedundantImport"/>
+
+    <!-- Blocs -->
+    <module name="EmptyBlock">
+      <property name="option" value="text"/>
+    </module>
+    <module name="NeedBraces"/>
+    <module name="EmptyCatchBlock"/>
+
+    <!-- Cohérence du code -->
+    <module name="EqualsHashCode"/>
+    <module name="SimplifyBooleanExpression"/>
+    <module name="SimplifyBooleanReturn"/>
+    <module name="MissingOverride"/>
+    <module name="FallThrough"/>
+    <module name="StringLiteralEquality"/>
+    <module name="OneStatementPerLine"/>
+    <module name="UpperEll"/>
+    <module name="ModifierOrder"/>
+    <module name="DefaultComesLast"/>
+
+    <!-- Conventions de nommage Java -->
+    <module name="PackageName"/>
+    <module name="TypeName"/>
+    <module name="MethodName"/>
+    <module name="MemberName"/>
+    <module name="ParameterName"/>
+    <module name="LocalVariableName"/>
+    <module name="ConstantName"/>
+
+  </module>
+</module>

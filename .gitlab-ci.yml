@@ -1,6 +1,40 @@
 stages:
+  - lint
   - test
+  - quality
+  - security
   - build
+  - package
+
+# ---------------------------------------------------------------------------
+# Variables globales & caches
+# ---------------------------------------------------------------------------
+variables:
+  # Gradle : garde le cache des dépendances dans le workspace (donc cacheable).
+  GRADLE_USER_HOME: '$CI_PROJECT_DIR/.gradle'
+  GRADLE_OPTS: '-Dorg.gradle.daemon=false'
+
+# Fragments de cache réutilisables (accélère npm ci / téléchargements Gradle).
+.cache_gradle: &cache_gradle
+  cache:
+    key:
+      files:
+        - back/build.gradle
+    paths:
+      - .gradle/caches
+      - .gradle/wrapper
+
+.cache_node: &cache_node
+  cache:
+    key:
+      files:
+        - front/package-lock.json
+    paths:
+      - front/node_modules
+
+# ---------------------------------------------------------------------------
+# Rules : quand jouer chaque stage (inchangées + réutilisées)
+# ---------------------------------------------------------------------------
 .rules_test: &rules_test
   rules:
     - if: '$CI_MERGE_REQUEST_ID'
@@ -10,6 +44,7 @@ stages:
     - if: '$CI_COMMIT_BRANCH == "develop"'
     - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_COMMIT_TAG'
+
 .rules_build: &rules_build
   rules:
     - if: '$CI_COMMIT_BRANCH == "develop"'
@@ -17,33 +52,197 @@ stages:
     - if: '$CI_COMMIT_BRANCH =~ /^hotfix\//'
     - if: '$CI_COMMIT_BRANCH == "main"'
     - if: '$CI_COMMIT_TAG'
-test-front:
-  image: cypress/browsers:latest
-  stage: test
+
+# ===========================================================================
+# LINT
+# ===========================================================================
+lint-front:
+  image: node
+  stage: lint
+  <<: *cache_node
   script:
     - cd front
     - npm ci
-    - CHROME_BIN=/opt/google/chrome/chrome npx @angular/cli test --no-watch --no-progress --browsers=ChromeHeadlessNoSandbox
+    - npx @angular/cli lint
   <<: *rules_test
+
+lint-back:
+  image: gradle:jdk17
+  stage: lint
+  <<: *cache_gradle
+  script:
+    - cd back
+    - ./gradlew checkstyleMain
+  <<: *rules_test
+
+# ===========================================================================
+# TEST (produisent la couverture consommée par SonarQube)
+# ===========================================================================
+test-front:
+  image: cypress/browsers:latest
+  stage: test
+  <<: *cache_node
+  script:
+    - cd front
+    - npm ci
+    - CHROME_BIN=/opt/google/chrome/chrome npx @angular/cli test --no-watch --no-progress --code-coverage --browsers=ChromeHeadlessNoSandbox
+  artifacts:
+    when: always
+    paths:
+      - front/coverage/
+    expire_in: 1 day
+  <<: *rules_test
+
 test-back:
   image: gradle:jdk17
   stage: test
+  <<: *cache_gradle
   script:
     - cd back
-    - ./gradlew test
+    - ./gradlew test jacocoTestReport
+  artifacts:
+    when: always
+    reports:
+      junit: back/build/test-results/test/**/TEST-*.xml
+    paths:
+      - back/build/
+    expire_in: 1 day
   <<: *rules_test
+
+# ===========================================================================
+# QUALITY (SonarQube + analyse statique)
+#   Requiert les variables CI/CD : SONAR_HOST_URL, SONAR_TOKEN (masquée).
+# ===========================================================================
+sonar-back:
+  image: gradle:jdk17
+  stage: quality
+  <<: *cache_gradle
+  needs: ['test-back']
+  dependencies:
+    - test-back
+  script:
+    - cd back
+    - ./gradlew sonar -Dsonar.host.url=$SONAR_HOST_URL -Dsonar.token=$SONAR_TOKEN
+  allow_failure: true
+  <<: *rules_test
+
+sonar-front:
+  image: sonarsource/sonar-scanner-cli:latest
+  stage: quality
+  needs: ['test-front']
+  dependencies:
+    - test-front
+  script:
+    - cd front
+    - sonar-scanner -Dsonar.host.url=$SONAR_HOST_URL -Dsonar.token=$SONAR_TOKEN
+  allow_failure: true
+  <<: *rules_test
+
+spotbugs-back:
+  image: gradle:jdk17
+  stage: quality
+  <<: *cache_gradle
+  script:
+    - cd back
+    - ./gradlew spotbugsMain
+  artifacts:
+    when: always
+    paths:
+      - back/build/reports/spotbugs/
+    expire_in: 1 week
+  allow_failure: true
+  <<: *rules_test
+
+# ===========================================================================
+# SECURITY (SCA + scan filesystem)
+# ===========================================================================
+dependency-check-back:
+  image: gradle:jdk17
+  stage: security
+  <<: *cache_gradle
+  # NVD_API_KEY : variable CI/CD recommandée pour éviter le throttling de la NVD.
+  script:
+    - cd back
+    - ./gradlew dependencyCheckAnalyze
+  artifacts:
+    when: always
+    paths:
+      - back/build/reports/dependency-check-report.*
+    expire_in: 1 week
+  allow_failure: true
+  <<: *rules_test
+
+trivy-fs:
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: ['']
+  stage: security
+  # Scanne dépendances + secrets du dépôt. .trivyignore filtre les faux positifs.
+  script:
+    - trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --exit-code 0 --no-progress .
+  allow_failure: true
+  <<: *rules_test
+
+# ===========================================================================
+# BUILD (compilation des artefacts)
+# ===========================================================================
 build-front:
   image: node
   stage: build
+  <<: *cache_node
   script:
     - cd front
     - npm ci
     - npx @angular/cli build --optimization
+  artifacts:
+    paths:
+      - front/dist/
+    expire_in: 1 week
   <<: *rules_build
+
 build-back:
   image: gradle:jdk17
   stage: build
+  <<: *cache_gradle
   script:
     - cd back
-    - ./gradlew build
+    - ./gradlew build -x test
+  artifacts:
+    paths:
+      - back/build/libs/*.jar
+    expire_in: 1 week
   <<: *rules_build
+
+# ===========================================================================
+# PACKAGE (build + push des images Docker, puis scan de l'image)
+#   Utilise le GitLab Container Registry ($CI_REGISTRY_* fournis automatiquement).
+# ===========================================================================
+.package_template: &package_template
+  image: docker:24
+  stage: package
+  services:
+    - docker:24-dind
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  <<: *rules_build
+
+package-back:
+  <<: *package_template
+  variables:
+    IMAGE: '$CI_REGISTRY_IMAGE/back'
+  script:
+    - docker build -t "$IMAGE:$CI_COMMIT_SHORT_SHA" -t "$IMAGE:latest" ./back
+    - docker push "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker push "$IMAGE:latest"
+    # Scan de vulnérabilités de l'image finale (report-only).
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"
+
+package-front:
+  <<: *package_template
+  variables:
+    IMAGE: '$CI_REGISTRY_IMAGE/front'
+  script:
+    - docker build -t "$IMAGE:$CI_COMMIT_SHORT_SHA" -t "$IMAGE:latest" ./front
+    - docker push "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker push "$IMAGE:latest"
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"

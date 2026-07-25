@@ -1,0 +1,8 @@
+# Vulnérabilités et misconfigurations volontairement acceptées.
+#
+# Une ligne = un identifiant (CVE-..., DS-..., AVD-...).
+# Toute entrée doit porter une justification et une date de revue :
+# ce fichier est relu à chaque release, pas une décharge permanente.
+#
+# Exemple :
+# CVE-2024-00000 exp:2026-12-31  # non exploitable : le composant vulnérable n'est pas chargé

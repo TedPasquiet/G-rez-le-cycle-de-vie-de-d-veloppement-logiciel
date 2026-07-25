@@ -29,12 +29,11 @@
     <div class="columns">
       <div class="column">
         <div class="field">
-          <label class="label">Name *</label>
+          <label class="label" for="org-name">Name *</label>
           <div class="control">
             <input
-              class="input {{
-                name.invalid && (name.dirty || name.touched) ? 'is-danger' : ''
-              }}"
+              id="org-name"
+              class="input {{ name.invalid && (name.dirty || name.touched) ? 'is-danger' : '' }}"
               required
               type="text"
               placeholder="Orion Inc."
@@ -43,10 +42,7 @@
               #name="ngModel"
             />
           </div>
-          <p
-            *ngIf="name.invalid && (name.dirty || name.touched)"
-            class="help is-danger"
-          >
+          <p *ngIf="name.invalid && (name.dirty || name.touched)" class="help is-danger">
             <span *ngIf="name.errors?.['required']">Name is required.</span>
           </p>
         </div>

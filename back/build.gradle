@@ -1,5 +1,11 @@
 plugins {
 	id 'java'
+	id 'jacoco'
+	id 'checkstyle'
+	id 'com.github.spotbugs' version '6.0.15'
+	id 'org.owasp.dependencycheck' version '10.0.4'
+	id 'org.sonarqube' version '5.1.0.4882'
+	id 'com.diffplug.spotless' version '6.25.0'
 	id 'org.springframework.boot' version '3.2.5'
 	id 'io.spring.dependency-management' version '1.1.4'
 	id 'com.adarshr.test-logger' version '4.0.0'
@@ -10,6 +16,78 @@ version = '0.0.1-SNAPSHOT'
 
 java {
 	sourceCompatibility = '17'
+}
+
+// Linting statique du source Java. Ruleset : back/config/checkstyle/checkstyle.xml
+checkstyle {
+	toolVersion = '10.17.0'
+	configFile = file("${rootDir}/config/checkstyle/checkstyle.xml")
+	// Bloque le build sur une violation. Passer à true pour un mode purement
+	// consultatif (rapport publié sans faire échouer la CI).
+	ignoreFailures = false
+	// Le linting concerne le code de production ; les tests suivent des
+	// conventions plus souples (fixtures, noms verbeux).
+	sourceSets = [sourceSets.main]
+}
+
+// Formatage automatique du code Java (branché sur le hook pre-commit via
+// lint-staged). Volontairement non-invasif : on n'impose pas un style complet
+// (google-java-format), on nettoie l'essentiel — cohérent avec Checkstyle.
+spotless {
+	java {
+		target 'src/**/*.java'
+		removeUnusedImports()
+		trimTrailingWhitespace()
+		endWithNewline()
+		indentWithSpaces(4)
+	}
+}
+
+// Couverture de test au format XML, consommée par SonarQube.
+jacoco {
+	toolVersion = '0.8.12'
+}
+jacocoTestReport {
+	dependsOn test
+	reports {
+		xml.required = true
+		html.required = true
+	}
+}
+
+// Analyse statique (recherche de bugs). Exclusions : back/config/spotbugs/exclude.xml
+spotbugs {
+	excludeFilter = file("${rootDir}/config/spotbugs/exclude.xml")
+	// Publie le rapport sans faire échouer le build ; passer à false pour un gate dur.
+	ignoreFailures = true
+}
+spotbugsMain {
+	reports {
+		xml.required = true
+		html.required = true
+	}
+}
+
+// SCA : dépendances vulnérables (OWASP). Faux positifs : suppressions.xml
+dependencyCheck {
+	suppressionFile = "${rootDir}/config/dependency-check/suppressions.xml"
+	formats = ['HTML', 'XML']
+	// Score CVSS à partir duquel le build échoue (7 = High). Mettre 11 pour ne jamais bloquer.
+	failBuildOnCVSS = 7
+	// Depuis 2023 le NVD exige une clé API pour éviter le throttling. Voir variable CI NVD_API_KEY.
+	nvd {
+		apiKey = System.getenv('NVD_API_KEY')
+	}
+}
+
+// Métadonnées d'analyse SonarQube du back. host.url + token passés en CI.
+sonar {
+	properties {
+		property 'sonar.projectKey', 'microcrm-back'
+		property 'sonar.projectName', 'MicroCRM - Backend'
+		property 'sonar.coverage.jacoco.xmlReportPaths',
+			"${layout.buildDirectory.get()}/reports/jacoco/test/jacocoTestReport.xml"
+	}
 }
 
 repositories {
@@ -28,4 +106,6 @@ dependencies {
 
 test {
     useJUnitPlatform()
+    // Génère automatiquement le rapport de couverture après les tests.
+    finalizedBy jacocoTestReport
 }
