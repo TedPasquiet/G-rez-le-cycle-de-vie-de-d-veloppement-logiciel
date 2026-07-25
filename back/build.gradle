@@ -83,8 +83,9 @@ dependencyCheck {
 // Métadonnées d'analyse SonarQube du back. host.url + token passés en CI.
 sonar {
 	properties {
-		property 'sonar.projectKey', 'microcrm-back'
+		property 'sonar.projectKey', 'pasquietted_G-rez-le-cycle-de-vie-de-d-veloppement-logiciel'
 		property 'sonar.projectName', 'MicroCRM - Backend'
+		property 'sonar.organization', 'pasquietted'
 		property 'sonar.coverage.jacoco.xmlReportPaths',
 			"${layout.buildDirectory.get()}/reports/jacoco/test/jacocoTestReport.xml"
 	}
