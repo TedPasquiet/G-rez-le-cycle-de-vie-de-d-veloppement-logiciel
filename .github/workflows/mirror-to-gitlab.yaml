@@ -3,7 +3,9 @@ name: Mirror to GitLab
 on:
   push:
     branches:
-      - main
+      - '**'
+    tags:
+      - '**'
 
 jobs:
   mirror:
@@ -14,9 +16,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Push to GitLab
+      - name: Push all branches and tags to GitLab
         env:
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
         run: |
           git remote add gitlab https://oauth2:${GITLAB_TOKEN}@gitlab.com/pasquietted/G-rez-le-cycle-de-vie-de-d-veloppement-logiciel.git
-          git push gitlab HEAD:main
+          # On récupère toutes les branches de GitHub dans refs/remotes/origin/*
+          # (comme ça on ne touche pas à la branche en cours de checkout).
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+          # Puis on envoie toutes les branches et tous les tags vers GitLab.
+          git push gitlab '+refs/remotes/origin/*:refs/heads/*'
+          git push gitlab --tags
