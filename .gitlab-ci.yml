@@ -130,7 +130,8 @@ test-back:
 # Il faut avoir créé les variables SONAR_HOST_URL et SONAR_TOKEN dans GitLab.
 # ===========================================================================
 sonar-back:
-  image: gradle:jdk17
+  # SonarCloud exige Java 21+ pour lancer l'analyse (le code reste ciblé Java 17).
+  image: gradle:jdk21
   stage: quality
   needs: ['test-back']
   dependencies:
@@ -210,6 +211,18 @@ dependency-check-back:
   stage: security
   # Conseil : ajouter une variable NVD_API_KEY dans GitLab, sinon la base de
   # données de vulnérabilités met beaucoup plus de temps à se télécharger.
+  # On garde en cache la base NVD (.gradle/dependency-check-data) pour ne pas la
+  # retélécharger à chaque fois : le 1er run est long, les suivants beaucoup moins.
+  cache:
+    - key:
+        files:
+          - back/build.gradle
+      paths:
+        - .gradle/caches
+        - .gradle/wrapper
+    - key: nvd-data
+      paths:
+        - .gradle/dependency-check-data
   script:
     - cd back
     - ./gradlew dependencyCheckAnalyze
@@ -219,7 +232,7 @@ dependency-check-back:
       - back/build/reports/dependency-check-report.*
     expire_in: 1 week
   allow_failure: true
-  <<: [*cache_gradle, *rules_test]
+  <<: *rules_test
 
 trivy-fs:
   image:
