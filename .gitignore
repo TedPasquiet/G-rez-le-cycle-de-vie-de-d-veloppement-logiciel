@@ -9,3 +9,7 @@
 .scannerwork/
 .trivycache/
 trivy-*-report.json
+
+# Caches Python (scripts d'automatisation)
+__pycache__/
+*.pyc
