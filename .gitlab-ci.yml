@@ -75,7 +75,7 @@ lint-front:
   <<: [*cache_node, *rules_test]
 
 lint-back:
-  image: gradle:jdk17
+  image: gradle:jdk21
   stage: lint
   script:
     - cd back
@@ -111,7 +111,7 @@ test-front:
   <<: [*cache_node, *rules_test]
 
 test-back:
-  image: gradle:jdk17
+  image: gradle:jdk21
   stage: test
   script:
     - cd back
@@ -130,7 +130,6 @@ test-back:
 # Il faut avoir créé les variables SONAR_HOST_URL et SONAR_TOKEN dans GitLab.
 # ===========================================================================
 sonar-back:
-  # SonarCloud exige Java 21+ pour lancer l'analyse (le code reste ciblé Java 17).
   image: gradle:jdk21
   stage: quality
   needs: ['test-back']
@@ -155,7 +154,7 @@ sonar-front:
   <<: *rules_test
 
 spotbugs-back:
-  image: gradle:jdk17
+  image: gradle:jdk21
   stage: quality
   script:
     - cd back
@@ -207,7 +206,7 @@ quality-gate:
 # SECURITY (SCA + scan filesystem)
 # ===========================================================================
 dependency-check-back:
-  image: gradle:jdk17
+  image: gradle:jdk21
   stage: security
   # Conseil : ajouter une variable NVD_API_KEY dans GitLab, sinon la base de
   # données de vulnérabilités met beaucoup plus de temps à se télécharger.
@@ -263,7 +262,7 @@ build-front:
   <<: [*cache_node, *rules_build]
 
 build-back:
-  image: gradle:jdk17
+  image: gradle:jdk21
   stage: build
   script:
     - cd back
