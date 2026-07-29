@@ -1,8 +1,9 @@
 # Qualité, sécurité et supervision
 
-Cinq outils sont branchés sur le cycle de vie de MicroCRM. Chacun couvre un angle
-que les autres ne voient pas : un test unitaire ne détecte pas une CVE, et un scan
-de CVE ne détecte pas une mauvaise pratique de code.
+Quatre outils sont branchés sur le cycle de vie de MicroCRM, et un cinquième angle —
+la supervision de l'application déployée — reste à couvrir. Chacun voit ce que les
+autres ne voient pas : un test unitaire ne détecte pas une CVE, et un scan de CVE ne
+détecte pas une mauvaise pratique de code.
 
 | Outil                          | Question à laquelle il répond                                                  | Où il s'exécute  |
 | ------------------------------ | ------------------------------------------------------------------------------ | ---------------- |
@@ -10,9 +11,22 @@ de CVE ne détecte pas une mauvaise pratique de code.
 | **SpotBugs** (+ Find-Sec-Bugs) | Y a-t-il des bugs latents dans le bytecode ?                                   | stage `quality`  |
 | **OWASP Dependency-Check**     | Mes dépendances Java portent-elles des CVE connues ?                           | stage `security` |
 | **Trivy**                      | Mes images Docker et mes fichiers portent-ils des CVE / secrets / misconfigs ? | stage `security` |
-| **Spring Boot Actuator**       | L'application déployée est-elle en bonne santé ?                               | à l'exécution    |
+| _Supervision applicative_      | _L'application déployée est-elle en bonne santé ?_                             | _non implémenté_ |
 
-Le pipeline s'organise donc en quatre étapes : `test` → `quality` → `security` → `build`.
+S'y ajoutent, au stage `lint`, les contrôles de forme : **Checkstyle** et **Spotless**
+côté back, **ESLint** et **Prettier** côté front, **ShellCheck** sur les scripts Bash.
+Et avant même le push, les hooks **husky** (`lint-staged` et `commitlint`) filtrent en
+local.
+
+Le pipeline complet compte 7 stages : `lint` → `test` → `quality` → `security` →
+`build` → `package` → `deploy`. Voir [ARCHITECTURE.md](ARCHITECTURE.md) §4.
+
+> ⚠️ **Aucun de ces contrôles n'est bloquant aujourd'hui.** Les sept jobs de qualité
+> et de sécurité (`sonar-back`, `sonar-front`, `spotbugs-back`, `coverage-gate`,
+> `quality-gate`, `dependency-check-back`, `trivy-fs`) sont en `allow_failure: true`,
+> et les scans Trivy tournent en `--exit-code 0`. Ils **informent** sans jamais
+> arrêter le pipeline. C'est un choix de démarrage assumé, à lever contrôle par
+> contrôle une fois le processus de traitement des vulnérabilités rodé.
 
 ---
 
@@ -52,10 +66,16 @@ npx @angular/cli test --no-watch --code-coverage
 sonar-scanner -Dsonar.host.url=http://localhost:9000 -Dsonar.token=<votre-token>
 ```
 
-**En CI.** Les jobs `sonarqube-back` et `sonarqube-front` ne se déclenchent que si la
-variable CI/CD `SONAR_TOKEN` existe (avec `SONAR_HOST_URL`). Sans elles, le pipeline
-reste vert et les jobs sont simplement ignorés. `-Dsonar.qualitygate.wait=true` fait
-échouer le job si la Quality Gate n'est pas franchie.
+**En CI.** Deux jobs envoient l'analyse au stage `quality` : `sonar-back` (plugin
+Gradle) et `sonar-front` (`sonar-scanner-cli`). Ils ont besoin des variables CI/CD
+`SONAR_HOST_URL` et `SONAR_TOKEN` ; sans elles ils échouent, mais comme ils sont en
+`allow_failure: true`, le pipeline reste vert et l'échec est simplement toléré.
+
+Le verdict de la Quality Gate est récupéré séparément par le job **`quality-gate`**,
+qui appelle le script [`scripts/ci/quality_gate.py`](scripts/ci/quality_gate.py). Ce
+script interroge l'API SonarCloud jusqu'à obtenir le résultat de l'analyse, puis sort
+en `2` si la porte n'est pas franchie — en affichant les règles fautives. Il est lancé
+deux fois, une par projet Sonar (back et front). Voir [SCRIPTS.md](SCRIPTS.md).
 
 ---
 
@@ -113,7 +133,10 @@ humain — à retirer une fois le processus de traitement rodé.
 **Faux positifs.** À documenter et dater dans
 `back/config/dependency-check/suppressions.xml`, jamais à ignorer silencieusement.
 
-Côté front, le job `dependency-check-front` joue l'équivalent avec `npm audit`.
+> ⚠️ Il n'existe **pas** d'équivalent côté front aujourd'hui : aucun job ne lance
+> `npm audit`. Les dépendances npm ne sont couvertes que par `trivy-fs`, qui lit le
+> `package-lock.json`. C'est une piste d'amélioration identifiée, pas un contrôle en
+> place.
 
 ---
 
@@ -129,9 +152,18 @@ prime les **secrets commités** et les **mauvaises configurations** de Dockerfil
 
 **Deux jobs, deux portées.**
 
-- `trivy-fs` (à chaque MR, rapide) : dépendances déclarées, secrets, Dockerfiles.
-- `trivy-image` (branches de livraison) : construit les deux images et scanne leurs
-  couches système. `--ignore-unfixed` masque les CVE sans correctif disponible.
+- Le job **`trivy-fs`** (stage `security`, rapide) scanne le dépôt : dépendances
+  déclarées, secrets oubliés, misconfigurations de Dockerfile.
+- Le **scan des images** n'est pas un job séparé : il est lancé en fin de
+  `package-back` et `package-front`, juste après la construction de l'image, via un
+  `docker run aquasec/trivy image`.
+
+Les deux tournent aujourd'hui avec `--exit-code 0` : ils **publient** les
+vulnérabilités sans jamais bloquer le pipeline. Le script
+[`scripts/ci/build_and_push.sh`](scripts/ci/build_and_push.sh) sait pourtant refuser
+de pousser une image porteuse d'une CVE CRITICAL (option `--scan`, code de sortie 2) —
+il suffirait d'activer cette option dans les jobs `package-*` pour rendre le contrôle
+bloquant.
 
 **Utilisation locale** (sans installer Trivy) :
 
@@ -151,54 +183,57 @@ Les exceptions assumées se déclarent dans `.trivyignore`.
 
 ---
 
-## 5. Spring Boot Actuator — supervision de l'application déployée
+## 5. Supervision de l'application déployée — **non implémenté**
 
-**Pourquoi.** Les quatre outils précédents agissent **avant** le déploiement.
-Actuator répond à la question d'après : une fois en production, l'application
-répond-elle, sa base est-elle joignable, quelle est sa consommation mémoire ?
-C'est aussi ce qui permet à Docker et à l'orchestrateur de savoir quand router
-du trafic vers un conteneur.
+> Cette section décrit une **amélioration prévue**, pas un contrôle en place.
+> Rien de ce qui suit n'existe aujourd'hui dans le dépôt.
 
-**Endpoints exposés** (configurés dans `back/src/main/resources/application.properties`) :
+**Le manque.** Les quatre outils précédents agissent tous **avant** le déploiement.
+Une fois l'application en production, plus rien ne dit si elle répond, si sa base est
+joignable, ou quelle est sa consommation mémoire. C'est aussi ce qui manque à
+Kubernetes pour savoir quand router du trafic vers un pod : sans sonde, le cluster
+considère un conteneur démarré comme prêt, même si l'application est encore en train
+de charger.
 
-| Endpoint                         | Usage                                                       |
-| -------------------------------- | ----------------------------------------------------------- |
-| `GET /actuator/health`           | État global (`UP` / `DOWN`)                                 |
-| `GET /actuator/health/liveness`  | Le processus est vivant — sinon, redémarrer                 |
-| `GET /actuator/health/readiness` | Prêt à recevoir du trafic — sinon, retirer du load balancer |
-| `GET /actuator/info`             | Nom, description, version de la JVM et de l'OS              |
-| `GET /actuator/metrics`          | Mémoire, threads, pool de connexions, latences HTTP         |
+Conséquence concrète sur le pipeline : le job `deploy-staging` s'appuie uniquement sur
+`kubectl rollout status`, qui vérifie que les pods démarrent — pas que l'application
+fonctionne.
 
-Seuls ces quatre endpoints sont exposés (`management.endpoints.web.exposure.include`) :
-exposer `env`, `beans` ou `heapdump` en production divulguerait la configuration
-interne. Le détail du health est en `when_authorized` pour la même raison.
+**Ce qu'il faudrait ajouter** (estimé à moins d'une heure) :
 
-**Vérification.**
+1. La dépendance `org.springframework.boot:spring-boot-starter-actuator` dans
+   `back/build.gradle`.
+2. Dans `application.properties`, n'exposer que le strict nécessaire —
+   `management.endpoints.web.exposure.include=health,info` — car exposer `env`,
+   `beans` ou `heapdump` en production divulguerait la configuration interne.
+3. Un `HEALTHCHECK` dans `back/Dockerfile` pointant sur
+   `/actuator/health/readiness`.
+4. Des sondes `livenessProbe` et `readinessProbe` dans le manifeste Kubernetes du
+   back, pour que le rollout échoue vraiment si l'application ne répond pas — et
+   déclenche donc le rollback automatique de `deploy.sh`.
 
-```shell
-cd back && ./gradlew bootRun
-curl http://localhost:8080/actuator/health
-curl http://localhost:8080/actuator/health/readiness
-curl http://localhost:8080/actuator/info
-```
-
-**Branchement Docker.** `back/Dockerfile` déclare un `HEALTHCHECK` sur
-`/actuator/health/readiness`, et `docker-compose.yml` ne démarre le front
-qu'une fois le back `service_healthy`.
-
-> Pour aller plus loin : ajouter `io.micrometer:micrometer-registry-prometheus`
-> et `prometheus` à la liste des endpoints exposés permet à Prometheus/Grafana
-> de scraper `/actuator/prometheus`.
+> Pour aller plus loin : `io.micrometer:micrometer-registry-prometheus` exposerait
+> `/actuator/prometheus`, scrapable par Prometheus/Grafana.
 
 ---
 
 ## Récapitulatif des variables CI/CD à créer dans GitLab
 
-| Variable         | Obligatoire | Rôle                                |
-| ---------------- | ----------- | ----------------------------------- |
-| `SONAR_HOST_URL` | pour Sonar  | URL du serveur SonarQube            |
-| `SONAR_TOKEN`    | pour Sonar  | Token d'analyse (masquée)           |
-| `NVD_API_KEY`    | non         | Accélère Dependency-Check (masquée) |
+| Variable            | Obligatoire       | Rôle              |
+| ------------------- | ----------------- | ----------------- |
+| Variable            | Type              | Obligatoire       | Rôle                                        |
+| ------------------- | ----------------- | ----------------- | ------------------------------------------- |
+| `SONAR_HOST_URL`    | Variable          | pour Sonar        | URL du serveur SonarQube                    |
+| `SONAR_TOKEN`       | Variable (masked) | pour Sonar        | Token d'analyse                             |
+| `NVD_API_KEY`       | Variable (masked) | non               | Accélère Dependency-Check                   |
+| `KUBE_CONFIG`       | **File**          | pour déployer     | Connexion au cluster Kubernetes             |
+| `STAGING_NAMESPACE` | Variable          | pour déployer     | Namespace de staging                        |
+| `PROD_NAMESPACE`    | Variable          | pour déployer     | Namespace de production                     |
+| `CI_REGISTRY*`      | Automatiques      | —                 | Fournies par GitLab, rien à faire           |
 
-Sans `SONAR_TOKEN`, les jobs Sonar sont simplement ignorés : le reste du pipeline
-fonctionne à l'identique.
+Côté GitHub, un secret `GITLAB_TOKEN` (scope `write_repository`) est nécessaire au
+workflow de miroir vers GitLab.
+
+Sans `SONAR_TOKEN`, les jobs Sonar échouent mais le pipeline reste vert, puisqu'ils
+sont en `allow_failure: true`. Le détail des variables de déploiement est dans
+[RELEASE.md](RELEASE.md) §6.

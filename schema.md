@@ -4,8 +4,6 @@ Chaque étape du cycle de développement est traduite en _stage_ GitLab CI, outi
 et assortie d'un critère bloquant. La sécurité est déplacée au plus tôt
 (**shift-left / DevSecOps**), le déploiement est automatisé jusqu'à la validation PO.
 
-Source visuelle : https://claude.ai/code/artifact/831ad9ad-9664-4e62-b252-80c239ff19fb
-
 ## Workflow complet
 
 ```mermaid
@@ -104,8 +102,19 @@ flowchart TD
 
 ---
 
-> ⚠️ **État actuel du repo.** Ce schéma décrit la chaîne **cible**. Le
-> `.gitlab-ci.yml` en place ne contient que 2 stages (`test`, `build`) et
-> 4 jobs (`test-front`, `test-back`, `build-front`, `build-back`) — ni `package`,
-> ni scans de sécurité, ni stage `deploy`. Les règles GitFlow (`.rules_test` /
-> `.rules_build`) sont en revanche déjà posées et servent de base au déclenchement.
+> **État actuel du repo.** Ce schéma décrit la chaîne **cible**. Le `.gitlab-ci.yml`
+> en place en couvre aujourd'hui l'essentiel : **7 stages et 20 jobs**, de `lint` à
+> `deploy`, en passant par `quality`, `security` et `package`. Les images sont
+> construites et taguées par SHA, poussées au registry puis scannées, et le
+> déploiement Kubernetes est en place avec rollback automatique et manuel.
+>
+> Écarts restants entre la cible et l'implémentation :
+>
+> | Élément de la cible                                 | État                                          |
+> | --------------------------------------------------- | --------------------------------------------- |
+> | Tests E2E (Cypress/Playwright), stage `integration` | Non implémenté                                |
+> | Snyk                                                | Remplacé par Trivy + OWASP Dependency-Check   |
+> | Déploiement sur Docker Compose                      | Remplacé par **Kubernetes** (voir RELEASE.md) |
+> | `deploy-staging` automatique sur `develop`          | En `when: manual` pour l'instant              |
+> | Healthcheck `/actuator/health`                      | Actuator non installé (voir QUALITY.md §5)    |
+> | Critères bloquants                                  | Tous les gates sont en `allow_failure: true`  |
