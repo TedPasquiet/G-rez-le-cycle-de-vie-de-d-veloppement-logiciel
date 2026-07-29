@@ -90,12 +90,28 @@ shellcheck:
   stage: lint
   script:
     - shellcheck --version
-    - find scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck --external-sources
+    # Les faux kubectl/docker/trivy des tests n'ont pas d'extension .sh (il faut
+    # qu'ils portent exactement le nom de la vraie commande), donc je les ajoute
+    # à la main à la liste des fichiers à vérifier.
+    - find scripts -type f \( -name '*.sh' -o -path 'scripts/tests/stubs/*' \) -print0
+      | xargs -0 shellcheck --external-sources
   <<: *rules_test
 
 # ===========================================================================
 # TEST (produisent la couverture consommée par SonarQube)
 # ===========================================================================
+# Ce job teste mes propres scripts d'automatisation avant qu'ils ne servent
+# plus loin dans le pipeline. Il ne construit et ne déploie rien : les vraies
+# commandes (kubectl, docker, trivy) sont remplacées par de faux programmes,
+# ce qui permet de vérifier aussi les cas d'échec (déploiement raté, rollback
+test-scripts:
+  image: python:3.12-slim
+  stage: test
+  needs: []
+  script:
+    - bash scripts/tests/run_tests.sh
+  <<: *rules_test
+
 test-front:
   image: cypress/browsers:latest
   stage: test

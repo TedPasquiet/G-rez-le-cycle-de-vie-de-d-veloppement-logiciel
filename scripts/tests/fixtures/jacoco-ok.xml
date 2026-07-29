@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Rapport JaCoCo réduit au minimum pour les tests : 75% de lignes couvertes
+     (75 couvertes / 25 manquées) et 90% d'instructions. -->
+<report name="fixture">
+  <counter type="INSTRUCTION" missed="100" covered="900"/>
+  <counter type="LINE" missed="25" covered="75"/>
+  <counter type="METHOD" missed="0" covered="0"/>
+</report>

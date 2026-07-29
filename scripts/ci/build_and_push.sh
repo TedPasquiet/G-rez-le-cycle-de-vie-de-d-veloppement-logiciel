@@ -41,7 +41,7 @@
 # shellcheck source-path=SCRIPTDIR source=../lib/common.sh disable=SC1091
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/common.sh"
 
-usage() { sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,${/^#/!q;s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"; }
 
 main() {
   local context='' image='' tag='' moving_tag='latest' dockerfile='' scan='false'

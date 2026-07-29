@@ -21,9 +21,9 @@ jobs:
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
         run: |
           git remote add gitlab https://oauth2:${GITLAB_TOKEN}@gitlab.com/pasquietted/G-rez-le-cycle-de-vie-de-d-veloppement-logiciel.git
-          # On récupère toutes les branches de GitHub dans refs/remotes/origin/*
-          # (comme ça on ne touche pas à la branche en cours de checkout).
+          # Récupère toutes les branches distantes dans refs/remotes/origin/*
+          # (évite de toucher la branche checkoutée, contrairement à un fetch dans refs/heads).
           git fetch origin '+refs/heads/*:refs/remotes/origin/*'
-          # Puis on envoie toutes les branches et tous les tags vers GitLab.
+          # Miroir de toutes les branches et de tous les tags vers GitLab.
           git push gitlab '+refs/remotes/origin/*:refs/heads/*'
           git push gitlab --tags
