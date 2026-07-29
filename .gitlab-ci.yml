@@ -21,6 +21,17 @@ variables:
   REGISTRY_USER: '$CI_REGISTRY_USER'
   REGISTRY_PASSWORD: '$CI_REGISTRY_PASSWORD'
 
+# ---------------------------------------------------------------------------
+# Réglages appliqués par défaut à tous les jobs.
+# ---------------------------------------------------------------------------
+default:
+  # Si je repousse un commit alors qu'un pipeline tourne encore, GitLab annule
+  # l'ancien au lieu de le laisser finir pour rien. Ça évite de gaspiller les
+  # minutes de calcul (le plan gratuit en donne un nombre limité par mois).
+  # Les jobs de déploiement redéfinissent ce réglage : on ne coupe jamais un
+  # déploiement en cours.
+  interruptible: true
+
 # Petits blocs de cache que je réutilise dans plusieurs jobs pour aller plus vite.
 .cache_gradle: &cache_gradle
   cache:
@@ -247,7 +258,12 @@ dependency-check-back:
       - back/build/reports/dependency-check-report.*
     expire_in: 1 week
   allow_failure: true
-  <<: *rules_test
+  # Ce job est de loin le plus lent du pipeline (téléchargement de la base NVD),
+  # donc je ne le lance que sur `main`, et pas sur chaque branche de travail.
+  # Les autres contrôles de sécurité (trivy-fs, scan des images) continuent eux
+  # de tourner partout.
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
 
 trivy-fs:
   image:
@@ -338,6 +354,9 @@ package-front:
     name: bitnami/kubectl:latest
     entrypoint: ['']
   stage: deploy
+  # On annule tout sauf un déploiement : couper un `kubectl rollout` en plein
+  # milieu laisserait le cluster dans un état incertain.
+  interruptible: false
   variables:
     KUBECONFIG: '$KUBE_CONFIG'
   before_script:
