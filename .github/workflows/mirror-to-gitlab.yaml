@@ -25,5 +25,9 @@ jobs:
           # (évite de toucher la branche checkoutée, contrairement à un fetch dans refs/heads).
           git fetch origin '+refs/heads/*:refs/remotes/origin/*'
           # Miroir de toutes les branches et de tous les tags vers GitLab.
-          git push gitlab '+refs/remotes/origin/*:refs/heads/*'
+          # --prune supprime côté GitLab les branches qui n'existent plus sur GitHub
+          # (sinon une branche supprimée ou renommée y resterait pour toujours).
+          # GitLab est donc un miroir en lecture seule : ne jamais y committer,
+          # tout ce qui n'est pas sur GitHub finit par y être effacé.
+          git push gitlab --prune '+refs/remotes/origin/*:refs/heads/*'
           git push gitlab --tags
