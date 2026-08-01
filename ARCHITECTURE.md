@@ -77,11 +77,11 @@ flowchart LR
 
 ## 4. Pipeline CI/CD (GitLab)
 
-Le pipeline compte **7 stages et 20 jobs**, exécutés dans cet ordre :
+Le pipeline compte **8 stages et 23 jobs**, exécutés dans cet ordre :
 
 ```mermaid
 flowchart LR
-    commit([git push]) --> lint --> test --> quality --> security --> build --> package --> deploy
+    commit([git push]) --> lint --> test --> quality --> security --> build --> package --> perf --> deploy
 ```
 
 | Stage      | Jobs                                                                          | Rôle                                             |
@@ -92,6 +92,7 @@ flowchart LR
 | `security` | `dependency-check-back`, `trivy-fs`                                           | CVE des dépendances, secrets, misconfigurations  |
 | `build`    | `build-front`, `build-back`                                                   | Compilation des artefacts                        |
 | `package`  | `package-back`, `package-front`                                               | Images Docker taguées par SHA + scan Trivy       |
+| `perf`     | `k6-smoke`, `k6-load`, `k6-stress`                                            | Tests de performance k6 sur l'image construite   |
 | `deploy`   | `deploy-staging`, `deploy-production`, `rollback-production`                  | Déploiement Kubernetes et retour arrière         |
 
 Le détail du déclenchement par branche et de la procédure de release est dans
@@ -126,7 +127,7 @@ deux sont reliés par un workflow GitHub Actions,
 flowchart LR
     dev([git push]) --> gh[GitHub<br/>dépôt de travail, Pull Requests]
     gh -->|GitHub Actions<br/>miroir automatique| gl[GitLab<br/>miroir + exécution du pipeline]
-    gl --> ci[".gitlab-ci.yml<br/>7 stages, 20 jobs"]
+    gl --> ci[".gitlab-ci.yml<br/>8 stages, 23 jobs"]
 ```
 
 À chaque push sur n'importe quelle branche ou tag, le workflow recopie toutes les

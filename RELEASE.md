@@ -33,12 +33,16 @@ flowchart LR
     C --> D[security<br/>Trivy + Dep-Check]
     D --> E[build]
     E --> F[package<br/>image :SHA vers le registry]
-    F --> G{Quelle branche ?}
+    F --> P[perf<br/>k6 sur l'image construite]
+    P --> G{Quelle branche ?}
     G -- develop --> H[deploy-staging<br/>manuel]
     G -- main / tag --> I[deploy-production<br/>manuel]
     I -. si problème .-> J[rollback-production<br/>manuel]
 ```
 
+- **`perf`** → l'image tout juste construite est démarrée et mise sous charge par k6.
+  Le test de fumée `k6-smoke` est bloquant : si l'image ne répond pas correctement,
+  on n'arrive même pas au choix de la branche. Détail dans [QUALITY.md](QUALITY.md) §5.
 - **`develop`** → on construit l'image et on peut déployer sur **staging**.
 - **`main` / tag** → on peut déployer sur **production** (avec validation à la main).
 - **En cas de souci en prod** → on lance le job **`rollback-production`**.

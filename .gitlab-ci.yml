@@ -5,6 +5,7 @@ stages:
   - security
   - build
   - package
+  - perf
   - deploy
 
 # ---------------------------------------------------------------------------
@@ -321,6 +322,90 @@ package-front:
   script:
     - bash scripts/ci/build_and_push.sh --context ./front --image "$IMAGE" --tag "$CI_COMMIT_SHORT_SHA"
     - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"
+
+# ===========================================================================
+# PERF : tests de performance k6 (dossier tests/k6/).
+#
+# L'application testée est démarrée par GitLab comme un *service* : c'est
+# l'image qu'on vient de packager, donc bien l'artefact qui partira en prod.
+# k6 tourne dans le conteneur du job et l'appelle sur http://back:8080.
+# D'où la place du stage, après `package` : ces jobs ont besoin de l'image.
+#
+# Quatre points à connaître :
+#
+#   1. L'entrypoint de l'image grafana/k6 est `k6` lui-même. On le neutralise
+#      (entrypoint: ['']) pour que GitLab puisse lancer son propre shell.
+#
+#   2. Le conteneur k6 tourne avec un utilisateur non-root : il lit le dépôt
+#      mais ne peut pas y écrire. On ne produit donc pas de rapport JSON en
+#      artefact — le résumé de k6 est dans le log du job. Pour un rapport
+#      exploitable, lancer scripts/tests/run_k6.sh en local.
+#
+#   3. L'attente du démarrage est faite par le scénario k6 lui-même (fonction
+#      setup), pas par un `sleep` au jugé. C'est nécessaire : GitLab considère
+#      un service comme prêt dès que son port répond, ce qui ne dit pas que
+#      Spring Boot a fini de démarrer. À noter, back/Dockerfile déclare
+#      EXPOSE 4200 alors que l'application écoute sur 8080 : la sonde de
+#      service affiche donc un avertissement, sans conséquence ici puisque
+#      c'est l'attente de setup qui fait foi.
+#
+#   4. Pour voir les logs de l'application quand un job échoue, définir la
+#      variable CI_DEBUG_SERVICES = "true" dans GitLab.
+#
+# Réglage de la charge : toute variable K6_* définie dans GitLab est vue par
+# le scénario (K6_LOAD_VUS, K6_LOAD_DURATION...). Les seuils sont dans
+# tests/k6/lib/config.js et ont vocation à y rester : les desserrer depuis
+# l'interface viderait le gate de son sens.
+# ===========================================================================
+.k6_template: &k6_template
+  image:
+    # Version figée : d'une version de k6 à l'autre les mesures ne seraient
+    # plus comparables.
+    name: grafana/k6:2.1.0
+    entrypoint: ['']
+  stage: perf
+  services:
+    - name: '$CI_REGISTRY_IMAGE/back:$CI_COMMIT_SHORT_SHA'
+      alias: back
+  variables:
+    K6_BASE_URL: 'http://back:8080'
+    K6_READY_TIMEOUT_S: '90' # démarrage de Spring Boot dans un conteneur
+
+# Test de fumée : court et stable, donc bloquant. Une erreur ici veut dire que
+# l'image construite ne répond pas correctement — inutile d'aller déployer.
+k6-smoke:
+  <<: [*k6_template, *rules_build]
+  script:
+    - k6 run tests/k6/smoke.js
+
+# Charge nominale : c'est ce job qui porte les vrais seuils de temps de réponse.
+# Je le laisse en allow_failure pour l'instant, parce que les runners partagés
+# GitLab sont mutualisés et que leurs mesures varient d'une exécution à l'autre :
+# un seuil dur donnerait des échecs aléatoires sans rapport avec le code.
+# Sur un runner dédié, passer allow_failure à false pour en faire un vrai gate.
+k6-load:
+  <<: [*k6_template, *rules_build]
+  script:
+    - k6 run tests/k6/load.js
+  allow_failure: true
+
+# Test de stress : on cherche volontairement le point de rupture. Ça n'a rien à
+# faire dans un pipeline automatique (c'est long et ça sature le runner), donc
+# on le déclenche à la main quand on veut connaître la marge disponible.
+k6-stress:
+  <<: *k6_template
+  script:
+    - k6 run tests/k6/stress.js
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_COMMIT_TAG'
+      when: manual
+      allow_failure: true
 
 # ===========================================================================
 # DEPLOY : déploiement sur Kubernetes + possibilité de revenir en arrière.

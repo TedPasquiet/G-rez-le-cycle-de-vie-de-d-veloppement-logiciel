@@ -36,9 +36,14 @@ scripts/
 │   └── rollback.sh          # revient en arrière sur Kubernetes
 └── tests/
     ├── run_tests.sh         # teste tous les scripts ci-dessus
+    ├── run_k6.sh            # lance les tests de performance k6
     ├── fixtures/            # faux rapports JaCoCo
-    └── stubs/               # faux kubectl / docker / trivy
+    └── stubs/               # faux kubectl / docker / trivy / k6
 ```
+
+Les scénarios de performance eux-mêmes ne sont pas dans `scripts/` mais dans
+`tests/k6/` (voir [QUALITY.md](QUALITY.md) §5), parce que ce sont des tests de
+l'application, pas des outils du pipeline.
 
 ---
 
@@ -141,6 +146,37 @@ Utilisé par le job `rollback-production`.
 
 ---
 
+## `tests/run_k6.sh`
+
+Il lance un scénario de test de performance k6 (dossier `tests/k6/`). C'est un
+raccourci de confort : il choisit le bon fichier, écrit le rapport JSON au bon
+endroit, et surtout **traduit le code de sortie de k6** en quelque chose
+d'exploitable — k6 sort en 99 quand un seuil est dépassé et en 107 quand le
+script plante, ce qui n'est pas très parlant dans un log de CI.
+
+Toute la logique du test (charge, seuils, parcours) est dans les fichiers
+`tests/k6/*.js`, pas dans le script : c'est ce qui garantit que la commande
+locale et le job CI mesurent la même chose.
+
+Options : `--scenario` (`smoke` par défaut, ou `load`, ou `stress`), `--url`,
+`--output-dir` (défaut `reports/k6`), `--no-report`, et tout ce qui suit `--`
+est passé tel quel à k6.
+
+Codes de sortie : `0` tout va bien · `1` problème de configuration ·
+`2` seuils de performance non tenus · `3` le test n'a pas pu aller au bout
+(API injoignable, k6 en erreur).
+
+```bash
+scripts/tests/run_k6.sh                             # smoke sur localhost:8080
+scripts/tests/run_k6.sh --scenario load --url http://back:8080
+K6_LOAD_VUS=25 scripts/tests/run_k6.sh -s load      # surcharger la charge
+scripts/tests/run_k6.sh -s smoke -- --vus 3         # option passée à k6
+```
+
+Le détail des scénarios et des seuils est dans [QUALITY.md](QUALITY.md) §5.
+
+---
+
 ## Les tests
 
 C'est le point de vigilance « tester chaque script dans un environnement
@@ -149,8 +185,8 @@ chaque commit avec le job **`test-scripts`** (stage `test`, image
 `python:3.12-slim` qui fournit à la fois bash et python3).
 
 **Comment on teste un script de déploiement sans cluster :** les vraies
-commandes `kubectl`, `docker` et `trivy` sont remplacées par de faux programmes
-(dossier `tests/stubs/`) placés en premier dans le `PATH`. Ces faux programmes
+commandes `kubectl`, `docker`, `trivy` et `k6` sont remplacées par de faux
+programmes (dossier `tests/stubs/`) placés en premier dans le `PATH`. Ces faux programmes
 notent ce qu'on leur demande dans un fichier et renvoient le code de sortie que
 le test veut. Du coup on peut vérifier :
 
@@ -164,9 +200,11 @@ le test veut. Du coup on peut vérifier :
 - qu'aucun **secret n'apparaît dans les logs**.
 
 Pour les scripts Python, on utilise de faux rapports JaCoCo (`tests/fixtures/`),
-dont un XML cassé et un rapport vide pour vérifier les cas d'erreur.
+dont un XML cassé et un rapport vide pour vérifier les cas d'erreur. Et pour
+`run_k6.sh`, le faux `k6` permet de rejouer les cas qu'on ne peut pas provoquer
+à la demande avec un vrai serveur : seuils dépassés, API injoignable.
 
-Aujourd'hui : **74 tests**, tout passe.
+Aujourd'hui : **95 tests**, tout passe.
 
 ```bash
 # Lancer toute la suite (rien n'est construit ni déployé)

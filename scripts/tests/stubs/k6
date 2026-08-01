@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+#
+# Faux k6, utilisé seulement par run_tests.sh.
+#
+# Même principe que les faux kubectl/docker : il note ce qu'on lui demande et
+# renvoie le code de sortie voulu, sans lancer le moindre test de charge. Ça
+# permet de tester run_k6.sh dans la CI (image python:3.12-slim, où k6 n'est
+# pas installé) et surtout de vérifier les cas d'échec, qu'on ne peut pas
+# provoquer facilement avec un vrai serveur.
+#
+# Il note aussi K6_BASE_URL : c'est ainsi qu'on vérifie que l'option --url est
+# bien transmise au test sous forme de variable d'environnement.
+#
+# Variables qui pilotent son comportement (mises par le test) :
+#   FAKE_K6_LOG             Fichier où sont écrites les commandes reçues.
+#   FAKE_K6_THRESHOLD_FAIL  Si "1" : les seuils sont dépassés (k6 sort en 99).
+#   FAKE_K6_FAIL            Si "1" : k6 plante (code 107, ex. API injoignable).
+
+if [[ -n "${FAKE_K6_LOG:-}" ]]; then
+  echo "k6 $*" >>"$FAKE_K6_LOG"
+  echo "K6_BASE_URL=${K6_BASE_URL:-<non défini>}" >>"$FAKE_K6_LOG"
+fi
+
+[[ "${FAKE_K6_THRESHOLD_FAIL:-0}" == "1" ]] && exit 99
+[[ "${FAKE_K6_FAIL:-0}" == "1" ]] && exit 107
+exit 0

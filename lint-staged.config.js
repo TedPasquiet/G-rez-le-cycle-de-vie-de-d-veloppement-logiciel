@@ -22,6 +22,10 @@ module.exports = {
   // Le wrapper Gradle vit dans back/, d'où le cd.
   'back/**/*.java': () => 'bash -c "cd back && ./gradlew spotlessApply"',
 
+  // Scénarios de test de performance k6 (JavaScript autonome, hors Angular :
+  // pas d'ESLint ici, seulement la mise en forme)
+  'tests/k6/**/*.js': 'prettier --write',
+
   // Documentation et configuration à la racine
   '*.{md,yml,yaml,json}': 'prettier --write',
 };

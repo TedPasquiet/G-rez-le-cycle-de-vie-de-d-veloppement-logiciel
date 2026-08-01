@@ -7,8 +7,9 @@
 # le faire à la main, la CI le fait à chaque commit (job `test-scripts`).
 #
 # Comment ça marche :
-#   Rien n'est réellement construit ni déployé. Je remplace `kubectl`, `docker`
-#   et `trivy` par de faux programmes (dossier `stubs/`) que je mets en premier
+#   Rien n'est réellement construit, déployé ni mis sous charge. Je remplace
+#   `kubectl`, `docker`, `trivy` et `k6` par de faux programmes (dossier
+#   `stubs/`) que je mets en premier
 #   dans le PATH. Ils notent ce qu'on leur demande dans un fichier et renvoient
 #   le code de sortie que le test veut. Du coup je peux vérifier :
 #     - que chaque script renvoie le bon code de sortie dans chaque situation,
@@ -370,6 +371,69 @@ verifie_code 1 'deployment inexistant -> erreur avant toute action' \
   env FAKE_KUBECTL_LOG="$journal" FAKE_DEPLOYMENT_MISSING=1 KUBECONFIG="$WORK_DIR/kube.cfg" \
   bash "$ROOT_DIR/scripts/deploy/rollback.sh" -n production -d back
 verifie_fichier_contient_pas "$journal" 'rollout undo' 'aucun rollback lancé sur un deployment absent'
+
+# ==========================================================================
+# tests/run_k6.sh
+# ==========================================================================
+# On ne lance évidemment pas de vrai test de charge ici : le faux k6 permet de
+# vérifier que le script choisit le bon scénario, transmet bien l'URL, et
+# traduit correctement les codes de sortie de k6 (99 = seuils dépassés,
+# 107 = plantage). Les scénarios eux-mêmes sont joués par le job `k6-smoke`
+# de la CI, contre l'application réellement démarrée.
+titre 'tests/run_k6.sh'
+
+rapports="$WORK_DIR/rapports-k6"
+
+verifie_code 1 "scénario inconnu -> erreur de configuration (1)" \
+  bash "$ROOT_DIR/scripts/tests/run_k6.sh" --scenario inexistant
+verifie_contient 'smoke' "le message rappelle les scénarios disponibles"
+
+verifie_code 1 'option inconnue -> erreur de configuration (1)' \
+  bash "$ROOT_DIR/scripts/tests/run_k6.sh" --option-bidon
+
+verifie_code 0 '--help fonctionne' \
+  bash "$ROOT_DIR/scripts/tests/run_k6.sh" --help
+verifie_contient '--scenario' "l'aide liste bien les options"
+verifie_contient_pas 'source "$(cd' "l'aide ne laisse pas fuiter le code source"
+
+journal="$(nouveau_journal k6)"
+verifie_code 0 'cas nominal : le scénario smoke est lancé' \
+  env FAKE_K6_LOG="$journal" \
+  bash "$ROOT_DIR/scripts/tests/run_k6.sh" --scenario smoke --output-dir "$rapports"
+verifie_fichier_contient "$journal" 'tests/k6/smoke.js' 'le bon fichier de scénario est joué'
+verifie_fichier_contient "$journal" '--summary-export' 'un rapport JSON est demandé à k6'
+
+journal="$(nouveau_journal k6)"
+verifie_code 0 "--url est transmis au scénario via K6_BASE_URL" \
+  env FAKE_K6_LOG="$journal" \
+  bash "$ROOT_DIR/scripts/tests/run_k6.sh" -s load -u 'http://back:8080' -o "$rapports"
+verifie_fichier_contient "$journal" 'K6_BASE_URL=http://back:8080' "l'URL demandée arrive bien au test"
+verifie_fichier_contient "$journal" 'tests/k6/load.js' 'le scénario load est reconnu'
+
+journal="$(nouveau_journal k6)"
+verifie_code 0 'le scénario stress est reconnu' \
+  env FAKE_K6_LOG="$journal" \
+  bash "$ROOT_DIR/scripts/tests/run_k6.sh" -s stress --no-report
+verifie_fichier_contient "$journal" 'tests/k6/stress.js' 'le bon fichier de scénario est joué'
+verifie_fichier_contient_pas "$journal" '--summary-export' "--no-report n'écrit aucun rapport"
+
+journal="$(nouveau_journal k6)"
+verifie_code 0 'les options après -- sont passées telles quelles à k6' \
+  env FAKE_K6_LOG="$journal" \
+  bash "$ROOT_DIR/scripts/tests/run_k6.sh" -s smoke --no-report -- --vus 20 --duration 30s
+verifie_fichier_contient "$journal" '--vus 20 --duration 30s' 'les options supplémentaires sont transmises'
+
+journal="$(nouveau_journal k6)"
+verifie_code 2 'seuils de performance dépassés -> code 2' \
+  env FAKE_K6_LOG="$journal" FAKE_K6_THRESHOLD_FAIL=1 \
+  bash "$ROOT_DIR/scripts/tests/run_k6.sh" -s load --no-report
+verifie_contient 'seuils de performance' "le message explique que c'est un problème de performance"
+
+journal="$(nouveau_journal k6)"
+verifie_code 3 'k6 en erreur (API injoignable) -> code 3' \
+  env FAKE_K6_LOG="$journal" FAKE_K6_FAIL=1 \
+  bash "$ROOT_DIR/scripts/tests/run_k6.sh" -s smoke --no-report
+verifie_contient 'injoignable' "on distingue bien la panne du dépassement de seuil"
 
 # ==========================================================================
 # Bilan
