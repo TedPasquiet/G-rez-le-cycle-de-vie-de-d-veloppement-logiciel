@@ -225,8 +225,6 @@ quality-gate:
 dependency-check-back:
   image: gradle:jdk21
   stage: security
-  # Conseil : ajouter une variable NVD_API_KEY dans GitLab, sinon la base de
-  # données de vulnérabilités met beaucoup plus de temps à se télécharger.
   # On garde en cache la base NVD (.gradle/dependency-check-data) pour ne pas la
   # retélécharger à chaque fois : le 1er run est long, les suivants beaucoup moins.
   cache:
@@ -239,6 +237,9 @@ dependency-check-back:
     - key: nvd-data
       paths:
         - .gradle/dependency-check-data
+      when: always
+  # Garde-fou : au-delà, c'est que le téléchargement de la base part en vrille
+  timeout: 10 minutes
   script:
     - cd back
     - ./gradlew dependencyCheckAnalyze
