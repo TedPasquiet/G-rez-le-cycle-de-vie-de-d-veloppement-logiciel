@@ -203,6 +203,14 @@ coverage-gate:
 
 # Ce job lance mon script Python qui demande à SonarCloud si le Quality Gate
 # est passé, une fois que l'analyse a été envoyée.
+#
+# ⚠️ Il ne tourne QUE sur main, contrairement aux autres jobs de qualité. Le plan
+# gratuit de SonarCloud n'expose le Quality Gate que pour la branche principale
+# du projet : sur `develop` ou une branche `feature/*`, l'API répond
+#   403 "Organization is not allowed to access data from non main branches"
+# quel que soit le token utilisé. Les analyses, elles, continuent d'être envoyées
+# sur toutes les branches par sonar-back / sonar-front — c'est seulement la
+# *relecture* du verdict qui est bridée.
 quality-gate:
   image: python:3.12-slim
   stage: quality
@@ -217,7 +225,8 @@ quality-gate:
       --project-key pasquietted_G-rez-le-cycle-de-vie-de-d-veloppement-logiciel-front
       --branch "$CI_COMMIT_REF_NAME"
   allow_failure: true
-  <<: *rules_test
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
 
 # ===========================================================================
 # SECURITY (SCA + scan filesystem)
