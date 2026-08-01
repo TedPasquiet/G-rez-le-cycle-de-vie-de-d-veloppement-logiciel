@@ -5,16 +5,24 @@ stages:
   - security
   - build
   - package
+  - perf
+  - deploy
 
 # ---------------------------------------------------------------------------
 # Variables globales & caches
 # ---------------------------------------------------------------------------
 variables:
-  # Gradle : garde le cache des dépendances dans le workspace (donc cacheable).
+  # On dit à Gradle de mettre son cache dans le projet, comme ça GitLab peut
+  # le garder d'un job à l'autre (sinon il retélécharge tout à chaque fois).
   GRADLE_USER_HOME: '$CI_PROJECT_DIR/.gradle'
   GRADLE_OPTS: '-Dorg.gradle.daemon=false'
+  # Les infos pour se connecter au registry Docker de GitLab. Elles sont
+  # utilisées par le script build_and_push.sh.
+  REGISTRY_HOST: '$CI_REGISTRY'
+  REGISTRY_USER: '$CI_REGISTRY_USER'
+  REGISTRY_PASSWORD: '$CI_REGISTRY_PASSWORD'
 
-# Fragments de cache réutilisables (accélère npm ci / téléchargements Gradle).
+# Petits blocs de cache que je réutilise dans plusieurs jobs pour aller plus vite.
 .cache_gradle: &cache_gradle
   cache:
     key:
@@ -33,7 +41,9 @@ variables:
       - front/node_modules
 
 # ---------------------------------------------------------------------------
-# Rules : quand jouer chaque stage (inchangées + réutilisées)
+# Ici je définis quand les jobs doivent se lancer (sur quelles branches).
+# Comme plusieurs jobs utilisent les mêmes règles, je les écris une fois ici
+# et je les réutilise plus bas.
 # ---------------------------------------------------------------------------
 .rules_test: &rules_test
   rules:
@@ -59,29 +69,53 @@ variables:
 lint-front:
   image: node
   stage: lint
-  <<: *cache_node
   script:
     - cd front
     - npm ci
     - npx @angular/cli lint
-  <<: *rules_test
+  <<: [*cache_node, *rules_test]
 
 lint-back:
-  image: gradle:jdk17
+  image: gradle:jdk21
   stage: lint
-  <<: *cache_gradle
   script:
     - cd back
     - ./gradlew checkstyleMain
+  <<: [*cache_gradle, *rules_test]
+
+# ShellCheck vérifie mes scripts Bash et repère les erreurs classiques.
+shellcheck:
+  image:
+    name: koalaman/shellcheck-alpine:stable
+    entrypoint: ['']
+  stage: lint
+  script:
+    - shellcheck --version
+    # Les faux kubectl/docker/trivy des tests n'ont pas d'extension .sh (il faut
+    # qu'ils portent exactement le nom de la vraie commande), donc je les ajoute
+    # à la main à la liste des fichiers à vérifier.
+    - find scripts -type f \( -name '*.sh' -o -path 'scripts/tests/stubs/*' \) -print0
+      | xargs -0 shellcheck --external-sources
   <<: *rules_test
 
 # ===========================================================================
 # TEST (produisent la couverture consommée par SonarQube)
 # ===========================================================================
+# Ce job teste mes propres scripts d'automatisation avant qu'ils ne servent
+# plus loin dans le pipeline. Il ne construit et ne déploie rien : les vraies
+# commandes (kubectl, docker, trivy) sont remplacées par de faux programmes,
+# ce qui permet de vérifier aussi les cas d'échec (déploiement raté, rollback
+test-scripts:
+  image: python:3.12-slim
+  stage: test
+  needs: []
+  script:
+    - bash scripts/tests/run_tests.sh
+  <<: *rules_test
+
 test-front:
   image: cypress/browsers:latest
   stage: test
-  <<: *cache_node
   script:
     - cd front
     - npm ci
@@ -91,12 +125,11 @@ test-front:
     paths:
       - front/coverage/
     expire_in: 1 day
-  <<: *rules_test
+  <<: [*cache_node, *rules_test]
 
 test-back:
-  image: gradle:jdk17
+  image: gradle:jdk21
   stage: test
-  <<: *cache_gradle
   script:
     - cd back
     - ./gradlew test jacocoTestReport
@@ -107,16 +140,15 @@ test-back:
     paths:
       - back/build/
     expire_in: 1 day
-  <<: *rules_test
+  <<: [*cache_gradle, *rules_test]
 
 # ===========================================================================
-# QUALITY (SonarQube + analyse statique)
-#   Requiert les variables CI/CD : SONAR_HOST_URL, SONAR_TOKEN (masquée).
+# QUALITY : on envoie le code à SonarQube et on regarde la qualité.
+# Il faut avoir créé les variables SONAR_HOST_URL et SONAR_TOKEN dans GitLab.
 # ===========================================================================
 sonar-back:
-  image: gradle:jdk17
+  image: gradle:jdk21
   stage: quality
-  <<: *cache_gradle
   needs: ['test-back']
   dependencies:
     - test-back
@@ -124,7 +156,7 @@ sonar-back:
     - cd back
     - ./gradlew sonar -Dsonar.host.url=$SONAR_HOST_URL -Dsonar.token=$SONAR_TOKEN
   allow_failure: true
-  <<: *rules_test
+  <<: [*cache_gradle, *rules_test]
 
 sonar-front:
   image: sonarsource/sonar-scanner-cli:latest
@@ -139,9 +171,8 @@ sonar-front:
   <<: *rules_test
 
 spotbugs-back:
-  image: gradle:jdk17
+  image: gradle:jdk21
   stage: quality
-  <<: *cache_gradle
   script:
     - cd back
     - ./gradlew spotbugsMain
@@ -151,16 +182,73 @@ spotbugs-back:
       - back/build/reports/spotbugs/
     expire_in: 1 week
   allow_failure: true
+  <<: [*cache_gradle, *rules_test]
+
+# Ce job lance mon script Python qui vérifie la couverture de tests du back.
+# Il se sert du rapport JaCoCo généré par le job test-back.
+coverage-gate:
+  image: python:3.12-slim
+  stage: quality
+  needs: ['test-back']
+  dependencies:
+    - test-back
+  script:
+    - python3 scripts/ci/check_coverage.py
+      --report back/build/reports/jacoco/test/jacocoTestReport.xml
+      --min 70
+  # Pour l'instant je mets allow_failure: true, donc ça n'arrête pas le pipeline
+  # si la couverture est trop basse. Il suffit de mettre false pour que ça bloque.
+  allow_failure: true
   <<: *rules_test
+
+# Ce job lance mon script Python qui demande à SonarCloud si le Quality Gate
+# est passé, une fois que l'analyse a été envoyée.
+#
+# ⚠️ Il ne tourne QUE sur main, contrairement aux autres jobs de qualité. Le plan
+# gratuit de SonarCloud n'expose le Quality Gate que pour la branche principale
+# du projet : sur `develop` ou une branche `feature/*`, l'API répond
+#   403 "Organization is not allowed to access data from non main branches"
+# quel que soit le token utilisé. Les analyses, elles, continuent d'être envoyées
+# sur toutes les branches par sonar-back / sonar-front — c'est seulement la
+# *relecture* du verdict qui est bridée.
+quality-gate:
+  image: python:3.12-slim
+  stage: quality
+  needs: ['sonar-back', 'sonar-front']
+  script:
+    - python3 scripts/ci/quality_gate.py
+      --host "$SONAR_HOST_URL"
+      --project-key pasquietted_G-rez-le-cycle-de-vie-de-d-veloppement-logiciel
+      --branch "$CI_COMMIT_REF_NAME"
+    - python3 scripts/ci/quality_gate.py
+      --host "$SONAR_HOST_URL"
+      --project-key pasquietted_G-rez-le-cycle-de-vie-de-d-veloppement-logiciel-front
+      --branch "$CI_COMMIT_REF_NAME"
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
 
 # ===========================================================================
 # SECURITY (SCA + scan filesystem)
 # ===========================================================================
 dependency-check-back:
-  image: gradle:jdk17
+  image: gradle:jdk21
   stage: security
-  <<: *cache_gradle
-  # NVD_API_KEY : variable CI/CD recommandée pour éviter le throttling de la NVD.
+  # On garde en cache la base NVD (.gradle/dependency-check-data) pour ne pas la
+  # retélécharger à chaque fois : le 1er run est long, les suivants beaucoup moins.
+  cache:
+    - key:
+        files:
+          - back/build.gradle
+      paths:
+        - .gradle/caches
+        - .gradle/wrapper
+    - key: nvd-data
+      paths:
+        - .gradle/dependency-check-data
+      when: always
+  # Garde-fou : au-delà, c'est que le téléchargement de la base part en vrille
+  timeout: 10 minutes
   script:
     - cd back
     - ./gradlew dependencyCheckAnalyze
@@ -177,7 +265,8 @@ trivy-fs:
     name: aquasec/trivy:latest
     entrypoint: ['']
   stage: security
-  # Scanne dépendances + secrets du dépôt. .trivyignore filtre les faux positifs.
+  # Trivy regarde le code du dépôt et cherche des dépendances vulnérables ou des
+  # secrets oubliés. Le fichier .trivyignore sert à ignorer les faux positifs.
   script:
     - trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --exit-code 0 --no-progress .
   allow_failure: true
@@ -189,7 +278,6 @@ trivy-fs:
 build-front:
   image: node
   stage: build
-  <<: *cache_node
   script:
     - cd front
     - npm ci
@@ -198,12 +286,11 @@ build-front:
     paths:
       - front/dist/
     expire_in: 1 week
-  <<: *rules_build
+  <<: [*cache_node, *rules_build]
 
 build-back:
-  image: gradle:jdk17
+  image: gradle:jdk21
   stage: build
-  <<: *cache_gradle
   script:
     - cd back
     - ./gradlew build -x test
@@ -211,19 +298,21 @@ build-back:
     paths:
       - back/build/libs/*.jar
     expire_in: 1 week
-  <<: *rules_build
+  <<: [*cache_gradle, *rules_build]
 
 # ===========================================================================
-# PACKAGE (build + push des images Docker, puis scan de l'image)
-#   Utilise le GitLab Container Registry ($CI_REGISTRY_* fournis automatiquement).
+# PACKAGE : on construit les images Docker et on les envoie sur le registry
+# de GitLab (les variables $CI_REGISTRY_* sont fournies automatiquement).
 # ===========================================================================
 .package_template: &package_template
   image: docker:24
   stage: package
   services:
     - docker:24-dind
+  # Mon script est écrit en Bash, or l'image docker:24 (basée sur Alpine) n'a
+  # que sh par défaut. Donc j'installe bash avant de lancer le script.
   before_script:
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - apk add --no-cache bash
   <<: *rules_build
 
 package-back:
@@ -231,10 +320,9 @@ package-back:
   variables:
     IMAGE: '$CI_REGISTRY_IMAGE/back'
   script:
-    - docker build -t "$IMAGE:$CI_COMMIT_SHORT_SHA" -t "$IMAGE:latest" ./back
-    - docker push "$IMAGE:$CI_COMMIT_SHORT_SHA"
-    - docker push "$IMAGE:latest"
-    # Scan de vulnérabilités de l'image finale (report-only).
+    - bash scripts/ci/build_and_push.sh --context ./back --image "$IMAGE" --tag "$CI_COMMIT_SHORT_SHA"
+    # On scanne l'image finale avec Trivy. Ici c'est juste pour info : avec
+    # --exit-code 0 ça n'arrête pas le pipeline même s'il trouve des soucis.
     - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"
 
 package-front:
@@ -242,7 +330,150 @@ package-front:
   variables:
     IMAGE: '$CI_REGISTRY_IMAGE/front'
   script:
-    - docker build -t "$IMAGE:$CI_COMMIT_SHORT_SHA" -t "$IMAGE:latest" ./front
-    - docker push "$IMAGE:$CI_COMMIT_SHORT_SHA"
-    - docker push "$IMAGE:latest"
+    - bash scripts/ci/build_and_push.sh --context ./front --image "$IMAGE" --tag "$CI_COMMIT_SHORT_SHA"
     - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"
+
+# ===========================================================================
+# PERF : tests de performance k6 (dossier tests/k6/).
+#
+# L'application testée est démarrée par GitLab comme un *service* : c'est
+# l'image qu'on vient de packager, donc bien l'artefact qui partira en prod.
+# k6 tourne dans le conteneur du job et l'appelle sur http://back:8080.
+# D'où la place du stage, après `package` : ces jobs ont besoin de l'image.
+#
+# Quatre points à connaître :
+#
+#   1. L'entrypoint de l'image grafana/k6 est `k6` lui-même. On le neutralise
+#      (entrypoint: ['']) pour que GitLab puisse lancer son propre shell.
+#
+#   2. Le conteneur k6 tourne avec un utilisateur non-root : il lit le dépôt
+#      mais ne peut pas y écrire. On ne produit donc pas de rapport JSON en
+#      artefact — le résumé de k6 est dans le log du job. Pour un rapport
+#      exploitable, lancer scripts/tests/run_k6.sh en local.
+#
+#   3. L'attente du démarrage est faite par le scénario k6 lui-même (fonction
+#      setup), pas par un `sleep` au jugé. C'est nécessaire : GitLab considère
+#      un service comme prêt dès que son port répond, ce qui ne dit pas que
+#      Spring Boot a fini de démarrer. À noter, back/Dockerfile déclare
+#      EXPOSE 4200 alors que l'application écoute sur 8080 : la sonde de
+#      service affiche donc un avertissement, sans conséquence ici puisque
+#      c'est l'attente de setup qui fait foi.
+#
+#   4. Pour voir les logs de l'application quand un job échoue, définir la
+#      variable CI_DEBUG_SERVICES = "true" dans GitLab.
+#
+# Réglage de la charge : toute variable K6_* définie dans GitLab est vue par
+# le scénario (K6_LOAD_VUS, K6_LOAD_DURATION...). Les seuils sont dans
+# tests/k6/lib/config.js et ont vocation à y rester : les desserrer depuis
+# l'interface viderait le gate de son sens.
+# ===========================================================================
+.k6_template: &k6_template
+  image:
+    # Version figée : d'une version de k6 à l'autre les mesures ne seraient
+    # plus comparables.
+    name: grafana/k6:2.1.0
+    entrypoint: ['']
+  stage: perf
+  services:
+    - name: '$CI_REGISTRY_IMAGE/back:$CI_COMMIT_SHORT_SHA'
+      alias: back
+  variables:
+    K6_BASE_URL: 'http://back:8080'
+    K6_READY_TIMEOUT_S: '90' # démarrage de Spring Boot dans un conteneur
+
+# Test de fumée : court et stable, donc bloquant. Une erreur ici veut dire que
+# l'image construite ne répond pas correctement — inutile d'aller déployer.
+k6-smoke:
+  <<: [*k6_template, *rules_build]
+  script:
+    - k6 run tests/k6/smoke.js
+
+# Charge nominale : c'est ce job qui porte les vrais seuils de temps de réponse.
+# Je le laisse en allow_failure pour l'instant, parce que les runners partagés
+# GitLab sont mutualisés et que leurs mesures varient d'une exécution à l'autre :
+# un seuil dur donnerait des échecs aléatoires sans rapport avec le code.
+# Sur un runner dédié, passer allow_failure à false pour en faire un vrai gate.
+k6-load:
+  <<: [*k6_template, *rules_build]
+  script:
+    - k6 run tests/k6/load.js
+  allow_failure: true
+
+# Test de stress : on cherche volontairement le point de rupture. Ça n'a rien à
+# faire dans un pipeline automatique (c'est long et ça sature le runner), donc
+# on le déclenche à la main quand on veut connaître la marge disponible.
+k6-stress:
+  <<: *k6_template
+  script:
+    - k6 run tests/k6/stress.js
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_COMMIT_TAG'
+      when: manual
+      allow_failure: true
+
+# ===========================================================================
+# DEPLOY : déploiement sur Kubernetes + possibilité de revenir en arrière.
+#
+# Avant que ça marche, il faut créer ces variables dans GitLab :
+#   KUBE_CONFIG  : le fichier de connexion au cluster (variable de type "File").
+#   STAGING_NAMESPACE / PROD_NAMESPACE : les namespaces où déployer.
+#
+# J'ai mis les jobs en "manual" : ils ne partent pas tout seuls, il faut cliquer
+# pour les lancer. Tant qu'on n'a pas de vrai cluster c'est plus prudent.
+# (voir RELEASE.md pour rendre le staging automatique)
+# ===========================================================================
+.deploy_template: &deploy_template
+  image:
+    name: bitnami/kubectl:latest
+    entrypoint: ['']
+  stage: deploy
+  variables:
+    KUBECONFIG: '$KUBE_CONFIG'
+  before_script:
+    # On vérifie juste que bash est bien là (l'image bitnami/kubectl le fournit).
+    - command -v bash
+
+deploy-staging:
+  <<: *deploy_template
+  environment:
+    name: staging
+  script:
+    - bash scripts/deploy/deploy.sh -n "$STAGING_NAMESPACE" -d back -c back -i "$CI_REGISTRY_IMAGE/back:$CI_COMMIT_SHORT_SHA"
+    - bash scripts/deploy/deploy.sh -n "$STAGING_NAMESPACE" -d front -c front -i "$CI_REGISTRY_IMAGE/front:$CI_COMMIT_SHORT_SHA"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: manual
+      allow_failure: true
+
+deploy-production:
+  <<: *deploy_template
+  environment:
+    name: production
+  script:
+    - bash scripts/deploy/deploy.sh -n "$PROD_NAMESPACE" -d back -c back -i "$CI_REGISTRY_IMAGE/back:$CI_COMMIT_SHORT_SHA"
+    - bash scripts/deploy/deploy.sh -n "$PROD_NAMESPACE" -d front -c front -i "$CI_REGISTRY_IMAGE/front:$CI_COMMIT_SHORT_SHA"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+    - if: '$CI_COMMIT_TAG'
+      when: manual
+
+# À lancer à la main si une mise en prod se passe mal : ça remet la version d'avant.
+rollback-production:
+  <<: *deploy_template
+  environment:
+    name: production
+  script:
+    - bash scripts/deploy/rollback.sh -n "$PROD_NAMESPACE" -d back
+    - bash scripts/deploy/rollback.sh -n "$PROD_NAMESPACE" -d front
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+    - if: '$CI_COMMIT_TAG'
+      when: manual

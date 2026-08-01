@@ -108,6 +108,27 @@ cd back
 ./gradlew test
 ```
 
+#### Tests de performance (k6)
+
+**Dépendances**
+
+- [k6](https://k6.io/) — ou Docker, voir la variante plus bas.
+
+Le serveur doit être démarré. Dans un autre terminal:
+
+```shell
+scripts/tests/run_k6.sh                      # test de fumée (défaut)
+scripts/tests/run_k6.sh --scenario load      # charge nominale
+
+# Sans installer k6
+docker run --rm --network host -v "$PWD:/work" -w /work \
+  -e K6_BASE_URL=http://localhost:8080 \
+  grafana/k6:2.1.0 run tests/k6/smoke.js
+```
+
+Les scénarios sont dans `tests/k6/`, les seuils et la démarche dans
+[QUALITY.md](./QUALITY.md) §5.
+
 ### Images Docker
 
 #### Client

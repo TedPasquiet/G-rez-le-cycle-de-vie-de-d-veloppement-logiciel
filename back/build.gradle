@@ -3,7 +3,7 @@ plugins {
 	id 'jacoco'
 	id 'checkstyle'
 	id 'com.github.spotbugs' version '6.0.15'
-	id 'org.owasp.dependencycheck' version '10.0.4'
+	id 'org.owasp.dependencycheck' version '12.2.2'
 	id 'org.sonarqube' version '5.1.0.4882'
 	id 'com.diffplug.spotless' version '6.25.0'
 	id 'org.springframework.boot' version '3.2.5'
@@ -74,7 +74,17 @@ dependencyCheck {
 	formats = ['HTML', 'XML']
 	// Score CVSS à partir duquel le build échoue (7 = High). Mettre 11 pour ne jamais bloquer.
 	failBuildOnCVSS = 7
+	// On n'analyse que ce qui part réellement dans le jar livré. Sans ça le scan
+	// couvre aussi les outils de build (checkstyle, spotbugs, jacoco...) : plus lent,
+	// et des CVE qui ne concernent pas l'application déployée.
+	scanConfigurations = ['runtimeClasspath']
+	analyzers {
+		// Sonatype OSS Index : sans compte il est throttlé et échoue sur chaque
+		// jar (des dizaines de lignes d'erreur dans le log). Le NVD suffit ici.
+		ossIndexEnabled = false
+	}
 	// Depuis 2023 le NVD exige une clé API pour éviter le throttling. Voir variable CI NVD_API_KEY.
+	// Sans elle le premier téléchargement de la base prend ~1 h au lieu de ~5 min.
 	nvd {
 		apiKey = System.getenv('NVD_API_KEY')
 	}
@@ -83,8 +93,9 @@ dependencyCheck {
 // Métadonnées d'analyse SonarQube du back. host.url + token passés en CI.
 sonar {
 	properties {
-		property 'sonar.projectKey', 'microcrm-back'
+		property 'sonar.projectKey', 'pasquietted_G-rez-le-cycle-de-vie-de-d-veloppement-logiciel'
 		property 'sonar.projectName', 'MicroCRM - Backend'
+		property 'sonar.organization', 'pasquietted'
 		property 'sonar.coverage.jacoco.xmlReportPaths',
 			"${layout.buildDirectory.get()}/reports/jacoco/test/jacocoTestReport.xml"
 	}

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Cas limite : le compteur existe mais rien n'a été mesuré (0 ligne).
+     Le script ne doit pas faire de division par zéro. -->
+<report name="fixture">
+  <counter type="LINE" missed="0" covered="0"/>
+</report>

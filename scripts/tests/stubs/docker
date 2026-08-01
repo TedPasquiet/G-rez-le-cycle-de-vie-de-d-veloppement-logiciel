@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+#
+# Faux docker, utilisé seulement par run_tests.sh.
+#
+# Même principe que le faux kubectl : il note les commandes reçues et renvoie
+# le code de sortie demandé, sans rien construire ni envoyer nulle part. Ça
+# permet de tester build_and_push.sh de bout en bout dans la CI, où il n'y a
+# pas forcément de démon Docker.
+#
+# Variables qui pilotent son comportement (mises par le test) :
+#   FAKE_DOCKER_LOG        Fichier où sont écrites les commandes reçues.
+#   FAKE_DOCKER_LOGIN_FAIL Si "1" : `docker login` échoue.
+#   FAKE_DOCKER_BUILD_FAIL Si "1" : `docker build` échoue.
+
+args="$*"
+
+if [[ -n "${FAKE_DOCKER_LOG:-}" ]]; then
+  echo "docker $args" >>"$FAKE_DOCKER_LOG"
+fi
+
+case "${1:-}" in
+  login)
+    # On vide stdin : build_and_push.sh envoie le mot de passe par ce canal
+    # (--password-stdin). On ne l'écrit évidemment nulle part.
+    cat >/dev/null
+    [[ "${FAKE_DOCKER_LOGIN_FAIL:-0}" == "1" ]] && exit 1
+    ;;
+  build)
+    [[ "${FAKE_DOCKER_BUILD_FAIL:-0}" == "1" ]] && exit 1
+    ;;
+esac
+
+exit 0

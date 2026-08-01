@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<report name="fixture">
+  <counter type="LINE" missed="25" covered="75"

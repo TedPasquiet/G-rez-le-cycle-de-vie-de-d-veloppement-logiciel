@@ -9,3 +9,10 @@
 .scannerwork/
 .trivycache/
 trivy-*-report.json
+
+# Rapports des tests de performance k6 (produits en local par run_k6.sh)
+/reports/
+
+# Caches Python (scripts d'automatisation)
+__pycache__/
+*.pyc

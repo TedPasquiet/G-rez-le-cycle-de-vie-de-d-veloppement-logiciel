@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#
+# Faux kubectl, utilisé seulement par run_tests.sh.
+#
+# Il ne parle à aucun cluster : il note ce qu'on lui demande dans un fichier
+# (pour que les tests puissent vérifier après coup quelle commande a été
+# lancée) et il renvoie le code de sortie qu'on lui demande via des variables
+# d'environnement. Ça permet de tester deploy.sh et rollback.sh, y compris le
+# cas où le déploiement rate, sans avoir besoin de Kubernetes.
+#
+# Variables qui pilotent son comportement (mises par le test) :
+#   FAKE_KUBECTL_LOG        Fichier où sont écrites les commandes reçues.
+#   FAKE_DEPLOYMENT_MISSING Si "1" : `get deployment` échoue (deployment absent).
+#   FAKE_ROLLOUT_FAIL       Si "1" : `rollout status` échoue (déploiement raté).
+#   FAKE_UNDO_FAIL          Si "1" : `rollout undo` échoue (rollback raté).
+
+args="$*"
+
+if [[ -n "${FAKE_KUBECTL_LOG:-}" ]]; then
+  echo "kubectl $args" >>"$FAKE_KUBECTL_LOG"
+fi
+
+case "$args" in
+  *"get deployment"*)
+    [[ "${FAKE_DEPLOYMENT_MISSING:-0}" == "1" ]] && exit 1
+    ;;
+  *"rollout status"*)
+    [[ "${FAKE_ROLLOUT_FAIL:-0}" == "1" ]] && exit 1
+    ;;
+  *"rollout undo"*)
+    [[ "${FAKE_UNDO_FAIL:-0}" == "1" ]] && exit 1
+    ;;
+esac
+
+exit 0
