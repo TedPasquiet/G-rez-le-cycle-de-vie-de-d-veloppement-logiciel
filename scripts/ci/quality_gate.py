@@ -46,9 +46,42 @@ import urllib.parse
 import urllib.request
 
 
+# Le script est lancé une fois par projet Sonar (back, puis front). Sans ce
+# préfixe, impossible de savoir laquelle des deux exécutions a produit un log.
+_CONTEXT = ""
+
+
 def log(message: str) -> None:
     """Petit helper pour afficher un message (sur stderr pour rester propre)."""
-    print(f"[quality_gate] {message}", file=sys.stderr, flush=True)
+    scope = f" {_CONTEXT}" if _CONTEXT else ""
+    print(f"[quality_gate{scope}] {message}", file=sys.stderr, flush=True)
+
+
+def describe_http_error(exc: urllib.error.HTTPError) -> str:
+    """Extrait le message d'erreur renvoyé par Sonar dans le corps de la réponse.
+
+    `exc.reason` ne donne que le libellé HTTP générique ("Forbidden"), ce qui ne
+    dit pas *pourquoi*. Sonar, lui, répond un JSON du type
+    {"errors": [{"msg": "Insufficient privileges"}]} : c'est ça qu'on veut voir.
+    """
+    try:
+        body = exc.read().decode(errors="replace").strip()
+    except Exception:  # noqa: BLE001 - le corps est optionnel, on ne masque rien d'utile
+        return str(exc.reason)
+
+    if not body:
+        return str(exc.reason)
+
+    try:
+        errors = json.loads(body).get("errors", [])
+        messages = [e.get("msg", "") for e in errors if e.get("msg")]
+        if messages:
+            return " | ".join(messages)
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
+    # Corps non JSON (page HTML d'un proxy, par exemple) : on tronque.
+    return body[:500]
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -82,7 +115,10 @@ def fetch_status(request: urllib.request.Request) -> dict:
 
 
 def main(argv: list[str]) -> int:
+    global _CONTEXT
+
     args = parse_args(argv)
+    _CONTEXT = args.project_key
 
     token = os.environ.get("SONAR_TOKEN", "").strip()
     if not token:
@@ -102,7 +138,17 @@ def main(argv: list[str]) -> int:
                 log("Analyse pas encore disponible (404), nouvelle tentative...")
                 time.sleep(args.poll)
                 continue
-            log(f"ERREUR HTTP {exc.code} lors de l'appel à SonarCloud : {exc.reason}")
+            log(f"ERREUR HTTP {exc.code} lors de l'appel à SonarCloud : {describe_http_error(exc)}")
+            if exc.code in (401, 403):
+                # Deux causes possibles, le message de Sonar ci-dessus les départage :
+                #  - "non main branches" : limite du plan gratuit, l'API ne sert le
+                #    Quality Gate que pour la branche principale du projet ;
+                #  - "Insufficient privileges" : SONAR_TOKEN est un token d'analyse
+                #    (Project/Global Analysis Token), qui pousse une analyse mais ne
+                #    peut pas la relire. Il faut un token personnel avec « Browse ».
+                log("  → voir le message de Sonar ci-dessus : soit la branche n'est pas")
+                log("    la branche principale (non couvert par le plan gratuit), soit")
+                log("    SONAR_TOKEN n'a pas la permission « Browse » sur ce projet.")
             return 1
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             log(f"ERREUR technique lors de l'appel à SonarCloud : {exc}")
