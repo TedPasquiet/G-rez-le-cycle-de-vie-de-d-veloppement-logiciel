@@ -9,18 +9,18 @@ import { Organization, OrganizationService } from '../organization.service';
   standalone: true,
   imports: [RouterLink, NgFor, NgIf, AsyncPipe, DatePipe],
   templateUrl: './main-dashboard.component.html',
-  styleUrl: './main-dashboard.component.css'
 })
 export class MainDashboardComponent implements OnInit {
   organizations: Organization[] = [];
   persons: Person[] = [];
 
-  constructor(private personService: PersonService, private organizationService: OrganizationService) { }
-
+  constructor(
+    private readonly personService: PersonService,
+    private readonly organizationService: OrganizationService,
+  ) {}
 
   ngOnInit(): void {
-    this.personService.fetchAll().then(persons => this.persons = persons);
-    this.organizationService.fetchAll().then(orgs => this.organizations = orgs);
+    this.personService.fetchAll().then((persons) => (this.persons = persons));
+    this.organizationService.fetchAll().then((orgs) => (this.organizations = orgs));
   }
 }
-

@@ -24,11 +24,11 @@ describe('OrganizationDetailsComponent', () => {
           provide: ActivatedRoute,
           useValue: {
             snapshot: {
-              paramMap: convertToParamMap(orgId === null ? {} : { orgId })
-            }
-          }
-        }
-      ]
+              paramMap: convertToParamMap(orgId === null ? {} : { orgId }),
+            },
+          },
+        },
+      ],
     }).compileComponents();
 
     router = TestBed.inject(Router);
@@ -42,13 +42,12 @@ describe('OrganizationDetailsComponent', () => {
   };
 
   beforeEach(() => {
-    personService = jasmine.createSpyObj<PersonService>('PersonService', [
-      'fetchAll'
+    personService = jasmine.createSpyObj<PersonService>('PersonService', ['fetchAll']);
+    organizationService = jasmine.createSpyObj<OrganizationService>('OrganizationService', [
+      'fetchById',
+      'save',
+      'deleteById',
     ]);
-    organizationService = jasmine.createSpyObj<OrganizationService>(
-      'OrganizationService',
-      ['fetchById', 'save', 'deleteById']
-    );
 
     personService.fetchAll.and.resolveTo([]);
     organizationService.fetchById.and.resolveTo(anOrganization());
@@ -91,9 +90,7 @@ describe('OrganizationDetailsComponent', () => {
 
   describe('mode édition (route avec identifiant)', () => {
     it("charge l'organisation correspondant à l'identifiant de la route", async () => {
-      organizationService.fetchById.and.resolveTo(
-        anOrganization({ id: 10, name: 'Acme' })
-      );
+      organizationService.fetchById.and.resolveTo(anOrganization({ id: 10, name: 'Acme' }));
 
       await monterAvecRoute('10');
 
@@ -103,9 +100,7 @@ describe('OrganizationDetailsComponent', () => {
     });
 
     it("affiche le nom de l'organisation dans le titre", async () => {
-      organizationService.fetchById.and.resolveTo(
-        anOrganization({ name: 'Acme' })
-      );
+      organizationService.fetchById.and.resolveTo(anOrganization({ name: 'Acme' }));
 
       await monterAvecRoute('10');
 
@@ -113,26 +108,22 @@ describe('OrganizationDetailsComponent', () => {
       expect(titre?.textContent).toContain('Acme');
     });
 
-    it('liste les membres de l\'organisation avec un lien vers leur fiche', async () => {
+    it("liste les membres de l'organisation avec un lien vers leur fiche", async () => {
       organizationService.fetchById.and.resolveTo(
         anOrganization({
           persons: [
-            aPerson({ id: 3, firstName: 'Jane', lastName: 'Roe', email: 'jane@example.com' })
-          ]
-        })
+            aPerson({ id: 3, firstName: 'Jane', lastName: 'Roe', email: 'jane@example.com' }),
+          ],
+        }),
       );
 
       await monterAvecRoute('10');
 
-      const lignes = (fixture.nativeElement as HTMLElement).querySelectorAll(
-        'tbody tr'
-      );
-      expect(lignes.length).toBe(1);
+      const lignes = (fixture.nativeElement as HTMLElement).querySelectorAll('tbody tr');
+      expect(lignes).toHaveSize(1);
       expect(lignes[0].textContent).toContain('Jane Roe');
       expect(lignes[0].textContent).toContain('jane@example.com');
-      expect(lignes[0].querySelector('a')?.getAttribute('href')).toBe(
-        '/persons/3'
-      );
+      expect(lignes[0].querySelector('a')?.getAttribute('href')).toBe('/persons/3');
     });
 
     it("reste sur la fiche après enregistrement d'une organisation existante", async () => {

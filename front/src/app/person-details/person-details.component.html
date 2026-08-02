@@ -127,10 +127,15 @@
     <div class="columns">
       <div class="column is-6">
         <h3 class="title is-size-3">Organizations</h3>
+        <label class="label" for="person-organization">Add organization</label>
         <div class="field has-addons">
           <div class="control is-expanded">
             <div class="select is-large is-fullwidth">
-              <select [(ngModel)]="selectedOrganization" [ngModelOptions]="{ standalone: true }">
+              <select
+                id="person-organization"
+                [(ngModel)]="selectedOrganization"
+                [ngModelOptions]="{ standalone: true }"
+              >
                 <option [ngValue]="null">Add organization</option>
                 <option [ngValue]="org" *ngFor="let org of organizations">
                   {{ org.name }}
@@ -145,6 +150,12 @@
           </p>
         </div>
         <table class="table is-fullwidth">
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col"><span class="is-sr-only">Actions</span></th>
+            </tr>
+          </thead>
           <tbody>
             <tr *ngFor="let org of organizations">
               <td>

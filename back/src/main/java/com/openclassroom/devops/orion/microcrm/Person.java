@@ -1,6 +1,6 @@
 package com.openclassroom.devops.orion.microcrm;
 
-import java.util.Date;
+import java.time.Instant;
 import java.util.List;
 
 import org.hibernate.annotations.CreationTimestamp;
@@ -12,8 +12,6 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.ManyToMany;
-import jakarta.persistence.Temporal;
-import jakarta.persistence.TemporalType;
 import jakarta.persistence.PreRemove;
 
 @Entity
@@ -93,19 +91,17 @@ public class Person {
     return organizations;
   }
 
-  @Temporal(TemporalType.TIMESTAMP)
   @CreationTimestamp
-  private Date createdAt;
+  private Instant createdAt;
 
-  @Temporal(TemporalType.TIMESTAMP)
   @UpdateTimestamp
-  private Date updatedAt;
+  private Instant updatedAt;
 
-  public Date getCreatedAt() {
+  public Instant getCreatedAt() {
     return createdAt;
   }
 
-  public Date getUpdatedAt() {
+  public Instant getUpdatedAt() {
     return updatedAt;
   }
 

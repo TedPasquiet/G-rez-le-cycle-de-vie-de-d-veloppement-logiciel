@@ -6,7 +6,7 @@ import { API_BASE_URL } from './config';
 
 @Injectable({ providedIn: 'root' })
 export class PersonService {
-  constructor(private client: HttpClient) {}
+  constructor(private readonly client: HttpClient) {}
 
   async fetchById(id: number) {
     const response = await this.client.get(`${API_BASE_URL}/persons/${id}`);
@@ -35,7 +35,6 @@ export class PersonService {
   async deleteById(id: number) {
     const response = await this.client.delete(`${API_BASE_URL}/persons/${id}`);
     await firstValueFrom(response);
-    return;
   }
 
   async save(person: Person) {
