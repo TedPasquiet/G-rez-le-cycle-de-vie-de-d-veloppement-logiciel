@@ -6,7 +6,7 @@ import { API_BASE_URL } from './config';
 
 @Injectable({ providedIn: 'root' })
 export class OrganizationService {
-  constructor(private client: HttpClient) {}
+  constructor(private readonly client: HttpClient) {}
 
   async fetchById(id: number) {
     const response = await this.client.get(`${API_BASE_URL}/organizations/${id}`);

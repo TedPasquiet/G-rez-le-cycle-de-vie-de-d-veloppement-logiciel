@@ -10,7 +10,6 @@ import { Organization, OrganizationService } from '../organization.service';
   standalone: true,
   imports: [NgIf, FormsModule, AsyncPipe, NgFor, RouterLink, DatePipe],
   templateUrl: './organization-details.component.html',
-  styleUrl: './organization-details.component.css',
 })
 export class OrganizationDetailsComponent implements OnInit {
   org: Organization = {
@@ -24,10 +23,10 @@ export class OrganizationDetailsComponent implements OnInit {
   isNew: boolean = false;
 
   constructor(
-    private route: ActivatedRoute,
-    private personService: PersonService,
-    private organizationService: OrganizationService,
-    private router: Router,
+    private readonly route: ActivatedRoute,
+    private readonly personService: PersonService,
+    private readonly organizationService: OrganizationService,
+    private readonly router: Router,
   ) {}
 
   ngOnInit(): void {

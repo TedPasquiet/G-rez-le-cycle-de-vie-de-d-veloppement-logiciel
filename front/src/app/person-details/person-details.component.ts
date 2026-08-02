@@ -10,7 +10,6 @@ import { Organization, OrganizationService } from '../organization.service';
   standalone: true,
   imports: [NgIf, FormsModule, AsyncPipe, NgFor, RouterLink],
   templateUrl: './person-details.component.html',
-  styleUrl: './person-details.component.css',
 })
 export class PersonDetailsComponent implements OnInit {
   person: Person = {
@@ -30,10 +29,10 @@ export class PersonDetailsComponent implements OnInit {
   isNew: boolean = false;
 
   constructor(
-    private route: ActivatedRoute,
-    private personService: PersonService,
-    private organizationService: OrganizationService,
-    private router: Router,
+    private readonly route: ActivatedRoute,
+    private readonly personService: PersonService,
+    private readonly organizationService: OrganizationService,
+    private readonly router: Router,
   ) {
     this.organizationService.fetchAll().then((orgs) => (this.organizations = orgs));
   }
