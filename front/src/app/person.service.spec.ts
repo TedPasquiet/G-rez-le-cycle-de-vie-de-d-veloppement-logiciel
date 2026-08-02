@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
+import { HttpErrorResponse } from '@angular/common/http';
 
 import { PersonService } from './person.service';
 import { API_BASE_URL } from './config';
@@ -49,7 +50,7 @@ describe('PersonService', () => {
       expect(await promise).toEqual([]);
     });
 
-    it('rejette la promesse si le serveur répond en erreur', async () => {
+    it('rejette la promesse en propageant le statut HTTP du serveur', async () => {
       const promise = service.fetchAll();
 
       await tick();
@@ -57,7 +58,17 @@ describe('PersonService', () => {
         .expectOne(`${API_BASE_URL}/persons`)
         .flush('boom', { status: 500, statusText: 'Server Error' });
 
-      await expectAsync(promise).toBeRejected();
+      // On capture l'erreur au lieu de se contenter d'un rejet : le service ne
+      // transforme pas l'erreur HTTP, l'appelant doit donc recevoir le statut.
+      let caught: HttpErrorResponse | undefined;
+      try {
+        await promise;
+      } catch (error) {
+        caught = error as HttpErrorResponse;
+      }
+
+      expect(caught).toBeInstanceOf(HttpErrorResponse);
+      expect(caught?.status).toBe(500);
     });
   });
 
