@@ -71,7 +71,7 @@ describe('PersonDetailsComponent', () => {
     expect(component).toBeTruthy();
   });
 
-  it('charge la liste des organisations disponibles dès la construction', async () => {
+  it("charge la liste des organisations disponibles dès l'initialisation", async () => {
     organizationService.fetchAll.and.resolveTo([anOrganization()]);
 
     await monterAvecRoute('new');

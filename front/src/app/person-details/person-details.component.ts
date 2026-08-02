@@ -33,11 +33,11 @@ export class PersonDetailsComponent implements OnInit {
     private readonly personService: PersonService,
     private readonly organizationService: OrganizationService,
     private readonly router: Router,
-  ) {
-    this.organizationService.fetchAll().then((orgs) => (this.organizations = orgs));
-  }
+  ) {}
 
   ngOnInit(): void {
+    this.organizationService.fetchAll().then((orgs) => (this.organizations = orgs));
+
     const routeParams = this.route.snapshot.paramMap;
     const personIdParam = routeParams.get('personId');
 
