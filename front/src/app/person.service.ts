@@ -35,7 +35,6 @@ export class PersonService {
   async deleteById(id: number) {
     const response = await this.client.delete(`${API_BASE_URL}/persons/${id}`);
     await firstValueFrom(response);
-    return;
   }
 
   async save(person: Person) {

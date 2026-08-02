@@ -22,13 +22,10 @@ describe('MainDashboardComponent', () => {
   };
 
   beforeEach(async () => {
-    personService = jasmine.createSpyObj<PersonService>('PersonService', [
-      'fetchAll'
+    personService = jasmine.createSpyObj<PersonService>('PersonService', ['fetchAll']);
+    organizationService = jasmine.createSpyObj<OrganizationService>('OrganizationService', [
+      'fetchAll',
     ]);
-    organizationService = jasmine.createSpyObj<OrganizationService>(
-      'OrganizationService',
-      ['fetchAll']
-    );
     personService.fetchAll.and.resolveTo([]);
     organizationService.fetchAll.and.resolveTo([]);
 
@@ -36,8 +33,8 @@ describe('MainDashboardComponent', () => {
       imports: [MainDashboardComponent, RouterTestingModule],
       providers: [
         { provide: PersonService, useValue: personService },
-        { provide: OrganizationService, useValue: organizationService }
-      ]
+        { provide: OrganizationService, useValue: organizationService },
+      ],
     }).compileComponents();
   });
 
@@ -54,39 +51,35 @@ describe('MainDashboardComponent', () => {
 
     expect(personService.fetchAll).toHaveBeenCalledTimes(1);
     expect(organizationService.fetchAll).toHaveBeenCalledTimes(1);
-    expect(component.persons.length).toBe(2);
-    expect(component.organizations.length).toBe(1);
+    expect(component.persons).toHaveSize(2);
+    expect(component.organizations).toHaveSize(1);
   });
 
   it('affiche une ligne par personne avec un lien vers sa fiche', async () => {
     personService.fetchAll.and.resolveTo([
-      aPerson({ id: 42, firstName: 'Jane', lastName: 'Roe', email: 'jane@example.com' })
+      aPerson({ id: 42, firstName: 'Jane', lastName: 'Roe', email: 'jane@example.com' }),
     ]);
 
     await monter();
 
     const html = fixture.nativeElement as HTMLElement;
     const lignes = html.querySelectorAll('table')[0].querySelectorAll('tbody tr');
-    expect(lignes.length).toBe(1);
+    expect(lignes).toHaveSize(1);
     expect(lignes[0].textContent).toContain('Jane Roe');
     expect(lignes[0].textContent).toContain('jane@example.com');
     expect(lignes[0].querySelector('a')?.getAttribute('href')).toBe('/persons/42');
   });
 
   it('affiche une ligne par organisation avec un lien vers sa fiche', async () => {
-    organizationService.fetchAll.and.resolveTo([
-      anOrganization({ id: 7, name: 'Acme' })
-    ]);
+    organizationService.fetchAll.and.resolveTo([anOrganization({ id: 7, name: 'Acme' })]);
 
     await monter();
 
     const html = fixture.nativeElement as HTMLElement;
     const lignes = html.querySelectorAll('table')[1].querySelectorAll('tbody tr');
-    expect(lignes.length).toBe(1);
+    expect(lignes).toHaveSize(1);
     expect(lignes[0].textContent).toContain('Acme');
-    expect(lignes[0].querySelector('a')?.getAttribute('href')).toBe(
-      '/organizations/7'
-    );
+    expect(lignes[0].querySelector('a')?.getAttribute('href')).toBe('/organizations/7');
   });
 
   it('propose de créer une fiche quand les deux listes sont vides', async () => {

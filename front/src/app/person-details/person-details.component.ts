@@ -10,27 +10,32 @@ import { Organization, OrganizationService } from '../organization.service';
   standalone: true,
   imports: [NgIf, FormsModule, AsyncPipe, NgFor, RouterLink],
   templateUrl: './person-details.component.html',
-  styleUrl: './person-details.component.css'
+  styleUrl: './person-details.component.css',
 })
 export class PersonDetailsComponent implements OnInit {
   person: Person = {
-    id: undefined as (number | undefined),
+    id: undefined as number | undefined,
     firstName: '',
     lastName: '',
     phone: '',
     email: '',
     bio: '',
     createdAt: new Date(),
-    updatedAt: undefined as (Date | undefined),
-    organizations: [] as (Organization[])
+    updatedAt: undefined as Date | undefined,
+    organizations: [] as Organization[],
   };
 
-  organizations: Organization[] = []
+  organizations: Organization[] = [];
   selectedOrganization: Organization | null = null;
   isNew: boolean = false;
 
-  constructor(private route: ActivatedRoute, private personService: PersonService, private organizationService: OrganizationService, private router: Router) {
-    this.organizationService.fetchAll().then(orgs => this.organizations = orgs)
+  constructor(
+    private route: ActivatedRoute,
+    private personService: PersonService,
+    private organizationService: OrganizationService,
+    private router: Router,
+  ) {
+    this.organizationService.fetchAll().then((orgs) => (this.organizations = orgs));
   }
 
   ngOnInit(): void {
@@ -38,51 +43,53 @@ export class PersonDetailsComponent implements OnInit {
     const personIdParam = routeParams.get('personId');
 
     if (personIdParam === 'new') {
-      this.isNew = true
+      this.isNew = true;
     } else if (typeof personIdParam === 'string') {
-      const personId = parseInt(personIdParam)
-      this.personService.fetchById(personId).then(p => {
-        this.person = p
-        this.isNew = false
-      })
+      const personId = Number.parseInt(personIdParam);
+      this.personService.fetchById(personId).then((p) => {
+        this.person = p;
+        this.isNew = false;
+      });
     }
   }
 
   savePerson() {
-    this.personService.save({
-      ...this.person
-    }).then(p => {
-      this.person = p
-      if (this.isNew) {
-        this.router.navigate(["persons", p.id])
-      }
-    })
+    this.personService
+      .save({
+        ...this.person,
+      })
+      .then((p) => {
+        this.person = p;
+        if (this.isNew) {
+          this.router.navigate(['persons', p.id]);
+        }
+      });
   }
 
   deletePerson() {
-    if (this.person.id === undefined) return
+    if (this.person.id === undefined) return;
     this.personService.deleteById(this.person.id).then(() => {
-      this.router.navigate([""])
-    })
+      this.router.navigate(['']);
+    });
   }
 
   addSelectedOrganization() {
-    if (this.selectedOrganization?.id === undefined || this.person.id === undefined) return
-    this.organizationService.addPerson(this.selectedOrganization.id, this.person.id)
-    this.refresh()
+    if (this.selectedOrganization?.id === undefined || this.person.id === undefined) return;
+    this.organizationService.addPerson(this.selectedOrganization.id, this.person.id);
+    this.refresh();
   }
 
   removeOrganization(org: Organization) {
-    if (org?.id === undefined || this.person.id === undefined) return
-    this.organizationService.removePerson(org.id, this.person.id)
-    this.refresh()
+    if (org?.id === undefined || this.person.id === undefined) return;
+    this.organizationService.removePerson(org.id, this.person.id);
+    this.refresh();
   }
 
   refresh() {
-    if (this.person.id === undefined) return
-    this.personService.fetchById(this.person.id).then(p => {
-      this.person = p
-      this.isNew = false
-    })
+    if (this.person.id === undefined) return;
+    this.personService.fetchById(this.person.id).then((p) => {
+      this.person = p;
+      this.isNew = false;
+    });
   }
 }

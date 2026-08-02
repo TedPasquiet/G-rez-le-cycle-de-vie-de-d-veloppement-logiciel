@@ -29,13 +29,11 @@ describe('PersonDetailsComponent', () => {
           provide: ActivatedRoute,
           useValue: {
             snapshot: {
-              paramMap: convertToParamMap(
-                personId === null ? {} : { personId }
-              )
-            }
-          }
-        }
-      ]
+              paramMap: convertToParamMap(personId === null ? {} : { personId }),
+            },
+          },
+        },
+      ],
     }).compileComponents();
 
     router = TestBed.inject(Router);
@@ -52,12 +50,13 @@ describe('PersonDetailsComponent', () => {
     personService = jasmine.createSpyObj<PersonService>('PersonService', [
       'fetchById',
       'save',
-      'deleteById'
+      'deleteById',
     ]);
-    organizationService = jasmine.createSpyObj<OrganizationService>(
-      'OrganizationService',
-      ['fetchAll', 'addPerson', 'removePerson']
-    );
+    organizationService = jasmine.createSpyObj<OrganizationService>('OrganizationService', [
+      'fetchAll',
+      'addPerson',
+      'removePerson',
+    ]);
 
     personService.fetchById.and.resolveTo(aPerson());
     personService.save.and.resolveTo(aPerson());
@@ -72,13 +71,13 @@ describe('PersonDetailsComponent', () => {
     expect(component).toBeTruthy();
   });
 
-  it("charge la liste des organisations disponibles dès la construction", async () => {
+  it('charge la liste des organisations disponibles dès la construction', async () => {
     organizationService.fetchAll.and.resolveTo([anOrganization()]);
 
     await monterAvecRoute('new');
 
     expect(organizationService.fetchAll).toHaveBeenCalled();
-    expect(component.organizations.length).toBe(1);
+    expect(component.organizations).toHaveSize(1);
   });
 
   describe('mode création (route "new")', () => {
@@ -111,9 +110,7 @@ describe('PersonDetailsComponent', () => {
 
   describe('mode édition (route avec identifiant)', () => {
     it("charge la personne correspondant à l'identifiant de la route", async () => {
-      personService.fetchById.and.resolveTo(
-        aPerson({ id: 42, firstName: 'Jane' })
-      );
+      personService.fetchById.and.resolveTo(aPerson({ id: 42, firstName: 'Jane' }));
 
       await monterAvecRoute('42');
 
@@ -123,9 +120,7 @@ describe('PersonDetailsComponent', () => {
     });
 
     it('affiche le nom de la personne dans le titre', async () => {
-      personService.fetchById.and.resolveTo(
-        aPerson({ firstName: 'Jane', lastName: 'Roe' })
-      );
+      personService.fetchById.and.resolveTo(aPerson({ firstName: 'Jane', lastName: 'Roe' }));
 
       await monterAvecRoute('42');
 

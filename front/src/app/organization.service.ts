@@ -34,7 +34,6 @@ export class OrganizationService {
   async deleteById(id: number) {
     const response = await this.client.delete(`${API_BASE_URL}/organizations/${id}`);
     await firstValueFrom(response);
-    return;
   }
 
   async save(org: Organization) {
@@ -64,7 +63,6 @@ export class OrganizationService {
       { headers: { 'Content-Type': 'text/uri-list' } },
     );
     await firstValueFrom(response);
-    return;
   }
 
   async removePerson(orgId: number, personId: number) {
@@ -72,7 +70,6 @@ export class OrganizationService {
       `${API_BASE_URL}/persons/${personId}/organizations/${orgId}`,
     );
     await firstValueFrom(response);
-    return;
   }
 }
 

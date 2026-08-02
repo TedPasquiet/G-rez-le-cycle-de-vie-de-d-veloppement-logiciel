@@ -1,8 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import {
-  HttpClientTestingModule,
-  HttpTestingController,
-} from '@angular/common/http/testing';
+import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 
 import { PersonService } from './person.service';
 import { API_BASE_URL } from './config';
@@ -14,7 +11,7 @@ describe('PersonService', () => {
 
   beforeEach(() => {
     TestBed.configureTestingModule({
-      imports: [HttpClientTestingModule]
+      imports: [HttpClientTestingModule],
     });
     service = TestBed.inject(PersonService);
     httpMock = TestBed.inject(HttpTestingController);
@@ -39,7 +36,7 @@ describe('PersonService', () => {
       req.flush(embedded('persons', [aPerson(), aPerson({ id: 2 })]));
 
       const persons = await promise;
-      expect(persons.length).toBe(2);
+      expect(persons).toHaveSize(2);
       expect(persons[0].firstName).toBe('John');
     });
 
@@ -47,9 +44,7 @@ describe('PersonService', () => {
       const promise = service.fetchAll();
 
       await tick();
-      httpMock
-        .expectOne(`${API_BASE_URL}/persons`)
-        .flush(embedded('persons', []));
+      httpMock.expectOne(`${API_BASE_URL}/persons`).flush(embedded('persons', []));
 
       expect(await promise).toEqual([]);
     });
@@ -76,14 +71,12 @@ describe('PersonService', () => {
       personReq.flush(aPerson());
 
       await tick();
-      const orgsReq = httpMock.expectOne(
-        `${API_BASE_URL}/persons/1/organizations`
-      );
+      const orgsReq = httpMock.expectOne(`${API_BASE_URL}/persons/1/organizations`);
       orgsReq.flush(embedded('organizations', [anOrganization()]));
 
       const person = await promise;
       expect(person.id).toBe(1);
-      expect(person.organizations.length).toBe(1);
+      expect(person.organizations).toHaveSize(1);
       expect(person.organizations[0].name).toBe('Orion Inc.');
     });
   });
@@ -128,7 +121,7 @@ describe('PersonService', () => {
         lastName: 'Doe',
         bio: 'Bio de John',
         phone: '+33600000000',
-        email: 'jdoe@example.com'
+        email: 'jdoe@example.com',
       });
       req.flush(aPerson({ id: 123 }));
 
@@ -142,7 +135,7 @@ describe('PersonService', () => {
       expect(saved.organizations).toEqual([]);
     });
 
-    it("met à jour la personne en PUT quand elle a déjà un identifiant", async () => {
+    it('met à jour la personne en PUT quand elle a déjà un identifiant', async () => {
       const promise = service.save(aPerson({ id: 5, firstName: 'Jane' }));
 
       await tick();
@@ -158,7 +151,7 @@ describe('PersonService', () => {
 
       const saved = await promise;
       expect(saved.firstName).toBe('Jane');
-      expect(saved.organizations.length).toBe(1);
+      expect(saved.organizations).toHaveSize(1);
     });
   });
 });

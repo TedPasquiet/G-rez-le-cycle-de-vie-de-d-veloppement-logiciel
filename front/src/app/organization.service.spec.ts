@@ -1,8 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import {
-  HttpClientTestingModule,
-  HttpTestingController,
-} from '@angular/common/http/testing';
+import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 
 import { OrganizationService } from './organization.service';
 import { API_BASE_URL } from './config';
@@ -14,7 +11,7 @@ describe('OrganizationService', () => {
 
   beforeEach(() => {
     TestBed.configureTestingModule({
-      imports: [HttpClientTestingModule]
+      imports: [HttpClientTestingModule],
     });
     service = TestBed.inject(OrganizationService);
     httpMock = TestBed.inject(HttpTestingController);
@@ -36,14 +33,11 @@ describe('OrganizationService', () => {
       const req = httpMock.expectOne(`${API_BASE_URL}/organizations`);
       expect(req.request.method).toBe('GET');
       req.flush(
-        embedded('organizations', [
-          anOrganization(),
-          anOrganization({ id: 11, name: 'Acme' })
-        ])
+        embedded('organizations', [anOrganization(), anOrganization({ id: 11, name: 'Acme' })]),
       );
 
       const orgs = await promise;
-      expect(orgs.length).toBe(2);
+      expect(orgs).toHaveSize(2);
       expect(orgs[1].name).toBe('Acme');
     });
 
@@ -76,7 +70,7 @@ describe('OrganizationService', () => {
 
       const org = await promise;
       expect(org.id).toBe(10);
-      expect(org.persons.length).toBe(2);
+      expect(org.persons).toHaveSize(2);
     });
   });
 
@@ -85,9 +79,7 @@ describe('OrganizationService', () => {
       const promise = service.fetchOrganizationPersons(10);
 
       await tick();
-      const req = httpMock.expectOne(
-        `${API_BASE_URL}/organizations/10/persons`
-      );
+      const req = httpMock.expectOne(`${API_BASE_URL}/organizations/10/persons`);
       expect(req.request.method).toBe('GET');
       req.flush(embedded('persons', [aPerson({ id: 3 })]));
 
@@ -119,9 +111,7 @@ describe('OrganizationService', () => {
       req.flush(anOrganization({ id: 55 }));
 
       await tick();
-      httpMock
-        .expectOne(`${API_BASE_URL}/organizations/55/persons`)
-        .flush(embedded('persons', []));
+      httpMock.expectOne(`${API_BASE_URL}/organizations/55/persons`).flush(embedded('persons', []));
 
       const saved = await promise;
       expect(saved.id).toBe(55);
@@ -144,18 +134,16 @@ describe('OrganizationService', () => {
 
       const saved = await promise;
       expect(saved.name).toBe('Orion SA');
-      expect(saved.persons.length).toBe(1);
+      expect(saved.persons).toHaveSize(1);
     });
   });
 
   describe('addPerson', () => {
-    it("rattache une personne via le format text/uri-list attendu par Spring Data REST", async () => {
+    it('rattache une personne via le format text/uri-list attendu par Spring Data REST', async () => {
       const promise = service.addPerson(10, 7);
 
       await tick();
-      const req = httpMock.expectOne(
-        `${API_BASE_URL}/organizations/10/persons`
-      );
+      const req = httpMock.expectOne(`${API_BASE_URL}/organizations/10/persons`);
       expect(req.request.method).toBe('PUT');
       expect(req.request.body).toBe(`${API_BASE_URL}/persons/7`);
       expect(req.request.headers.get('Content-Type')).toBe('text/uri-list');
@@ -166,16 +154,14 @@ describe('OrganizationService', () => {
   });
 
   describe('removePerson', () => {
-    it("détache la personne via la sous-ressource organizations de la personne", async () => {
+    it('détache la personne via la sous-ressource organizations de la personne', async () => {
       const promise = service.removePerson(10, 7);
 
       // Le détachement passe par le côté "person" de l'association, alors que
       // le rattachement passe par le côté "organization" : dissymétrie voulue
       // par l'API Spring Data REST.
       await tick();
-      const req = httpMock.expectOne(
-        `${API_BASE_URL}/persons/7/organizations/10`
-      );
+      const req = httpMock.expectOne(`${API_BASE_URL}/persons/7/organizations/10`);
       expect(req.request.method).toBe('DELETE');
       req.flush(null);
 
