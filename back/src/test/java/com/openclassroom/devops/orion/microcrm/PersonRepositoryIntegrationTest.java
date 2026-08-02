@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * en mémoire. Chaque test est transactionnel et annulé à la fin (@DataJpaTest).
  */
 @DataJpaTest
-public class PersonRepositoryIntegrationTest {
+class PersonRepositoryIntegrationTest {
 
     @Autowired
     private TestEntityManager entityManager;
@@ -30,7 +30,7 @@ public class PersonRepositoryIntegrationTest {
     private PersonRepository personRepository;
 
     @Test
-    public void whenFindByEmail_thenReturnPerson() {
+    void whenFindByEmail_thenReturnPerson() {
         // given
         Person jdoe = new Person();
         jdoe.setEmail("jdoe@example.net");
