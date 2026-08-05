@@ -21,6 +21,8 @@ Ce [monorepo](https://en.wikipedia.org/wiki/Monorepo) contient les 2 composantes
 - La partie cliente (ou "frontend"), en Angular 17.
 
 Une intégration basique avec Gitlab CI est définie via le fichier [`.gitlab-ci.yml`](./.gitlab-ci.yml).
+La configuration du pipeline et les valeurs à externaliser sont détaillées dans
+[VARIABILISATION.md](./VARIABILISATION.md).
 
 ### Démarrer avec les sources
 
@@ -51,7 +53,7 @@ Une intégration basique avec Gitlab CI est définie via le fichier [`.gitlab-ci
 3. Démarrer le service:
 
    ```shell
-   java -jar build/libs/microcrm-0.0.1-SNAPSHOT.jar
+   java -jar build/libs/microcrm-*.jar
    ```
 
 Puis ouvrir l'URL http://localhost:8080 dans votre navigateur.

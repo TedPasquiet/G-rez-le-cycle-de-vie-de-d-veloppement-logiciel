@@ -390,3 +390,6 @@ workflow de miroir vers GitLab.
 Sans `SONAR_TOKEN`, les jobs Sonar échouent mais le pipeline reste vert, puisqu'ils
 sont en `allow_failure: true`. Le détail des variables de déploiement est dans
 [RELEASE.md](RELEASE.md) §6.
+
+L'inventaire des valeurs encore codées en dur dans le dépôt, et le plan pour les
+externaliser, sont dans [VARIABILISATION.md](VARIABILISATION.md).

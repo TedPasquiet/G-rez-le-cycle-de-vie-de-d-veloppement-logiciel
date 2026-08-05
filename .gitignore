@@ -16,3 +16,6 @@ trivy-*-report.json
 # Caches Python (scripts d'automatisation)
 __pycache__/
 *.pyc
+
+# Réglages locaux de la stack docker-compose (modèle versionné : .env.example)
+.env

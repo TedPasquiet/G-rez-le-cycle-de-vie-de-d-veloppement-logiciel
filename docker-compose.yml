@@ -1,13 +1,21 @@
+# Stack applicative locale.
+#
+# Les noms d'images et les ports publiés ont des valeurs par défaut utilisables
+# telles quelles. Pour en changer sans toucher à ce fichier, créer un `.env` à
+# côté (voir .env.example) — Docker Compose le lit automatiquement.
 services:
   back:
-    build: 
+    build:
       context: ./back
-    image: back-p6
+    image: ${BACK_IMAGE:-back-p6}
     ports:
-      - "8080:8080"
+      - '${BACK_PORT:-8080}:8080'
+    environment:
+      # Origines autorisées à appeler l'API. Doit inclure l'URL du front.
+      MICROCRM_CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:4200}
   front:
-    build: 
+    build:
       context: ./front
-    image: front-p6
+    image: ${FRONT_IMAGE:-front-p6}
     ports:
-      - "4200:80"
+      - '${FRONT_PORT:-4200}:80'

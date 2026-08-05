@@ -91,14 +91,29 @@ dependencyCheck {
 }
 
 // Métadonnées d'analyse SonarQube du back. host.url + token passés en CI.
+//
+// La clé de projet et l'organisation viennent des variables du pipeline
+// (SONAR_PROJECT_KEY_BACK, SONAR_ORGANIZATION, définies dans .gitlab-ci.yml).
+// Les valeurs écrites ici ne servent que de repli, pour qu'un `./gradlew sonar`
+// lancé en local vise le bon projet sans avoir à exporter quoi que ce soit.
 sonar {
 	properties {
-		property 'sonar.projectKey', 'pasquietted_G-rez-le-cycle-de-vie-de-d-veloppement-logiciel'
+		property 'sonar.projectKey', System.getenv('SONAR_PROJECT_KEY_BACK')
+			?: 'pasquietted_G-rez-le-cycle-de-vie-de-d-veloppement-logiciel'
 		property 'sonar.projectName', 'MicroCRM - Backend'
-		property 'sonar.organization', 'pasquietted'
+		property 'sonar.organization', System.getenv('SONAR_ORGANIZATION') ?: 'pasquietted'
 		property 'sonar.coverage.jacoco.xmlReportPaths',
 			"${layout.buildDirectory.get()}/reports/jacoco/test/jacocoTestReport.xml"
 	}
+}
+
+// Le plugin Spring Boot produit deux archives dans build/libs : le jar
+// exécutable (bootJar) et un « -plain.jar » qui ne contient que les classes,
+// inutile ici. Le désactiver laisse un seul fichier, ce qui permet au
+// Dockerfile de le copier avec un motif build/libs/*.jar sans avoir à écrire
+// le numéro de version en dur.
+tasks.named('jar') {
+	enabled = false
 }
 
 repositories {
