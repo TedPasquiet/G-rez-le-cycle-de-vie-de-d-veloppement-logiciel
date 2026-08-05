@@ -136,7 +136,7 @@ property 'sonar.projectKey', System.getenv('SONAR_PROJECT_KEY_BACK')
 ### Nom du JAR
 
 Les deux étapes du `back/Dockerfile` utilisent maintenant des `ARG`
-(`GRADLE_IMAGE`, `RUNTIME_IMAGE`), tags épinglés, JDK inchangé.
+(`GRADLE_IMAGE`, `RUNTIME_IMAGE`), tags épinglés.
 
 Le `COPY` référençait `microcrm-0.0.1-SNAPSHOT.jar`, donc cassait au premier
 changement de version. Un motif `*.jar` était impossible tant que Spring Boot
@@ -144,16 +144,21 @@ produisait deux archives (le jar exécutable et un `-plain.jar`). La tâche `jar
 est donc désactivée dans `back/build.gradle` — une seule archive, `COPY
 build/libs/*.jar`, plus aucun numéro de version en dur.
 
-### Deux correctifs identifiés, traités séparément
+### Deux correctifs, commités séparément
 
-Ils sont sortis de ce lot : ce sont des corrections de comportement, pas de la
-variabilisation.
+Ce sont des corrections de comportement et non de la variabilisation, d'où un
+commit distinct.
 
-1. **Trois JDK pour un même artefact.** Le back se construit en `gradle:jdk17`,
-   s'exécute sur un JRE 21 et est testé en CI sur `gradle:jdk21` : l'image
-   livrée n'est pas produite par la chaîne qui la valide.
+1. **Trois JDK pour un même artefact.** Le back se construisait en
+   `gradle:jdk17`, s'exécutait sur un JRE 21 et était testé en CI sur
+   `gradle:jdk21` : l'image livrée n'était pas produite par la chaîne qui la
+   valide. `GRADLE_IMAGE` vaut désormais `gradle:8.14.5-jdk21` dans le
+   Dockerfile comme dans le pipeline. `sourceCompatibility = '17'` est
+   inchangé, et le bytecode produit reste en version majeure 61 (Java 17) :
+   c'est le compilateur qui change, pas la cible.
 2. **`EXPOSE 4200` dans `back/Dockerfile`** alors que l'application écoute sur
-   `8080`.
+   `8080`. Corrigé, et le commentaire du job `perf-k6` qui documentait
+   l'incohérence est mis à jour.
 
 ### Stack locale
 

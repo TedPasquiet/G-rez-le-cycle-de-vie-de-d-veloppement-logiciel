@@ -400,10 +400,9 @@ package-front:
 #   3. L'attente du démarrage est faite par le scénario k6 lui-même (fonction
 #      setup), pas par un `sleep` au jugé. C'est nécessaire : GitLab considère
 #      un service comme prêt dès que son port répond, ce qui ne dit pas que
-#      Spring Boot a fini de démarrer. À noter, back/Dockerfile déclare
-#      EXPOSE 4200 alors que l'application écoute sur 8080 : la sonde de
-#      service affiche donc un avertissement, sans conséquence ici puisque
-#      c'est l'attente de setup qui fait foi.
+#      Spring Boot a fini de démarrer. C'est donc l'attente de setup qui fait
+#      foi. (back/Dockerfile déclarait EXPOSE 4200 alors que l'application
+#      écoute sur 8080 ; c'est corrigé.)
 #
 #   4. Pour voir les logs de l'application quand un job échoue, définir la
 #      variable CI_DEBUG_SERVICES = "true" dans GitLab.
