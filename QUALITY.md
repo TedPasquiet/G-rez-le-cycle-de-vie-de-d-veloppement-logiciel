@@ -372,17 +372,15 @@ fonctionne.
 
 ## Récapitulatif des variables CI/CD à créer dans GitLab
 
-| Variable            | Obligatoire       | Rôle              |
-| ------------------- | ----------------- | ----------------- |
-| Variable            | Type              | Obligatoire       | Rôle                                        |
-| ------------------- | ----------------- | ----------------- | ------------------------------------------- |
-| `SONAR_HOST_URL`    | Variable          | pour Sonar        | URL du serveur SonarQube                    |
-| `SONAR_TOKEN`       | Variable (masked) | pour Sonar        | Token d'analyse                             |
-| `NVD_API_KEY`       | Variable (masked) | non               | Accélère Dependency-Check                   |
-| `KUBE_CONFIG`       | **File**          | pour déployer     | Connexion au cluster Kubernetes             |
-| `STAGING_NAMESPACE` | Variable          | pour déployer     | Namespace de staging                        |
-| `PROD_NAMESPACE`    | Variable          | pour déployer     | Namespace de production                     |
-| `CI_REGISTRY*`      | Automatiques      | —                 | Fournies par GitLab, rien à faire           |
+| Variable            | Type              | Obligatoire   | Rôle                              |
+| ------------------- | ----------------- | ------------- | --------------------------------- |
+| `SONAR_HOST_URL`    | Variable          | pour Sonar    | URL du serveur SonarQube          |
+| `SONAR_TOKEN`       | Variable (masked) | pour Sonar    | Token d'analyse                   |
+| `NVD_API_KEY`       | Variable (masked) | non           | Accélère Dependency-Check         |
+| `KUBE_CONFIG`       | **File**          | pour déployer | Connexion au cluster Kubernetes   |
+| `STAGING_NAMESPACE` | Variable          | pour déployer | Namespace de staging              |
+| `PROD_NAMESPACE`    | Variable          | pour déployer | Namespace de production           |
+| `CI_REGISTRY*`      | Automatiques      | —             | Fournies par GitLab, rien à faire |
 
 Côté GitHub, un secret `GITLAB_TOKEN` (scope `write_repository`) est nécessaire au
 workflow de miroir vers GitLab.
