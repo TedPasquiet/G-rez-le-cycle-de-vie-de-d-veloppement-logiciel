@@ -36,6 +36,7 @@ scripts/
 │   └── rollback.sh          # revient en arrière sur Kubernetes
 └── tests/
     ├── run_tests.sh         # teste tous les scripts ci-dessus
+    ├── validate_k8s.sh      # valide les manifestes k8s/ (sans cluster)
     ├── run_k6.sh            # lance les tests de performance k6
     ├── fixtures/            # faux rapports JaCoCo
     └── stubs/               # faux kubectl / docker / trivy / k6
@@ -177,6 +178,66 @@ Le détail des scénarios et des seuils est dans [QUALITY.md](QUALITY.md) §5.
 
 ---
 
+## `tests/validate_k8s.sh`
+
+Il valide les manifestes Kubernetes du dossier `k8s/` **sans cluster** : il
+construit chaque overlay avec le Kustomize embarqué dans `kubectl`, puis vérifie
+le rendu. C'est le pendant de `run_tests.sh` pour l'infrastructure — au lieu de
+tester les scripts, il teste ce que Kustomize produit réellement.
+
+Ce qu'il vérifie :
+
+- chaque overlay (`staging`, `production`) se construit ;
+- les Deployments s'appellent `$APP_BACK_NAME` / `$APP_FRONT_NAME` **et portent
+  un conteneur du même nom** — c'est le contrat de `deploy.sh`, qui exécute
+  `kubectl set image deployment/back back=…`. Un `namePrefix:` casse le premier,
+  un renommage de conteneur casse le second, et aucun des deux ne fait échouer
+  `kubectl apply` ;
+- toute ConfigMap référencée par un Deployment existe dans le rendu (une
+  référence morte n'échoue pas à l'`apply` : elle bloque le pod au démarrage) ;
+- les sondes visent un port réellement déclaré par leur conteneur ;
+- chaque conteneur porte `runAsNonRoot: true` et
+  `allowPrivilegeEscalation: false` — contrôlés **au niveau conteneur**, parce
+  qu'une valeur posée là écrase celle du pod ;
+- aucune image en `latest` ni sans tag ;
+- chaque Deployment référence le Secret de tirage d'images attendu
+  (`$REGISTRY_SECRET_NAME`) : le registry est privé, et un nom qui diverge de
+  celui que crée la CI laisse tous les pods en `ImagePullBackOff` sans que
+  `kubectl apply` ne signale quoi que ce soit ;
+- aucun hôte d'Ingress en `.invalid` ne subsiste dans le rendu d'un overlay : la
+  base n'en porte que de non résolvables, donc un `.invalid` qui survit signale
+  un patch d'Ingress oublié (voir K8S.md §7) ;
+- staging et production produisent des valeurs différentes (ConfigMap, hôte
+  d'Ingress, ressources du back) : c'est la preuve que les patches d'overlay
+  mordent au lieu d'être silencieux.
+
+L'option `--autotest` rejoue toutes ces assertions sur des rendus volontairement
+abîmés (Deployment renommé, conteneur renommé, ConfigMap fantôme, sonde sur un
+port inconnu, `runAsNonRoot` retiré, image en `latest`, pull secret absent ou
+mal nommé…) et vérifie qu'elles
+**échouent** bien. Une assertion qui ne se déclenche jamais ne prouve rien.
+
+Variables (avec leurs valeurs par défaut) : `K8S_OVERLAYS_DIR` (`k8s/overlays`),
+`APP_BACK_NAME` (`back`), `APP_FRONT_NAME` (`front`),
+`REGISTRY_SECRET_NAME` (`gitlab-registry`) — les mêmes que celles du
+`.gitlab-ci.yml`, pour que le contrat vérifié soit celui que la CI déclare.
+Il renvoie : `0` si tout passe, `1` si au moins une assertion échoue.
+
+Il est écrit en **sh POSIX** et non en bash, contrairement aux autres scripts :
+l'image `alpine/kubectl` n'a que busybox `sh`. Les jobs de déploiement y
+installent bash (`apk add`) parce que `deploy.sh` en a réellement besoin, mais
+un job de lint n'a aucune raison de dépendre d'un miroir Alpine pour tourner.
+
+```bash
+scripts/tests/validate_k8s.sh              # les assertions seules
+scripts/tests/validate_k8s.sh --autotest   # + preuve qu'elles se déclenchent
+```
+
+Utilisé par le job `lint-k8s` (stage `lint`, image `$KUBECTL_IMAGE`).
+Le détail des manifestes est dans [K8S.md](K8S.md).
+
+---
+
 ## Les tests
 
 C'est le point de vigilance « tester chaque script dans un environnement
@@ -210,6 +271,10 @@ Aujourd'hui : **95 tests**, tout passe.
 # Lancer toute la suite (rien n'est construit ni déployé)
 scripts/tests/run_tests.sh
 ```
+
+Les manifestes Kubernetes ont leur propre suite, `validate_k8s.sh` (60
+assertions, dont 10 d'auto-test), lancée par le job `lint-k8s` : elle a besoin de
+`kubectl`, que l'image `$PYTHON_IMAGE` de `test-scripts` ne fournit pas.
 
 Chaque test affiche `ok` ou `ÉCHEC` avec la raison, et le script sort en 1 si au
 moins un test rate.

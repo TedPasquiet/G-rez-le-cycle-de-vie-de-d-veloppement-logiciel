@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: back
+spec:
+  template:
+    spec:
+      containers:
+        # Le back de production ne peut pas monter en replicas (HSQLDB en
+        # mémoire). La seule marge disponible est donc verticale : je relève la
+        # limite mémoire à 1 Gio, ce qui porte le tas par défaut de la JVM de
+        # ~192 à ~256 Mio, et la réservation CPU à 500 m pour absorber les pics
+        # sans dépendre du surengagement du nœud.
+        - name: back
+          resources:
+            requests:
+              cpu: 500m
+              memory: 768Mi
+            limits:
+              cpu: '2'
+              memory: 1Gi

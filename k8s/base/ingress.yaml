@@ -1,0 +1,56 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: microcrm
+  labels:
+    app.kubernetes.io/name: microcrm
+spec:
+  # Deux hôtes plutôt qu'un hôte et deux chemins.
+  #
+  # Le front est une application Angular : c'est le NAVIGATEUR de l'utilisateur
+  # qui appelle l'API, pas le pod front. Le back doit donc être joignable depuis
+  # l'extérieur du cluster, le Service ClusterIP ne suffit pas.
+  #
+  # Router l'API sur un préfixe (/api) du même hôte aurait supposé de réécrire
+  # le chemin avant de le transmettre : Spring Data REST expose ses collections
+  # à la racine (/persons, /organizations), pas sous /api. Cette réécriture
+  # passe par des annotations propres à chaque contrôleur d'Ingress (nginx,
+  # Traefik, HAProxy ont chacune la leur), ce qui rendrait ce manifeste non
+  # portable. Un hôte dédié évite la réécriture et reste du Kubernetes standard.
+  #
+  # Corollaire : le front et l'API sont sur des origines différentes, donc le
+  # CORS n'est pas décoratif — MICROCRM_CORS_ALLOWED_ORIGINS doit contenir
+  # l'hôte du front de l'environnement, sinon le navigateur bloquera les
+  # requêtes. C'est fait dans chaque overlay.
+  #
+  # Les hôtes ci-dessous sont volontairement dans le TLD `.invalid` (RFC 2606),
+  # dont la non-résolution est garantie. Ce n'est pas de la coquetterie : si la
+  # base portait les hôtes réels d'un environnement, le patch de cet
+  # environnement deviendrait un no-op, et une modification de la base le
+  # changerait sans qu'aucun overlay ne le laisse voir. Ici, tout hôte oublié
+  # dans un overlay se signale immédiatement au lieu de router vers le mauvais
+  # environnement.
+  #
+  # Aucun `ingressClassName` n'est fixé, faute de savoir quel contrôleur équipe
+  # le cluster cible — à ajouter dans les overlays le jour où il sera connu.
+  rules:
+    - host: microcrm.invalid
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: front
+                port:
+                  name: http
+    - host: api.microcrm.invalid
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: back
+                port:
+                  name: http

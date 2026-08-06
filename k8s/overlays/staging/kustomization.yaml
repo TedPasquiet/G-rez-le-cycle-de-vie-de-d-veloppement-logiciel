@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Overlay de staging.
+#
+# Pas de `namespace:` ici : il est fourni à l'application par la CI
+# (`kubectl apply -k ... -n "$STAGING_NAMESPACE"`). Voir K8S.md §4.
+#
+# Pas de `namePrefix:` non plus. Ce serait le réflexe habituel, mais il
+# renommerait les Deployments en `staging-back` / `staging-front`, alors que
+# scripts/deploy/deploy.sh cible `deployment/back` et `deployment/front` via
+# $APP_BACK_NAME / $APP_FRONT_NAME. L'isolation entre environnements est déjà
+# assurée par le namespace ; un préfixe n'ajouterait rien et casserait le
+# déploiement.
+
+resources:
+  - ../../base
+
+labels:
+  - includeTemplates: true
+    pairs:
+      app.kubernetes.io/instance: microcrm-staging
+      app.kubernetes.io/environment: staging
+
+# Staging valide un déploiement, il ne porte pas de trafic : 1 replica de
+# chaque suffit. Le back y est de toute façon plafonné à 1 (HSQLDB en mémoire).
+replicas:
+  - name: back
+    count: 1
+  - name: front
+    count: 1
+
+patches:
+  - path: configmap-patch.yaml
+  - path: ingress-patch.yaml

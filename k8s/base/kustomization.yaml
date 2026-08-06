@@ -1,0 +1,38 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Base commune à tous les environnements. Elle décrit la *forme* de
+# l'application ; ce qui dépend de l'environnement (nombre de replicas, hôtes
+# HTTP, origines CORS) vit dans k8s/overlays/.
+#
+# Deux valeurs sont volontairement absentes de ces manifestes :
+#
+#   - le namespace, fourni par la CI via $STAGING_NAMESPACE / $PROD_NAMESPACE ;
+#   - le chemin de l'image dans le registry, fourni par $CI_REGISTRY_IMAGE.
+#
+# Les inscrire ici reviendrait à recoder en dur des coordonnées d'infrastructure
+# que VARIABILISATION.md a justement sorties du dépôt. Kustomize décrit la
+# forme, la CI fournit les coordonnées. Voir K8S.md §4.
+
+resources:
+  - configmap.yaml
+  - back-deployment.yaml
+  - back-service.yaml
+  - front-deployment.yaml
+  - front-service.yaml
+  - ingress.yaml
+
+# Labels d'identité, appliqués aux métadonnées de toutes les ressources et,
+# grâce à `includeTemplates`, aux pods eux-mêmes — sans quoi un
+# `kubectl get pods -l app.kubernetes.io/part-of=microcrm` ne renverrait rien.
+#
+# En revanche `includeSelectors` reste à sa valeur par défaut (false), et c'est
+# délibéré : `spec.selector` d'un Deployment est immuable après création. Y
+# injecter un label ferait échouer tous les `kubectl apply` suivants sur un
+# environnement déjà déployé, avec un message peu parlant. Les sélecteurs sont
+# donc écrits à la main dans chaque Deployment, où ils restent relisibles.
+labels:
+  - includeTemplates: true
+    pairs:
+      app.kubernetes.io/part-of: microcrm
+      app.kubernetes.io/managed-by: kustomize
