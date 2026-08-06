@@ -3,7 +3,7 @@ import { HttpClientTestingModule, HttpTestingController } from '@angular/common/
 import { HttpErrorResponse } from '@angular/common/http';
 
 import { OrganizationService } from './organization.service';
-import { API_BASE_URL } from './config';
+import { apiBaseUrl } from './config';
 import { aPerson, anOrganization, embedded, tick } from './test-helpers';
 
 describe('OrganizationService', () => {
@@ -31,7 +31,7 @@ describe('OrganizationService', () => {
       const promise = service.fetchAll();
 
       await tick();
-      const req = httpMock.expectOne(`${API_BASE_URL}/organizations`);
+      const req = httpMock.expectOne(`${apiBaseUrl()}/organizations`);
       expect(req.request.method).toBe('GET');
       req.flush(
         embedded('organizations', [anOrganization(), anOrganization({ id: 11, name: 'Acme' })]),
@@ -47,7 +47,7 @@ describe('OrganizationService', () => {
 
       await tick();
       httpMock
-        .expectOne(`${API_BASE_URL}/organizations`)
+        .expectOne(`${apiBaseUrl()}/organizations`)
         .flush('boom', { status: 503, statusText: 'Unavailable' });
 
       // On capture l'erreur au lieu de se contenter d'un rejet : le service ne
@@ -69,14 +69,14 @@ describe('OrganizationService', () => {
       const promise = service.fetchById(10);
 
       await tick();
-      const orgReq = httpMock.expectOne(`${API_BASE_URL}/organizations/10`);
+      const orgReq = httpMock.expectOne(`${apiBaseUrl()}/organizations/10`);
       expect(orgReq.request.method).toBe('GET');
       orgReq.flush(anOrganization());
 
       await tick();
 
       httpMock
-        .expectOne(`${API_BASE_URL}/organizations/10/persons`)
+        .expectOne(`${apiBaseUrl()}/organizations/10/persons`)
         .flush(embedded('persons', [aPerson(), aPerson({ id: 2 })]));
 
       const org = await promise;
@@ -90,7 +90,7 @@ describe('OrganizationService', () => {
       const promise = service.fetchOrganizationPersons(10);
 
       await tick();
-      const req = httpMock.expectOne(`${API_BASE_URL}/organizations/10/persons`);
+      const req = httpMock.expectOne(`${apiBaseUrl()}/organizations/10/persons`);
       expect(req.request.method).toBe('GET');
       req.flush(embedded('persons', [aPerson({ id: 3 })]));
 
@@ -103,7 +103,7 @@ describe('OrganizationService', () => {
       const promise = service.deleteById(10);
 
       await tick();
-      const req = httpMock.expectOne(`${API_BASE_URL}/organizations/10`);
+      const req = httpMock.expectOne(`${apiBaseUrl()}/organizations/10`);
       expect(req.request.method).toBe('DELETE');
       req.flush(null);
 
@@ -116,13 +116,13 @@ describe('OrganizationService', () => {
       const promise = service.save(anOrganization({ id: undefined }));
 
       await tick();
-      const req = httpMock.expectOne(`${API_BASE_URL}/organizations`);
+      const req = httpMock.expectOne(`${apiBaseUrl()}/organizations`);
       expect(req.request.method).toBe('POST');
       expect(req.request.body).toEqual({ name: 'Orion Inc.' });
       req.flush(anOrganization({ id: 55 }));
 
       await tick();
-      httpMock.expectOne(`${API_BASE_URL}/organizations/55/persons`).flush(embedded('persons', []));
+      httpMock.expectOne(`${apiBaseUrl()}/organizations/55/persons`).flush(embedded('persons', []));
 
       const saved = await promise;
       expect(saved.id).toBe(55);
@@ -133,14 +133,14 @@ describe('OrganizationService', () => {
       const promise = service.save(anOrganization({ id: 10, name: 'Orion SA' }));
 
       await tick();
-      const req = httpMock.expectOne(`${API_BASE_URL}/organizations/10`);
+      const req = httpMock.expectOne(`${apiBaseUrl()}/organizations/10`);
       expect(req.request.method).toBe('PUT');
       expect(req.request.body).toEqual({ name: 'Orion SA' });
       req.flush(anOrganization({ id: 10, name: 'Orion SA' }));
 
       await tick();
       httpMock
-        .expectOne(`${API_BASE_URL}/organizations/10/persons`)
+        .expectOne(`${apiBaseUrl()}/organizations/10/persons`)
         .flush(embedded('persons', [aPerson()]));
 
       const saved = await promise;
@@ -154,9 +154,9 @@ describe('OrganizationService', () => {
       const promise = service.addPerson(10, 7);
 
       await tick();
-      const req = httpMock.expectOne(`${API_BASE_URL}/organizations/10/persons`);
+      const req = httpMock.expectOne(`${apiBaseUrl()}/organizations/10/persons`);
       expect(req.request.method).toBe('PUT');
-      expect(req.request.body).toBe(`${API_BASE_URL}/persons/7`);
+      expect(req.request.body).toBe(`${apiBaseUrl()}/persons/7`);
       expect(req.request.headers.get('Content-Type')).toBe('text/uri-list');
       req.flush(null);
 
@@ -172,7 +172,7 @@ describe('OrganizationService', () => {
       // le rattachement passe par le côté "organization" : dissymétrie voulue
       // par l'API Spring Data REST.
       await tick();
-      const req = httpMock.expectOne(`${API_BASE_URL}/persons/7/organizations/10`);
+      const req = httpMock.expectOne(`${apiBaseUrl()}/persons/7/organizations/10`);
       expect(req.request.method).toBe('DELETE');
       req.flush(null);
 
