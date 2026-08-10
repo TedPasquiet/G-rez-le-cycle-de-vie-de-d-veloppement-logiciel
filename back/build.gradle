@@ -122,8 +122,11 @@ repositories {
 
 dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
-	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
 	implementation 'org.springframework.boot:spring-boot-starter-data-rest'
+	// Actuator : expose /actuator/health, dont les sous-ressources liveness et
+	// readiness consommées par les probes Kubernetes (voir K8S.md §5).
+	// L'exposition est volontairement réduite dans application.properties.
+	implementation 'org.springframework.boot:spring-boot-starter-actuator'
 	implementation 'ro.polak:spring-boot-data-fixtures:0.2.0'
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	runtimeOnly 'org.hsqldb:hsqldb'

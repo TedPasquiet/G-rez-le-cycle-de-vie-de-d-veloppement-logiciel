@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: microcrm
+spec:
+  # `rules` est une liste : une fusion stratégique la remplace en entier plutôt
+  # que de la fusionner élément par élément. Les deux règles sont donc
+  # réécrites ici, hôtes de staging compris.
+  rules:
+    - host: microcrm.staging.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: front
+                port:
+                  name: http
+    - host: api.microcrm.staging.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: back
+                port:
+                  name: http

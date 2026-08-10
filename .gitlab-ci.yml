@@ -65,6 +65,16 @@ variables:
   APP_FRONT_NAME: 'front'
   # Temps d'attente max d'un rollout avant retour arrière automatique.
   DEPLOY_TIMEOUT: '180s'
+  # Racine des overlays Kustomize. Les manifestes décrivent la forme de
+  # l'application ; le namespace et le chemin du registry restent fournis par la
+  # CI (voir K8S.md §4).
+  K8S_OVERLAYS_DIR: 'k8s/overlays'
+  # Nom du Secret qui porte les identifiants du registry. Il est référencé en
+  # `imagePullSecrets` par les deux Deployments : cette valeur et celle des
+  # manifestes doivent rester identiques, et scripts/tests/validate_k8s.sh
+  # échoue si elles divergent. Le Secret lui-même n'est pas versionné — il est
+  # (re)créé par les jobs de déploiement. Voir K8S.md §12.
+  REGISTRY_SECRET_NAME: 'gitlab-registry'
 
 # Petits blocs de cache que je réutilise dans plusieurs jobs pour aller plus vite.
 .cache_gradle: &cache_gradle
@@ -140,6 +150,46 @@ shellcheck:
     # à la main à la liste des fichiers à vérifier.
     - find scripts -type f \( -name '*.sh' -o -path 'scripts/tests/stubs/*' \) -print0
       | xargs -0 shellcheck --external-sources
+  <<: *rules_test
+
+# Validation des manifestes Kubernetes (dossier k8s/), sans cluster.
+#
+# Tout le contenu est dans scripts/tests/validate_k8s.sh, au même titre que les
+# autres scripts du dépôt : il est ainsi testable en local, relu par ShellCheck
+# et documenté dans SCRIPTS.md, plutôt que noyé dans un bloc YAML.
+#
+# Le script construit chaque overlay avec le Kustomize embarqué dans kubectl,
+# puis assère sur le rendu. Il attrape ce qui casse le plus souvent : un patch
+# qui ne trouve pas sa cible, un fichier absent de `resources`, une ConfigMap
+# référencée mais absente, une sonde visant un port non déclaré, et surtout le
+# contrat de nommage avec scripts/deploy/deploy.sh (Deployment ET conteneur
+# nommés $APP_BACK_NAME / $APP_FRONT_NAME) — qu'aucun validateur de schéma ne
+# verrait, et qu'un `namePrefix:` ajouté par réflexe casserait.
+#
+# `--autotest` rejoue les mêmes assertions sur des rendus volontairement abîmés
+# et vérifie qu'elles échouent : une assertion qui ne se déclenche jamais ne
+# prouve rien.
+#
+# La limite à connaître, pour ne pas prêter à ce job plus de pouvoir qu'il n'en
+# a : il ne valide PAS les manifestes contre le schéma de l'API Kubernetes.
+# `kubectl apply --dry-run=client` en serait capable, mais contrairement à ce
+# que son nom laisse croire il interroge le serveur — pour télécharger l'OpenAPI,
+# et même avec --validate=false pour résoudre les types (« unable to
+# recognize »). Or ce job tourne sur les branches de feature, où KUBE_CONFIG
+# (protégée) n'est pas disponible. Une vraie validation de schéma hors ligne
+# demanderait kubeconform, qui n'est pas dans l'image.
+lint-k8s:
+  image:
+    name: $KUBECTL_IMAGE
+    entrypoint: ['']
+  stage: lint
+  needs: []
+  # alpine/kubectl n'a que busybox sh, et validate_k8s.sh est écrit en sh POSIX
+  # exprès : pas d'`apk add bash` ici, donc pas de job de lint qui tombe parce
+  # qu'un miroir Alpine est indisponible.
+  script:
+    - kubectl version --client
+    - sh scripts/tests/validate_k8s.sh --autotest
   <<: *rules_test
 
 # ===========================================================================
@@ -491,6 +541,41 @@ deploy-staging:
   environment:
     name: staging
   script:
+    # 1. Le Secret d'accès au registry, que les deux Deployments référencent en
+    #    imagePullSecrets. Sans lui, un cluster vierge ne peut pas tirer les
+    #    images d'un registry privé et tous les pods restent en
+    #    ImagePullBackOff.
+    #
+    #    `create --dry-run=client -o yaml | apply -f -` plutôt que `create` seul :
+    #    `create` échouerait avec « already exists » au deuxième déploiement,
+    #    alors que cette forme est idempotente et actualise le Secret si le mot
+    #    de passe a changé.
+    #
+    #    ⚠️ La sortie de `-o yaml` contient le mot de passe encodé en base64.
+    #    Le masquage GitLab travaille sur la valeur littérale et ne reconnaîtrait
+    #    PAS cette forme encodée : le flux doit donc aller directement dans le
+    #    pipe, sans jamais passer par le log du job. Ne pas y ajouter de `tee`,
+    #    de `cat`, ni de `kubectl get secret -o yaml` de vérification.
+    - |
+      kubectl create secret docker-registry "$REGISTRY_SECRET_NAME" \
+        --docker-server="$CI_REGISTRY" \
+        --docker-username="$CI_REGISTRY_USER" \
+        --docker-password="$CI_REGISTRY_PASSWORD" \
+        -n "$STAGING_NAMESPACE" --dry-run=client -o yaml \
+        | kubectl apply -n "$STAGING_NAMESPACE" -f -
+    # 2. On applique les manifestes. C'est ce qui rend le déploiement idempotent
+    #    sur un cluster vierge : sans cette étape, deploy.sh s'arrête sur
+    #    « Deployment 'back' introuvable » puisqu'il ne sait que modifier un
+    #    Deployment existant.
+    - kubectl apply -k "$K8S_OVERLAYS_DIR/staging" -n "$STAGING_NAMESPACE"
+    # 3. Puis on pose l'image réellement construite par ce pipeline. Les
+    #    manifestes portent un placeholder (voir k8s/base/back-deployment.yaml) :
+    #    le chemin dans le registry et le tag du commit sont des coordonnées de
+    #    CI, pas des données de dépôt. C'est donc ici que le tag arrive, et
+    #    deploy.sh apporte en plus l'attente de rollout et le retour arrière
+    #    automatique. Conséquence sur un cluster vierge uniquement : entre les
+    #    étapes 1 et 2, le premier pod tente de tirer le placeholder et reste
+    #    quelques secondes en ImagePullBackOff, avant d'être remplacé.
     - bash scripts/deploy/deploy.sh -n "$STAGING_NAMESPACE" -d "$APP_BACK_NAME" -c "$APP_BACK_NAME"
       -i "$CI_REGISTRY_IMAGE/$APP_BACK_NAME:$CI_COMMIT_SHORT_SHA" -t "$DEPLOY_TIMEOUT"
     - bash scripts/deploy/deploy.sh -n "$STAGING_NAMESPACE" -d "$APP_FRONT_NAME" -c "$APP_FRONT_NAME"
@@ -505,6 +590,17 @@ deploy-production:
   environment:
     name: production
   script:
+    # Même ordonnancement qu'en staging : le Secret du registry, les manifestes,
+    # puis l'image. Voir deploy-staging pour le détail — en particulier sur le
+    # fait que la sortie de `-o yaml` ne doit jamais atteindre le log.
+    - |
+      kubectl create secret docker-registry "$REGISTRY_SECRET_NAME" \
+        --docker-server="$CI_REGISTRY" \
+        --docker-username="$CI_REGISTRY_USER" \
+        --docker-password="$CI_REGISTRY_PASSWORD" \
+        -n "$PROD_NAMESPACE" --dry-run=client -o yaml \
+        | kubectl apply -n "$PROD_NAMESPACE" -f -
+    - kubectl apply -k "$K8S_OVERLAYS_DIR/production" -n "$PROD_NAMESPACE"
     - bash scripts/deploy/deploy.sh -n "$PROD_NAMESPACE" -d "$APP_BACK_NAME" -c "$APP_BACK_NAME"
       -i "$CI_REGISTRY_IMAGE/$APP_BACK_NAME:$CI_COMMIT_SHORT_SHA" -t "$DEPLOY_TIMEOUT"
     - bash scripts/deploy/deploy.sh -n "$PROD_NAMESPACE" -d "$APP_FRONT_NAME" -c "$APP_FRONT_NAME"

@@ -3,7 +3,8 @@
 Inventaire des valeurs codées en dur dans le dépôt, de celles qui sont déjà
 externalisées, et du plan pour traiter le reste.
 
-**État : lots P2 et P3 traités. Reste le lot P1 (URL d'API du front).**
+**État : terminée.** Les lots P1, P2 et P3 sont traités. Le déploiement
+Kubernetes qui les consomme est décrit dans [K8S.md](K8S.md).
 
 ## 1. Le principe
 
@@ -126,12 +127,13 @@ property 'sonar.projectKey', System.getenv('SONAR_PROJECT_KEY_BACK')
 
 ### Réglages du pipeline
 
-| Variable         | Valeur  | Remplace                                                |
-| ---------------- | ------- | ------------------------------------------------------- |
-| `COVERAGE_MIN`   | `70`    | `--min 70` en dur dans `coverage-gate`                  |
-| `APP_BACK_NAME`  | `back`  | 9 occurrences (deployments, conteneurs, images)         |
-| `APP_FRONT_NAME` | `front` | 8 occurrences                                           |
-| `DEPLOY_TIMEOUT` | `180s`  | valeur par défaut des scripts, jamais pilotée par la CI |
+| Variable           | Valeur         | Remplace                                                |
+| ------------------ | -------------- | ------------------------------------------------------- |
+| `COVERAGE_MIN`     | `70`           | `--min 70` en dur dans `coverage-gate`                  |
+| `APP_BACK_NAME`    | `back`         | 9 occurrences (deployments, conteneurs, images)         |
+| `APP_FRONT_NAME`   | `front`        | 8 occurrences                                           |
+| `DEPLOY_TIMEOUT`   | `180s`         | valeur par défaut des scripts, jamais pilotée par la CI |
+| `K8S_OVERLAYS_DIR` | `k8s/overlays` | racine des overlays Kustomize (`lint-k8s`, `deploy-*`)  |
 
 ### Nom du JAR
 
@@ -167,27 +169,55 @@ commit distinct.
 — la commande `docker compose up` fonctionne donc sans configuration. Le fichier
 `.env.example` documente ces réglages ; `.env` est ignoré par Git.
 
-## 5. Ce qui reste — P1 : l'URL d'API du front
+## 5. P1 — l'URL d'API du front (traité)
 
-| Valeur                  | Emplacement               |
-| ----------------------- | ------------------------- |
-| `http://localhost:8080` | `front/src/app/config.ts` |
+| Valeur                  | Emplacement               | État                                        |
+| ----------------------- | ------------------------- | ------------------------------------------- |
+| `http://localhost:8080` | `front/src/app/config.ts` | devenue **valeur de repli**, plus la valeur |
 
-C'est le point bloquant pour un vrai déploiement. `front/Dockerfile` lance
-`ng build` **pendant** la construction de l'image : la valeur est _compilée_
+C'était le point bloquant pour un vrai déploiement. `front/Dockerfile` lance
+`ng build` **pendant** la construction de l'image : la valeur était _compilée_
 dans le bundle JS. L'image poussée par `package-front` puis déployée par
-`deploy-production` contient en dur `localhost:8080` — en production, le
-navigateur appellera la machine de l'utilisateur, pas l'API.
+`deploy-production` contenait en dur `localhost:8080` — en production, le
+navigateur aurait appelé la machine de l'utilisateur, pas l'API.
 
 C'est le piège classique du front : la configuration est nécessaire au _build_,
-alors que le besoin est au _runtime_. Deux sorties :
+alors que le besoin est au _runtime_. Deux sorties étaient possibles :
 
 | Approche                                                     | Principe                                      | Conséquence                                                                      |
 | ------------------------------------------------------------ | --------------------------------------------- | -------------------------------------------------------------------------------- |
 | `environments` Angular + `ARG` Docker                        | une image par environnement                   | simple, mais on perd le « build once » : l'image testée n'est pas celle déployée |
-| `config.json` chargé au démarrage, ou substitution par Caddy | une seule image, config montée au déploiement | conforme aux 12 facteurs — **recommandé**                                        |
+| `config.json` chargé au démarrage, ou substitution par Caddy | une seule image, config montée au déploiement | conforme aux 12 facteurs — **retenue**                                           |
 
-Note connexe : `front/Caddyfile` sert l'application en `:80` en dur.
+### Ce qui a été fait
+
+Caddy fabrique un `/config.json` au démarrage du conteneur, à partir de son
+environnement, et le bundle Angular le lit avant de démarrer l'application :
+
+```caddyfile
+handle /config.json {
+	header Content-Type application/json
+	respond `{"apiBaseUrl":"{$FRONT_API_BASE_URL:http://localhost:8080}"}`
+}
+```
+
+`{$VARIABLE:défaut}` est résolu par Caddy au chargement de sa configuration.
+**Une seule image sert donc tous les environnements.** Aucun script d'entrée n'a
+été nécessaire : le serveur qui sert déjà le front s'en charge.
+
+`front/src/app/config.ts` applique le motif de `tests/k6/lib/config.js` (§3) :
+défaut utilisable sans configuration, surcharge par environnement, et **erreur
+explicite** quand la valeur servie est illisible — un repli silencieux sur
+`localhost:8080` recréerait la panne en la rendant invisible. Le détail des cas
+est dans [K8S.md](K8S.md) §13.
+
+La valeur est alimentée par `FRONT_API_BASE_URL` : depuis la ConfigMap sur
+Kubernetes, depuis `docker-compose.yml` en local (avec un défaut inline qui suit
+`BACK_PORT`, donc `docker compose up` fonctionne sans configuration).
+
+Note connexe traitée au passage : `front/Caddyfile` accepte désormais
+`{$SITE_PORT:80}`. C'est de la souplesse, **pas** de la sécurité — voir
+[K8S.md](K8S.md) §11 sur la capability de fichier du binaire Caddy.
 
 ## 6. Ce qu'il ne faut **pas** variabiliser
 
@@ -206,16 +236,40 @@ Note connexe : `front/Caddyfile` sert l'application en `:80` en dur.
 Seules celles-ci doivent rester hors du dépôt. Tout le reste vit dans le bloc
 `variables:` du `.gitlab-ci.yml`, où c'est versionné et relisible en revue.
 
-| Variable            | Type             | Protected | Rôle                      |
-| ------------------- | ---------------- | --------- | ------------------------- |
-| `SONAR_HOST_URL`    | Variable         | non       | URL du serveur SonarQube  |
-| `SONAR_TOKEN`       | Variable, masked | non       | Token d'analyse           |
-| `NVD_API_KEY`       | Variable, masked | non       | Accélère Dependency-Check |
-| `KUBE_CONFIG`       | **File**         | **oui**   | Connexion au cluster      |
-| `STAGING_NAMESPACE` | Variable         | non       | Namespace de staging      |
-| `PROD_NAMESPACE`    | Variable         | **oui**   | Namespace de production   |
-| `CI_REGISTRY*`      | automatique      | —         | Fournies par GitLab       |
+| Variable             | Type             | Protected | Rôle                      |
+| -------------------- | ---------------- | --------- | ------------------------- |
+| `SONAR_HOST_URL`     | Variable         | non       | URL du serveur SonarQube  |
+| `SONAR_TOKEN`        | Variable, masked | non       | Token d'analyse           |
+| `NVD_API_KEY`        | Variable, masked | non       | Accélère Dependency-Check |
+| `KUBE_CONFIG`        | **File**         | **oui**   | Connexion au cluster      |
+| `STAGING_NAMESPACE`  | Variable         | non       | Namespace de staging      |
+| `PROD_NAMESPACE`     | Variable         | **oui**   | Namespace de production   |
+| `CI_REGISTRY*`       | automatique      | —         | Fournies par GitLab       |
+| `FRONT_API_BASE_URL` | _facultative_    | non       | Voir la nuance ci-dessous |
 
-Quand le lot P1 sera traité, `FRONT_API_BASE_URL` s'y ajoutera — c'est la seule
-variable qui devra être _scopée par environnement_ (champ « Environment scope »),
-sa valeur différant entre staging et production.
+Le déploiement Kubernetes (voir [K8S.md](K8S.md)) n'ajoute **aucune variable
+obligatoire** à cette liste. Les manifestes Kustomize reçoivent le namespace en
+argument (`kubectl apply -k … -n "$STAGING_NAMESPACE"`), l'image par `deploy.sh`,
+et les identifiants du registry viennent des `$CI_REGISTRY*` que GitLab fournit
+déjà. C'est volontaire — inscrire un `namespace:` dans un overlay aurait remis
+dans le dépôt une coordonnée d'infrastructure qui venait d'en sortir, et créé une
+seconde source de vérité.
+
+### Le cas `FRONT_API_BASE_URL`
+
+Cette page annonçait qu'elle rejoindrait la liste une fois le lot P1 traité.
+C'est à nuancer, parce que la mise en œuvre a fait un autre choix : **sa source
+de vérité est la ConfigMap des overlays** (`k8s/overlays/<env>/configmap-patch.yaml`),
+pas l'interface GitLab.
+
+Le critère de §1 le justifie : ce n'est pas un secret, et c'est une valeur qui
+décrit un environnement. La ranger à côté des hôtes d'Ingress du même overlay la
+rend relisible en revue et cohérente par construction — l'URL d'API et l'hôte qui
+la sert sont côte à côte, dans le même fichier, et ne peuvent pas diverger.
+Placée dans l'interface, elle aurait été la seule pièce de la configuration d'un
+environnement à vivre ailleurs que les autres.
+
+Elle reste néanmoins la seule valeur du projet qui **demanderait un scope par
+environnement** (champ « Environment scope » de GitLab) si l'équipe préférait un
+jour la piloter depuis l'interface sans commit : sa valeur diffère entre staging
+et production. D'où sa présence en _facultative_ dans le tableau.

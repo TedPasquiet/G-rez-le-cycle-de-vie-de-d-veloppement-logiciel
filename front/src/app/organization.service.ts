@@ -2,14 +2,14 @@ import { Injectable } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { Person } from './person.service';
 import { HttpClient } from '@angular/common/http';
-import { API_BASE_URL } from './config';
+import { apiBaseUrl } from './config';
 
 @Injectable({ providedIn: 'root' })
 export class OrganizationService {
   constructor(private readonly client: HttpClient) {}
 
   async fetchById(id: number) {
-    const response = await this.client.get(`${API_BASE_URL}/organizations/${id}`);
+    const response = await this.client.get(`${apiBaseUrl()}/organizations/${id}`);
     const org = (await firstValueFrom(response)) as Organization;
     const persons = await this.fetchOrganizationPersons(org.id as number);
     org.persons = persons;
@@ -17,7 +17,7 @@ export class OrganizationService {
   }
 
   async fetchAll() {
-    const response = await this.client.get(`${API_BASE_URL}/organizations`);
+    const response = await this.client.get(`${apiBaseUrl()}/organizations`);
     const result = (await firstValueFrom(response)) as {
       _embedded: { organizations: Organization[] };
     };
@@ -25,25 +25,25 @@ export class OrganizationService {
   }
 
   async fetchOrganizationPersons(id: number) {
-    const response = await this.client.get(`${API_BASE_URL}/organizations/${id}/persons`);
+    const response = await this.client.get(`${apiBaseUrl()}/organizations/${id}/persons`);
     const result = (await firstValueFrom(response)) as { _embedded: { persons: Person[] } };
     const persons = result._embedded.persons;
     return persons;
   }
 
   async deleteById(id: number) {
-    const response = await this.client.delete(`${API_BASE_URL}/organizations/${id}`);
+    const response = await this.client.delete(`${apiBaseUrl()}/organizations/${id}`);
     await firstValueFrom(response);
   }
 
   async save(org: Organization) {
     let response;
     if (org.id === undefined) {
-      response = await this.client.post(`${API_BASE_URL}/organizations`, {
+      response = await this.client.post(`${apiBaseUrl()}/organizations`, {
         name: org.name,
       });
     } else {
-      response = await this.client.put(`${API_BASE_URL}/organizations/${org.id}`, {
+      response = await this.client.put(`${apiBaseUrl()}/organizations/${org.id}`, {
         name: org.name,
       });
     }
@@ -58,8 +58,8 @@ export class OrganizationService {
 
   async addPerson(orgId: number, personId: number) {
     const response = await this.client.put(
-      `${API_BASE_URL}/organizations/${orgId}/persons`,
-      `${API_BASE_URL}/persons/${personId}`,
+      `${apiBaseUrl()}/organizations/${orgId}/persons`,
+      `${apiBaseUrl()}/persons/${personId}`,
       { headers: { 'Content-Type': 'text/uri-list' } },
     );
     await firstValueFrom(response);
@@ -67,7 +67,7 @@ export class OrganizationService {
 
   async removePerson(orgId: number, personId: number) {
     const response = await this.client.delete(
-      `${API_BASE_URL}/persons/${personId}/organizations/${orgId}`,
+      `${apiBaseUrl()}/persons/${personId}/organizations/${orgId}`,
     );
     await firstValueFrom(response);
   }
