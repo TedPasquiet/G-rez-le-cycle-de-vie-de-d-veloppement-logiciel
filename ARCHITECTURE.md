@@ -62,7 +62,7 @@ Chaque service = **une image**, construite en deux étapes (atelier lourd → im
 ```mermaid
 flowchart LR
     subgraph back_build["back/Dockerfile"]
-        g["gradle:jdk17<br/>compile"] -->|"copie le .jar"| ba["alpine + JRE<br/>image finale"]
+        g["gradle:8.14.5-jdk21<br/>compile"] -->|"copie le .jar"| ba["alpine + JRE<br/>image finale"]
     end
     subgraph front_build["front/Dockerfile"]
         n["node:22<br/>ng build"] -->|"copie les fichiers"| ca["caddy:2-alpine<br/>image finale"]
@@ -73,11 +73,62 @@ flowchart LR
 - **Étape 2** (runtime) : ne garde que l'artefact (le `.jar` / les fichiers statiques).
 - Bénéfices : images plus petites, moins de surface d'attaque, build reproductible.
 
+### Taille des images livrées
+
+| Image   | Taille     | Base                     | Dont l'application |
+| ------- | ---------- | ------------------------ | ------------------ |
+| `back`  | **377 Mo** | `alpine:3.19` (11,9 Mo)  | ~365 Mo            |
+| `front` | **85 Mo**  | `caddy:2-alpine` (85 Mo) | ~0,2 Mo            |
+
+Le front est à quelques centaines de kilo-octets près sa propre image de base :
+un bundle Angular optimisé pèse peu, et Caddy est un binaire unique.
+
+Le back, lui, est dominé par `openjdk21-jre-headless` — environ 365 des 377 Mo.
+C'est le prix d'un JRE complet. Un runtime taillé sur mesure avec `jlink`, ne
+contenant que les modules réellement utilisés, ramènerait l'image autour de
+150 Mo. Ce n'est pas fait aujourd'hui : la complexité ajoutée au Dockerfile ne
+se justifie pas encore pour une application de démonstration, mais c'est la
+première optimisation à envisager si la taille devient un sujet.
+
+### Contexte de build
+
+Chaque application a son propre `.dockerignore`. Ce n'est pas redondant avec
+celui de la racine : les jobs `package-*` construisent avec `--context ./back`
+et `--context ./front`, or Docker ne lit que le `.dockerignore` situé **à la
+racine du contexte**. Celui du dépôt n'est donc jamais appliqué lors de ces
+builds.
+
+L'effet est loin d'être cosmétique :
+
+| Contexte | Avant    | Après      |
+| -------- | -------- | ---------- |
+| `front`  | 1 195 Mo | **0,6 Mo** |
+| `back`   | 51 Mo    | **0,1 Mo** |
+
+Côté front, l'essentiel venait du cache de compilation Angular (`.angular`,
+920 Mo) et de `node_modules` (329 Mo) — deux répertoires que l'image régénère
+de toute façon, puisque le Dockerfile lance `npm ci` puis `ng build`.
+
+### Utilisateur d'exécution
+
+Les deux images tournent en **UID 1000, utilisateur non privilégié**. C'est le
+même UID que celui déclaré dans les manifestes Kubernetes
+(`k8s/base/*-deployment.yaml`), pour que le conteneur se comporte de façon
+identique qu'on le lance avec Docker ou avec Kubernetes.
+
+Le cas du front mérite une note : Caddy écrit dans les répertoires XDG déclarés
+par son image (`/data`, `/config`), détenus par root — d'où le `chown` du
+Dockerfile, sans lequel l'exécution en non-root échoue. Et il écoute sur le
+port 80 sans privilège grâce à la capability de fichier
+`cap_net_bind_service=ep` que porte son binaire ; c'est elle, et non le numéro
+de port, qui oblige à conserver `NET_BIND_SERVICE` dans le conteneur même avec
+`capabilities.drop: [ALL]` (voir [K8S.md](K8S.md) §11).
+
 ---
 
 ## 4. Pipeline CI/CD (GitLab)
 
-Le pipeline compte **8 stages et 23 jobs**, exécutés dans cet ordre :
+Le pipeline compte **8 stages et 24 jobs**, exécutés dans cet ordre :
 
 ```mermaid
 flowchart LR
@@ -127,7 +178,7 @@ deux sont reliés par un workflow GitHub Actions,
 flowchart LR
     dev([git push]) --> gh[GitHub<br/>dépôt de travail, Pull Requests]
     gh -->|GitHub Actions<br/>miroir automatique| gl[GitLab<br/>miroir + exécution du pipeline]
-    gl --> ci[".gitlab-ci.yml<br/>8 stages, 23 jobs"]
+    gl --> ci[".gitlab-ci.yml<br/>8 stages, 24 jobs"]
 ```
 
 À chaque push sur n'importe quelle branche ou tag, le workflow recopie toutes les
@@ -164,28 +215,39 @@ Les mots composés s'écrivent avec un tiret : `feature/initial-documentation`.
 
 ---
 
-## ⚠️ Incohérences à corriger (état actuel du repo)
+## Limites connues et assumées
 
-Ces points sont importants à connaître — le repo n'est **pas cohérent** en l'état :
+Ces points sont vrais en l'état. Ils ne sont pas des oublis : chacun est un
+choix, ou une contrainte identifiée dont le coût de levée n'est pas justifié
+aujourd'hui.
 
-1. **`back/Dockerfile` expose le port `4200`** alors que Spring Boot écoute sur
-   **`8080`** (port par défaut, confirmé par `API_BASE_URL` côté front). Le `EXPOSE 4200`
-   est trompeur → devrait être `EXPOSE 8080`.
+1. **HSQLDB vit en mémoire.** Redémarrer le back efface les données, qui sont
+   recréées par `InitialDataFixture`. Acceptable pour une démonstration, mais
+   deux conséquences suivent : il n'y a rien à sauvegarder, et le back ne peut
+   pas dépasser **un seul replica** — à deux pods, deux bases divergeraient sans
+   qu'aucune erreur ne soit levée. Une base externe (PostgreSQL) avec un
+   `PersistentVolumeClaim` lèverait les deux d'un coup.
 
-2. **`front/src/app/config.ts` fige `API_BASE_URL = "http://localhost:8080"`.** C'est
-   la seule incohérence réellement bloquante : une fois l'image front déployée sur
-   Kubernetes, le navigateur du visiteur appellera `localhost`, donc l'application ne
-   joindra jamais le back. → à externaliser (fichier `environment.ts` Angular, ou
-   substitution au démarrage du conteneur).
+2. **Les manifestes Kubernetes n'ont jamais été appliqués sur un vrai cluster.**
+   Ils se construisent et sont validés par 60 assertions sans cluster
+   (`scripts/tests/validate_k8s.sh`), mais le rollout, le routage de l'Ingress
+   et le comportement des sondes sous kubelet restent à observer.
 
-3. **Aucun `.dockerignore` dans `back/` ni `front/`.** Celui de la racine est inopérant,
-   puisque les jobs `package-*` buildent avec `--context ./back` et `--context ./front`.
-   Conséquence : les ~330 Mo de `front/node_modules` sont envoyés au démon Docker à
-   chaque build.
+3. **L'image du back pèse 377 Mo**, dont ~365 pour le JRE. Voir §3 pour la piste
+   `jlink`.
 
-4. **Le front tourne en `root` dans son image**, contrairement au back qui déclare bien
-   un utilisateur non privilégié. Posture de sécurité incohérente entre les deux images.
+4. **Le front et l'API sont sur des origines différentes** (deux hôtes
+   d'Ingress), donc le CORS n'est pas décoratif : `MICROCRM_CORS_ALLOWED_ORIGINS`
+   doit contenir l'hôte du front de chaque environnement, sinon le navigateur
+   bloquera les requêtes.
 
-5. **HSQLDB en mémoire = pas de persistance.** Acceptable pour une démo, mais à
-   mentionner : redémarrer le back efface les données. Une base externe (PostgreSQL)
-   serait plus réaliste en prod.
+### Corrigé depuis
+
+Ces quatre points figuraient ici comme incohérences ; ils ne le sont plus.
+
+| Point                                          | Résolution                                                           |
+| ---------------------------------------------- | -------------------------------------------------------------------- |
+| `back/Dockerfile` exposait le port `4200`      | corrigé en `8080`, le port réellement écouté                         |
+| `API_BASE_URL` compilée en dur dans le bundle  | lue au démarrage depuis `/config.json` servi par Caddy               |
+| Aucun `.dockerignore` dans `back/` ni `front/` | créés ; le contexte du front passe de 1 195 Mo à 0,6 Mo              |
+| L'image front tournait en `root`               | tourne en UID 1000, comme le back et comme les manifestes Kubernetes |

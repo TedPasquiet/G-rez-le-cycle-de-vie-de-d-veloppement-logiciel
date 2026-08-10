@@ -14,9 +14,13 @@ RUN npm ci \
 
 # --- étape 2 : image d'exécution ---
 FROM ${RUNTIME_IMAGE} AS front
+RUN adduser -D -H -u 1000 app \
+    && chown -R app:app /data /config
 
 COPY --from=build /src/dist/microcrm/browser /app/front
 COPY Caddyfile /etc/caddy/Caddyfile
+
+USER app
 
 EXPOSE 80
 

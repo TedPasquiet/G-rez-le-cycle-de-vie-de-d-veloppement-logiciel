@@ -1,0 +1,22 @@
+# Contexte de build de l'image back.
+#
+# Le job `package-back` construit avec `--context ./back` : le .dockerignore de
+# la racine ne s'applique donc PAS ici, il faut ce fichier.
+#
+# Le Dockerfile fait `COPY . /src` puis `./gradlew build`. Attention à ce qui
+# doit RESTER : gradlew, gradle/wrapper, build.gradle, settings.gradle, src/ et
+# config/ (build.gradle y lit les règles Checkstyle, SpotBugs et
+# Dependency-Check — les exclure casse la construction).
+
+# Produit par `./gradlew build`, refait dans l'image
+build
+
+# Cache Gradle local, sans rapport avec la construction dans l'image
+.gradle
+
+# Répertoire de sortie d'Eclipse, jamais utilisé par Gradle
+bin
+
+# Le Dockerfile n'a pas besoin de se copier lui-même
+Dockerfile
+.dockerignore
