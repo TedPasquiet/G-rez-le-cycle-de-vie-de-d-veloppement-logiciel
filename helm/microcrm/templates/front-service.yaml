@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: front
+  labels:
+    app.kubernetes.io/name: front
+    app.kubernetes.io/component: web
+    {{- include "microcrm.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: front
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

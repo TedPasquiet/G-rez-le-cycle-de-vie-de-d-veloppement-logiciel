@@ -2,9 +2,10 @@
 #
 # validate_k8s.sh
 #
-# Ce script valide les manifestes Kubernetes du dossier `k8s/` SANS cluster.
-# C'est le pendant de `run_tests.sh` pour l'infrastructure : au lieu de tester
-# les scripts, il teste ce que Kustomize produit réellement.
+# Ce script valide les manifestes Kubernetes du dossier `k8s/` SANS cluster, et
+# le chart Helm de `helm/microcrm/` quand l'outillage le permet. C'est le
+# pendant de `run_tests.sh` pour l'infrastructure : au lieu de tester les
+# scripts, il teste ce que Kustomize et Helm produisent réellement.
 #
 # Pourquoi un script à part plutôt qu'une section de run_tests.sh :
 #   run_tests.sh tourne dans l'image $PYTHON_IMAGE, qui n'a pas kubectl. Des
@@ -27,8 +28,18 @@
 #        Deployment/back spec.template.spec.containers.0.name = back
 #      Les assertions ne relisent plus du YAML : elles filtrent ce flux. C'est
 #      ce qui les rend lisibles et insensibles à l'ordre des clés.
-#   3. Chaque assertion affiche `ok` ou `ÉCHEC`, et un bilan sort en 1 si au
-#      moins une a échoué — mêmes conventions que run_tests.sh.
+#   3. `helm template` rend le même flux de faits pour le chart, ce qui permet
+#      de lui rejouer les mêmes assertions puis de comparer les deux rendus.
+#   4. Chaque assertion affiche `ok`, `ÉCHEC` ou `ignoré`, et un bilan sort en 1
+#      si au moins une a échoué — mêmes conventions que run_tests.sh.
+#
+# Pourquoi un troisième état `ignoré` :
+#   Deux jobs exécutent ce script. `lint-k8s` tourne sur $KUBECTL_IMAGE, qui n'a
+#   pas helm ; `lint-helm` sur $HELM_IMAGE, qui a les deux. Compter la section
+#   Helm en succès là où helm est absent serait un mensonge, la compter en échec
+#   rendrait `lint-k8s` rouge sans raison. Elle est donc explicitement ignorée,
+#   et le bilan le dit : un job vert ne doit pas laisser croire que tout a été
+#   vérifié.
 #
 # Ce qui est vérifié :
 #   - chaque overlay se construit ;
@@ -46,7 +57,12 @@
 #     celui que crée la CI laisse les pods en ImagePullBackOff sans que `apply`
 #     ne signale quoi que ce soit ;
 #   - staging et production produisent des valeurs de ConfigMap différentes
-#     (preuve que les patches d'overlay mordent au lieu d'être silencieux).
+#     (preuve que les patches d'overlay mordent au lieu d'être silencieux) ;
+#   - le chart Helm passe les mêmes contrôles que les overlays, et surtout : son
+#     rendu est IDENTIQUE à celui de l'overlay correspondant, au seul label
+#     app.kubernetes.io/managed-by près. Deux descriptions de la même
+#     application, c'est deux occasions de diverger ; c'est cette assertion-là
+#     qui rend la divergence visible ici plutôt qu'au déploiement.
 #
 # Utilisation :
 #   scripts/tests/validate_k8s.sh              # depuis n'importe quel dossier
@@ -54,6 +70,7 @@
 #
 # Variables d'environnement (valeurs par défaut entre parenthèses) :
 #   K8S_OVERLAYS_DIR      Racine des overlays (k8s/overlays)
+#   HELM_CHART_DIR        Racine du chart Helm (helm/microcrm)
 #   APP_BACK_NAME         Nom attendu du Deployment/conteneur back (back)
 #   APP_FRONT_NAME        Nom attendu du Deployment/conteneur front (front)
 #   REGISTRY_SECRET_NAME  Nom attendu du pull secret (gitlab-registry)
@@ -62,8 +79,11 @@
 #
 # Ce que renvoie le script :
 #   0 = toutes les assertions passent · 1 = au moins une a échoué
+#   Une section ignorée ne change pas le code de sortie : elle n'a rien prouvé,
+#   elle n'a rien infirmé non plus.
 #
 # Prérequis : kubectl (Kustomize embarqué), awk, grep. Aucun cluster.
+# Facultatif : helm, sans quoi la section Helm est ignorée au lieu d'échouer.
 
 # Pas d'`errexit`, comme dans run_tests.sh : je veux le bilan complet même si
 # une assertion échoue en cours de route.
@@ -73,6 +93,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 OVERLAYS_DIR="${K8S_OVERLAYS_DIR:-k8s/overlays}"
+CHART_DIR="${HELM_CHART_DIR:-helm/microcrm}"
 NOM_BACK="${APP_BACK_NAME:-back}"
 NOM_FRONT="${APP_FRONT_NAME:-front}"
 NOM_SECRET="${REGISTRY_SECRET_NAME:-gitlab-registry}"
@@ -82,6 +103,9 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 
 nb_ok=0
 nb_ko=0
+# Compté à part de nb_ok : une section qu'on n'a pas pu jouer n'est pas une
+# section réussie. Les confondre transformerait une absence d'outil en preuve.
+nb_ignore=0
 # Quand ce drapeau vaut 1, `ok` et `ko` ne s'affichent plus et comptent dans
 # des compteurs séparés : c'est ce qui permet à --autotest de vérifier qu'une
 # assertion échoue bien, sans polluer le bilan réel.
@@ -111,6 +135,14 @@ ko() {
   fi
   printf '   ÉCHEC %s\n         -> %s\n' "$1" "$2"
   nb_ko=$((nb_ko + 1))
+}
+
+# ignore_section <description> <raison>
+# Ni ok ni ko : la raison est toujours affichée, parce qu'une section muette
+# ignorée est indiscernable d'une section absente.
+ignore_section() {
+  printf '   ignoré %s\n         -> %s\n' "$1" "$2"
+  nb_ignore=$((nb_ignore + 1))
 }
 
 # verifie_egal <attendu> <obtenu> <description>
@@ -372,6 +404,59 @@ controles_rendu() {
 }
 
 # --------------------------------------------------------------------------
+# Équivalence entre le rendu d'un overlay et celui du chart Helm.
+#
+# Toutes les assertions précédentes valent aussi pour le chart, mais aucune ne
+# le rattache aux overlays : un chart peut satisfaire chaque contrôle un par un
+# et décrire malgré tout une autre application. Une valeur oubliée dans
+# values-production.yaml se rend sans erreur, passe le lint, et ne se voit qu'au
+# déploiement. C'est donc cette assertion-ci, et elle seule, qui empêche le
+# chart de dériver — les autres ne font que la compléter.
+#
+# Le label app.kubernetes.io/managed-by est écarté parce que c'est la seule
+# différence légitime (`kustomize` contre `helm`) : la garder ferait échouer la
+# comparaison à chaque exécution, ce qui reviendrait à la désactiver.
+#
+# Le tri n'est pas cosmétique : Kustomize réordonne les clés de chaque objet
+# alphabétiquement, Helm rend les templates tels qu'ils sont écrits. Comparer
+# sans trier ne mesurerait que cet écart de forme.
+#
+# compare_faits <faits Kustomize> <faits Helm> <étiquette>
+# --------------------------------------------------------------------------
+compare_faits() {
+  cf_ref="$1"
+  cf_chart="$2"
+  cf_libelle="$3"
+
+  grep -v 'app\.kubernetes\.io/managed-by = ' "$cf_ref" | sort >"$WORK_DIR/cmp-kustomize.txt"
+  grep -v 'app\.kubernetes\.io/managed-by = ' "$cf_chart" | sort >"$WORK_DIR/cmp-helm.txt"
+
+  # Le détail est produit par awk plutôt que par `diff` : awk est déjà la
+  # dépendance de l'extracteur, alors que `diff` dépend de l'applet busybox de
+  # l'image. Chaque ligne divergente est attribuée à son camp — c'est ce qui
+  # permet de savoir quel champ a bougé, et dans quel sens, sans relancer
+  # d'outil. Le comptage plutôt qu'un simple marquage de présence attrape aussi
+  # le cas où une ligne existe des deux côtés mais pas le même nombre de fois.
+  awk '
+    NR == FNR { ref[$0]++; next }
+    { chart[$0]++ }
+    END {
+      for (l in ref)   if (ref[l] > chart[l]) print "Kustomize seul : " l
+      for (l in chart) if (chart[l] > ref[l]) print "Helm seul      : " l
+    }
+  ' "$WORK_DIR/cmp-kustomize.txt" "$WORK_DIR/cmp-helm.txt" | sort >"$WORK_DIR/cmp-ecarts.txt"
+
+  cf_desc="$cf_libelle : le rendu du chart est identique à celui de l'overlay (hors managed-by)"
+  if [ ! -s "$WORK_DIR/cmp-ecarts.txt" ]; then
+    ok "$cf_desc"
+  else
+    cf_nb="$(wc -l <"$WORK_DIR/cmp-ecarts.txt" | tr -d ' ')"
+    ko "$cf_desc" "$cf_nb ligne(s) de divergence, dont :
+$(sed -n '1,10p' "$WORK_DIR/cmp-ecarts.txt" | sed 's|^|            |')"
+  fi
+}
+
+# --------------------------------------------------------------------------
 # Construction des overlays
 # --------------------------------------------------------------------------
 titre 'Construction des overlays'
@@ -456,6 +541,93 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# Rendu du chart Helm
+#
+# `helm template` ne contacte aucun cluster, comme `kubectl kustomize` : les
+# deux rendus se construisent dans les mêmes conditions, donc se comparent.
+#
+# La détection d'outillage est ce qui permet au script de rester le même dans
+# les deux jobs. `lint-k8s` n'a pas helm et doit rester vert ; `lint-helm` a les
+# deux et doit tout jouer. Le répertoire du chart est testé en plus du binaire,
+# pour que HELM_CHART_DIR mal pointé donne un message clair plutôt qu'une
+# cascade d'erreurs de rendu.
+# --------------------------------------------------------------------------
+titre 'Rendu du chart Helm'
+
+helm_disponible=0
+if ! command -v helm >/dev/null 2>&1; then
+  ignore_section 'contrôles du chart Helm' \
+    "helm est introuvable — attendu sur \$HELM_IMAGE (job lint-helm), absent de \$KUBECTL_IMAGE (job lint-k8s)"
+elif [ ! -d "$CHART_DIR" ]; then
+  ignore_section 'contrôles du chart Helm' \
+    "le chart '$CHART_DIR' est absent (variable HELM_CHART_DIR)"
+else
+  helm_disponible=1
+  for env in $environnements; do
+    valeurs="$CHART_DIR/values-$env.yaml"
+    # Un fichier de valeurs manquant est un vrai défaut, pas une absence
+    # d'outillage : le chart prétend couvrir cet environnement.
+    if [ ! -f "$valeurs" ]; then
+      ko "le chart couvre l'environnement $env" "$valeurs est absent"
+      continue
+    fi
+    rendu_helm="$WORK_DIR/rendu-helm-$env.yaml"
+    # Nom de release figé : le chart n'en dépend pas (aucun objet n'est préfixé,
+    # voir helm/microcrm/templates/_helpers.tpl), mais le figer garantit que le
+    # rendu comparé ne varie pas selon qui lance le script.
+    if helm template microcrm "$CHART_DIR" -f "$valeurs" \
+      >"$rendu_helm" 2>"$WORK_DIR/erreur-helm-$env.txt"; then
+      ok "le chart se rend avec les valeurs de $env"
+    else
+      ko "le chart se rend avec les valeurs de $env" "$(cat "$WORK_DIR/erreur-helm-$env.txt")"
+      continue
+    fi
+    aplatis "$rendu_helm" >"$WORK_DIR/faits-helm-$env.txt"
+    if [ -s "$WORK_DIR/faits-helm-$env.txt" ]; then
+      ok "le rendu Helm de $env est exploitable ($(wc -l <"$WORK_DIR/faits-helm-$env.txt" | tr -d ' ') faits extraits)"
+    else
+      ko "le rendu Helm de $env est exploitable" "l'extracteur n'a produit aucun fait"
+    fi
+  done
+fi
+
+# --------------------------------------------------------------------------
+# Contrôles par rendu du chart
+#
+# Les mêmes assertions que pour les overlays, sans exception : le contrat de
+# nommage avec deploy.sh, le socle de sécurité, les tags figés et le pull secret
+# ne deviennent pas facultatifs parce que c'est Helm qui rend. L'étiquette
+# préfixée `helm/` est ce qui permet de savoir, en lisant la sortie, laquelle
+# des deux descriptions est fautive.
+# --------------------------------------------------------------------------
+if [ "$helm_disponible" -eq 1 ]; then
+  for env in $environnements; do
+    [ -s "$WORK_DIR/faits-helm-$env.txt" ] || continue
+    titre "Chart Helm, valeurs de $env"
+    controles_rendu "$WORK_DIR/faits-helm-$env.txt" "helm/$env"
+  done
+fi
+
+# --------------------------------------------------------------------------
+# Équivalence des deux descriptions
+# --------------------------------------------------------------------------
+titre 'Équivalence des rendus Kustomize et Helm'
+
+if [ "$helm_disponible" -eq 0 ]; then
+  ignore_section 'équivalence des rendus Kustomize et Helm' \
+    "aucun rendu de chart n'a été produit, il n'y a rien à comparer aux overlays"
+else
+  for env in $environnements; do
+    if [ -s "$WORK_DIR/faits-$env.txt" ] && [ -s "$WORK_DIR/faits-helm-$env.txt" ]; then
+      compare_faits "$WORK_DIR/faits-$env.txt" "$WORK_DIR/faits-helm-$env.txt" "$env"
+    else
+      ko "$env : équivalence des rendus Kustomize et Helm" \
+        'un des deux rendus est absent, la comparaison ne prouverait rien'
+    fi
+  done
+fi
+
+# --------------------------------------------------------------------------
 # Auto-test des assertions (--autotest)
 #
 # Une assertion qui ne se déclenche jamais ne prouve rien. On abîme donc une
@@ -488,6 +660,40 @@ autotest_defaut() {
   fi
 }
 
+# L'assertion d'équivalence se teste dans les DEUX sens, et le second compte
+# autant que le premier : une comparaison qui refuse la seule différence
+# légitime échoue à chaque exécution, se fait désactiver dans la semaine, et ne
+# protège alors plus rien du tout.
+#
+# autotest_comparaison <description> <faits Helm simulés> <verdict attendu : ok|echec>
+autotest_comparaison() {
+  ac_desc="$1"
+  ac_simule="$2"
+  ac_attendu="$3"
+
+  silencieux=1
+  nb_ok_sim=0
+  nb_ko_sim=0
+  compare_faits "$WORK_DIR/faits-staging.txt" "$ac_simule" 'auto-test'
+  silencieux=0
+
+  if [ "$ac_attendu" = 'echec' ]; then
+    if [ "$nb_ko_sim" -gt 0 ]; then
+      ok "auto-test : $ac_desc"
+    else
+      ko "auto-test : $ac_desc" \
+        'la comparaison a accepté deux rendus pourtant divergents — elle ne protège de rien'
+    fi
+  else
+    if [ "$nb_ko_sim" -eq 0 ] && [ "$nb_ok_sim" -gt 0 ]; then
+      ok "auto-test : $ac_desc"
+    else
+      ko "auto-test : $ac_desc" \
+        'la comparaison a rejeté la seule différence légitime — elle serait rouge en permanence'
+    fi
+  fi
+}
+
 if [ "${1:-}" = '--autotest' ]; then
   titre 'Auto-test des assertions (rendus volontairement abîmés)'
   if [ -s "$WORK_DIR/faits-staging.txt" ]; then
@@ -514,6 +720,43 @@ if [ "${1:-}" = '--autotest' ]; then
   else
     ko 'auto-test' 'le rendu de staging est absent, impossible de jouer les défauts'
   fi
+
+  titre "Auto-test de l'assertion d'équivalence"
+  if [ "$helm_disponible" -eq 0 ]; then
+    # Ces deux auto-tests portent sur compare_faits, qui n'a de sens que face à
+    # un rendu de chart : les jouer sans helm reviendrait à tester la fonction
+    # contre elle-même.
+    ignore_section "auto-test de l'assertion d'équivalence" \
+      "aucun rendu de chart n'a été produit, la comparaison n'a pas été jouée"
+  elif [ ! -s "$WORK_DIR/faits-staging.txt" ]; then
+    ko "auto-test de l'assertion d'équivalence" \
+      'le rendu Kustomize de staging est absent, impossible de simuler un rendu de chart'
+  else
+    # Un rendu de chart plausible se fabrique à partir des faits Kustomize :
+    # partir du vrai rendu Helm ferait dépendre l'auto-test de la conformité
+    # actuelle du chart, alors qu'il doit valider la comparaison elle-même.
+    sed 's|\(app\.kubernetes\.io/managed-by\) = kustomize$|\1 = helm|' \
+      "$WORK_DIR/faits-staging.txt" >"$WORK_DIR/faits-simules.txt"
+    if cmp -s "$WORK_DIR/faits-staging.txt" "$WORK_DIR/faits-simules.txt"; then
+      ko "auto-test : la différence de managed-by est bien tolérée" \
+        "aucun label managed-by=kustomize dans les faits — la simulation ne prouverait rien"
+    else
+      autotest_comparaison 'la seule différence de managed-by est tolérée' \
+        "$WORK_DIR/faits-simules.txt" 'ok'
+    fi
+
+    # Une divergence réelle, du genre exact que le chart peut introduire : une
+    # valeur oubliée dans un fichier de valeurs d'environnement.
+    sed 's|\(containers\.0\.resources\.limits\.memory\) = .*$|\1 = 64Mi|' \
+      "$WORK_DIR/faits-simules.txt" >"$WORK_DIR/faits-simules-divergents.txt"
+    if cmp -s "$WORK_DIR/faits-simules.txt" "$WORK_DIR/faits-simules-divergents.txt"; then
+      ko "auto-test : une divergence réelle est bien détectée" \
+        "la divergence n'a pas pu être injectée (les faits sont inchangés)"
+    else
+      autotest_comparaison 'une divergence réelle entre les deux rendus est détectée' \
+        "$WORK_DIR/faits-simules-divergents.txt" 'echec'
+    fi
+  fi
 fi
 
 # --------------------------------------------------------------------------
@@ -521,6 +764,13 @@ fi
 # --------------------------------------------------------------------------
 printf '\n---------------------------------------------\n'
 printf 'Résultat : %d test(s) OK, %d en échec\n' "$nb_ok" "$nb_ko"
+
+# Sans cette ligne, un `0 en échec` laisserait croire que tout a été vérifié
+# alors qu'une partie ne l'a même pas été. Le nombre n'est affiché que s'il est
+# non nul : sur $HELM_IMAGE, où tout se joue, le bilan reste celui d'avant.
+if [ "$nb_ignore" -gt 0 ]; then
+  printf "⚠️  %d section(s) ignorée(s) faute d'outillage : non vérifiées, ni réussies ni en échec.\n" "$nb_ignore"
+fi
 
 if [ "$nb_ko" -gt 0 ]; then
   exit 1
