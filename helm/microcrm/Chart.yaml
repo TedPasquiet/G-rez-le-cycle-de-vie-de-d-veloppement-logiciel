@@ -1,0 +1,13 @@
+apiVersion: v2
+name: microcrm
+description: >-
+  Déploiement de MicroCRM (API Spring Boot + front Angular servi par Caddy).
+  Portage à l'identique des manifestes Kustomize de k8s/ : le rendu de ce chart
+  ne diffère de celui des overlays que par le label app.kubernetes.io/managed-by.
+type: application
+version: 0.1.0
+appVersion: '0.0.1'
+
+# Pas de `kubeVersion` : rien ici n'utilise d'API récente ou dépréciée
+# (apps/v1, v1, networking.k8s.io/v1 sont stables depuis 1.19). Contraindre la
+# version du cluster interdirait l'installation sans rien protéger.

@@ -1,0 +1,22 @@
+# Overlay de staging. Équivalent de k8s/overlays/staging/.
+#
+# Ni namespace ni coordonnées de registry ici : le premier arrive par
+# `helm upgrade -n "$STAGING_NAMESPACE"`, les secondes par --set. Les écrire
+# remettrait dans le dépôt des coordonnées d'infrastructure que
+# VARIABILISATION.md en avait sorties (K8S.md §4).
+
+environment: staging
+
+# Staging valide un déploiement, il ne porte pas de trafic : 1 replica suffit.
+front:
+  replicas: 1
+
+config:
+  corsAllowedOrigins: https://microcrm.staging.example.com
+  apiBaseUrl: https://api.microcrm.staging.example.com
+
+ingress:
+  frontHost: microcrm.staging.example.com
+  apiHost: api.microcrm.staging.example.com
+
+# Ressources du back non surchargées : staging garde celles de la base.
