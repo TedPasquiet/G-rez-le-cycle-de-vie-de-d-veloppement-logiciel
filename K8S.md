@@ -551,7 +551,15 @@ Prérequis : un cluster, les variables `KUBE_CONFIG`, `STAGING_NAMESPACE` et
 `PROD_NAMESPACE` créées dans GitLab ([VARIABILISATION.md](VARIABILISATION.md) §7),
 et un contrôleur d'Ingress installé.
 
-1. **Créer le namespace** — il n'est pas dans les manifestes (§4) :
+1. **Créer le namespace** — il n'est pas dans les manifestes (§4).
+
+   Depuis l'introduction de Terraform, ce n'est plus la voie normale : le
+   namespace, son `ResourceQuota`, son `LimitRange` et ses `NetworkPolicy` sont
+   décrits dans `terraform/environments/<env>/` et créés par
+   `terraform apply` ([TERRAFORM.md](TERRAFORM.md) §3 pour le partage des
+   responsabilités, §10 pour la commande). La commande ci-dessous reste exacte
+   et suffit à déployer, mais elle produit un namespace **sans aucun garde-fou
+   de consommation** — c'est un dépannage, pas la procédure :
 
    ```shell
    kubectl create namespace "$STAGING_NAMESPACE"
