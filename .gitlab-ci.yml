@@ -69,6 +69,20 @@ variables:
   # l'application ; le namespace et le chemin du registry restent fournis par la
   # CI (voir K8S.md §4).
   K8S_OVERLAYS_DIR: 'k8s/overlays'
+  # Overlay éphémère fabriqué par les jobs de déploiement : il compose l'overlay
+  # d'environnement et pose par-dessus le chemin de registry et le tag du commit,
+  # de sorte que `apply` reçoive directement la bonne image (voir K8S.md §6).
+  #
+  # Il doit vivre DANS le dépôt et être désigné par un chemin relatif : Kustomize
+  # refuse un chemin absolu dans `resources` (« new root … cannot be absolute »),
+  # donc un répertoire sous /tmp ne convient pas. Il est dans .gitignore.
+  DEPLOY_OVERLAY_DIR: '.k8s-deploy-overlay'
+  # Préfixe des images *placeholder* écrites dans k8s/base/*-deployment.yaml
+  # (`microcrm/back:PLACEHOLDER`). C'est la clé sur laquelle le transformateur
+  # `images:` de l'overlay éphémère fait sa correspondance : si le préfixe change
+  # dans les manifestes, il doit changer ici, sinon la substitution ne mord plus
+  # et le placeholder partirait tel quel vers le cluster.
+  K8S_PLACEHOLDER_IMAGE_PREFIX: 'microcrm'
   # Nom du Secret qui porte les identifiants du registry. Il est référencé en
   # `imagePullSecrets` par les deux Deployments : cette valeur et celle des
   # manifestes doivent rester identiques, et scripts/tests/validate_k8s.sh
@@ -535,6 +549,43 @@ k6-stress:
     # scripts de déploiement sont en bash. On l'installe, puis on vérifie.
     - apk add --no-cache bash
     - command -v bash
+    # Fabrique l'overlay éphémère qui porte l'image réelle de ce pipeline.
+    # Définie ici pour que deploy-staging et deploy-production l'appellent sans
+    # dupliquer le gabarit ; before_script et script partagent le même shell.
+    #
+    # Le seul outil utilisé est le Kustomize embarqué dans `kubectl` :
+    # $KUBECTL_IMAGE ne contient que le binaire kubectl, pas de kustomize
+    # autonome, donc `kustomize edit set image` n'est pas disponible. Le
+    # transformateur `images:` d'un kustomization.yaml écrit à la volée fait le
+    # même travail sans figer une image d'outillage de plus.
+    - |
+      build_deploy_overlay() {
+        local overlay_name="$1"
+        rm -rf "$DEPLOY_OVERLAY_DIR"
+        mkdir -p "$DEPLOY_OVERLAY_DIR"
+        cat > "$DEPLOY_OVERLAY_DIR/kustomization.yaml" <<EOF
+      apiVersion: kustomize.config.k8s.io/v1beta1
+      kind: Kustomization
+      resources:
+        - ../$K8S_OVERLAYS_DIR/$overlay_name
+      images:
+        - name: $K8S_PLACEHOLDER_IMAGE_PREFIX/$APP_BACK_NAME
+          newName: $CI_REGISTRY_IMAGE/$APP_BACK_NAME
+          newTag: $CI_COMMIT_SHORT_SHA
+        - name: $K8S_PLACEHOLDER_IMAGE_PREFIX/$APP_FRONT_NAME
+          newName: $CI_REGISTRY_IMAGE/$APP_FRONT_NAME
+          newTag: $CI_COMMIT_SHORT_SHA
+      EOF
+        echo "Overlay éphémère ($overlay_name) :"
+        cat "$DEPLOY_OVERLAY_DIR/kustomization.yaml"
+        # Garde-fou : si le transformateur ne mordait plus (préfixe changé dans
+        # les manifestes, par exemple), le placeholder partirait tel quel vers le
+        # cluster. Mieux vaut échouer ici que déployer une image inexistante.
+        if kubectl kustomize "$DEPLOY_OVERLAY_DIR" | grep -q 'PLACEHOLDER'; then
+          echo "ERREUR : le rendu contient encore PLACEHOLDER — la substitution d'image n'a pas mordu." >&2
+          exit 1
+        fi
+      }
 
 deploy-staging:
   <<: *deploy_template
@@ -563,19 +614,28 @@ deploy-staging:
         --docker-password="$CI_REGISTRY_PASSWORD" \
         -n "$STAGING_NAMESPACE" --dry-run=client -o yaml \
         | kubectl apply -n "$STAGING_NAMESPACE" -f -
-    # 2. On applique les manifestes. C'est ce qui rend le déploiement idempotent
-    #    sur un cluster vierge : sans cette étape, deploy.sh s'arrête sur
-    #    « Deployment 'back' introuvable » puisqu'il ne sait que modifier un
-    #    Deployment existant.
-    - kubectl apply -k "$K8S_OVERLAYS_DIR/staging" -n "$STAGING_NAMESPACE"
-    # 3. Puis on pose l'image réellement construite par ce pipeline. Les
-    #    manifestes portent un placeholder (voir k8s/base/back-deployment.yaml) :
-    #    le chemin dans le registry et le tag du commit sont des coordonnées de
-    #    CI, pas des données de dépôt. C'est donc ici que le tag arrive, et
-    #    deploy.sh apporte en plus l'attente de rollout et le retour arrière
-    #    automatique. Conséquence sur un cluster vierge uniquement : entre les
-    #    étapes 1 et 2, le premier pod tente de tirer le placeholder et reste
-    #    quelques secondes en ImagePullBackOff, avant d'être remplacé.
+    # 2. On fabrique l'overlay éphémère : l'overlay de staging, plus le chemin de
+    #    registry et le tag du commit posés par le transformateur `images:`.
+    #    Les manifestes du dépôt gardent leur placeholder — c'est ce qui permet à
+    #    lint-k8s de les valider sans coordonnées de registry (K8S.md §4).
+    - build_deploy_overlay staging
+    # 3. On applique. C'est ce qui rend le déploiement idempotent sur un cluster
+    #    vierge : sans cette étape, deploy.sh s'arrête sur « Deployment 'back'
+    #    introuvable » puisqu'il ne sait que modifier un Deployment existant.
+    #
+    #    L'état désiré envoyé au cluster contient désormais la VRAIE image, donc
+    #    l'annotation last-applied-configuration aussi. C'est le correctif : tant
+    #    que l'image passait par `kubectl set image` (étape 4), l'annotation
+    #    gardait `PLACEHOLDER` et chaque `apply` le reposait, insérant une
+    #    révision placeholder dans l'historique. La « révision précédente » d'un
+    #    déploiement sain était donc toujours le placeholder, ce qui rendait
+    #    rollback-production destructeur au lieu de réparateur. Voir K8S.md §6.
+    - kubectl apply -k "$DEPLOY_OVERLAY_DIR" -n "$STAGING_NAMESPACE"
+    # 4. deploy.sh attend la fin du rollout et revient automatiquement en arrière
+    #    s'il n'aboutit pas dans $DEPLOY_TIMEOUT. Son `kubectl set image` est
+    #    devenu un no-op — l'étape 3 a déjà posé la bonne image, donc il ne crée
+    #    aucune révision supplémentaire (vérifié). On le garde pour l'attente et
+    #    le garde-fou, couverts par les assertions de scripts/tests/run_tests.sh.
     - bash scripts/deploy/deploy.sh -n "$STAGING_NAMESPACE" -d "$APP_BACK_NAME" -c "$APP_BACK_NAME"
       -i "$CI_REGISTRY_IMAGE/$APP_BACK_NAME:$CI_COMMIT_SHORT_SHA" -t "$DEPLOY_TIMEOUT"
     - bash scripts/deploy/deploy.sh -n "$STAGING_NAMESPACE" -d "$APP_FRONT_NAME" -c "$APP_FRONT_NAME"
@@ -590,9 +650,12 @@ deploy-production:
   environment:
     name: production
   script:
-    # Même ordonnancement qu'en staging : le Secret du registry, les manifestes,
-    # puis l'image. Voir deploy-staging pour le détail — en particulier sur le
-    # fait que la sortie de `-o yaml` ne doit jamais atteindre le log.
+    # Même ordonnancement qu'en staging : le Secret du registry, l'overlay
+    # éphémère qui porte déjà la bonne image, l'apply, puis deploy.sh pour
+    # l'attente de rollout et le retour arrière. Voir deploy-staging pour le
+    # détail — en particulier sur le fait que la sortie de `-o yaml` ne doit
+    # jamais atteindre le log, et sur la raison pour laquelle l'image ne passe
+    # plus par `kubectl set image`.
     - |
       kubectl create secret docker-registry "$REGISTRY_SECRET_NAME" \
         --docker-server="$CI_REGISTRY" \
@@ -600,7 +663,8 @@ deploy-production:
         --docker-password="$CI_REGISTRY_PASSWORD" \
         -n "$PROD_NAMESPACE" --dry-run=client -o yaml \
         | kubectl apply -n "$PROD_NAMESPACE" -f -
-    - kubectl apply -k "$K8S_OVERLAYS_DIR/production" -n "$PROD_NAMESPACE"
+    - build_deploy_overlay production
+    - kubectl apply -k "$DEPLOY_OVERLAY_DIR" -n "$PROD_NAMESPACE"
     - bash scripts/deploy/deploy.sh -n "$PROD_NAMESPACE" -d "$APP_BACK_NAME" -c "$APP_BACK_NAME"
       -i "$CI_REGISTRY_IMAGE/$APP_BACK_NAME:$CI_COMMIT_SHORT_SHA" -t "$DEPLOY_TIMEOUT"
     - bash scripts/deploy/deploy.sh -n "$PROD_NAMESPACE" -d "$APP_FRONT_NAME" -c "$APP_FRONT_NAME"
@@ -612,6 +676,16 @@ deploy-production:
       when: manual
 
 # À lancer à la main si une mise en prod se passe mal : ça remet la version d'avant.
+#
+# `rollback.sh` est appelé sans --to-revision, donc il vise la révision
+# immédiatement précédente. Ce job ne vaut que si cette révision est saine :
+# tant que deploy-staging / deploy-production posaient l'image par
+# `kubectl set image` après un `apply` resté sur PLACEHOLDER, chaque déploiement
+# insérait DEUX révisions — le placeholder puis la vraie image — et la
+# précédente était donc toujours le placeholder. Ce job aurait cassé la
+# production au lieu de la réparer. L'overlay éphémère supprime la révision
+# placeholder ; c'est ce qui rend ce rollback fiable. Vérifié sur cluster,
+# voir K8S.md §14.10.
 rollback-production:
   <<: *deploy_template
   environment:

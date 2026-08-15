@@ -61,10 +61,20 @@ spec:
           # Placeholder. Le chemin réel dans le registry dépend du projet GitLab
           # ($CI_REGISTRY_IMAGE) et le tag du commit déployé
           # ($CI_COMMIT_SHORT_SHA) : deux valeurs qui n'ont pas à être commitées.
-          # C'est deploy.sh qui pose l'image réelle juste après le
-          # `kubectl apply -k`. Conséquence assumée sur un cluster vierge : le
-          # premier apply crée un pod en ImagePullBackOff pendant les quelques
-          # secondes qui séparent les deux commandes. Voir K8S.md §6.
+          # C'est ce qui permet à lint-k8s de valider ces manifestes sans aucune
+          # coordonnée de registry.
+          #
+          # Cette valeur ne part JAMAIS vers un cluster : les jobs de
+          # déploiement composent un overlay éphémère qui la remplace par
+          # l'image réelle, via le transformateur `images:` de Kustomize, AVANT
+          # l'`apply`. L'état désiré envoyé au cluster — et donc l'annotation
+          # last-applied-configuration — porte la vraie image.
+          #
+          # Le préfixe `microcrm/` est la clé de correspondance de ce
+          # transformateur ($K8S_PLACEHOLDER_IMAGE_PREFIX du .gitlab-ci.yml) :
+          # le changer ici sans le changer là-bas ferait partir ce placeholder
+          # tel quel. Un garde-fou du job échoue si le rendu contient encore
+          # « PLACEHOLDER ». Voir K8S.md §6 et §14.10.
           image: microcrm/back:PLACEHOLDER
           imagePullPolicy: IfNotPresent
           ports:

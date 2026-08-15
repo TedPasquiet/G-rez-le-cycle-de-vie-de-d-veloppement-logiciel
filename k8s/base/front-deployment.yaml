@@ -43,7 +43,8 @@ spec:
         # Nom contractuel, comme pour le back : deploy.sh exécute
         # `kubectl set image deployment/front front=<image>`.
         - name: front
-          # Placeholder, remplacé par deploy.sh — voir back-deployment.yaml.
+          # Placeholder, remplacé avant l'`apply` par l'overlay éphémère des
+          # jobs de déploiement — voir back-deployment.yaml.
           image: microcrm/front:PLACEHOLDER
           imagePullPolicy: IfNotPresent
           ports:
