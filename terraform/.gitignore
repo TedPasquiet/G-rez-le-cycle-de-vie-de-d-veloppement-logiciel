@@ -1,0 +1,39 @@
+# Ce que Terraform fabrique et qui n'a rien à être versionné.
+#
+# La règle qui compte ici est la première : **l'état n'entre jamais dans le
+# dépôt**. Un `terraform.tfstate` contient en clair tout ce que les providers
+# ont lu, y compris les attributs marqués `sensitive` dans le HCL — le masquage
+# ne vaut que pour l'affichage, pas pour le fichier. Le commiter reviendrait à
+# publier des identifiants de cluster. Voir TERRAFORM.md §4.
+terraform.tfstate
+terraform.tfstate.*
+*.tfstate
+*.tfstate.backup
+
+# Répertoire de travail : providers téléchargés (plusieurs centaines de Mo) et
+# configuration de backend résolue. Reconstruit par `terraform init`.
+.terraform/
+.terraform.tfstate.lock.info
+
+# Sortie de `terraform plan -out`. Un plan binaire embarque les valeurs lues
+# dans l'état, donc les mêmes secrets que ci-dessus.
+*.tfplan
+plan.out
+
+# Journal d'un crash du binaire : contient la configuration complète.
+crash.log
+crash.*.log
+
+# Variables locales. `terraform.tfvars` est en revanche VERSIONNÉ dans chaque
+# environnement : il ne porte que du dimensionnement (noms de namespace,
+# quotas), aucune donnée sensible, et c'est justement ce qui rend un
+# environnement reproductible depuis le seul dépôt. Ce qui est exclu ici, ce
+# sont les surcharges de poste (`*.auto.tfvars`, `*.local.tfvars`).
+*.auto.tfvars
+*.auto.tfvars.json
+*.local.tfvars
+
+# Non ignoré, et c'est délibéré : `.terraform.lock.hcl`. Ce fichier fige la
+# version ET les empreintes des providers ; hors du dépôt, deux exécutions ne
+# tourneraient pas forcément avec le même code de provider. Même logique que
+# les images d'outillage figées du .gitlab-ci.yml.
