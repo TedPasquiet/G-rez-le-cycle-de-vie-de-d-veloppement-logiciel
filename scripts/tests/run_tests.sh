@@ -436,6 +436,151 @@ verifie_code 3 'k6 en erreur (API injoignable) -> code 3' \
 verifie_contient 'injoignable' "on distingue bien la panne du dépassement de seuil"
 
 # ==========================================================================
+# ci/terraform_check.sh
+# ==========================================================================
+# Ce script est ce que jouent les jobs `terraform-validate`, `terraform-plan` et
+# `terraform-apply`. Il est testé ici avec un faux `terraform` : sans cluster,
+# sans registre de providers, et sans risquer d'écrire dans un état réel.
+#
+# Les cas qui comptent ne sont pas les cas nominaux mais les chemins d'échec —
+# un environnement qui tombe alors que l'autre passe, et surtout le garde-fou
+# qui interdit un `apply` non nommé.
+titre 'ci/terraform_check.sh'
+
+envs="$WORK_DIR/tf-envs"
+mkdir -p "$envs/staging" "$envs/production"
+
+verifie_code 0 '--help fonctionne' \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --help
+verifie_contient '--apply' "l'aide mentionne le mode apply"
+verifie_contient_pas 'source "$(cd' "l'aide ne laisse pas fuiter le code source"
+
+verifie_code 1 'option inconnue -> erreur de configuration (1)' \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --option-bidon
+
+verifie_code 1 "répertoire d'environnements inexistant -> échec explicite" \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" -d "$WORK_DIR/nexiste-pas"
+
+vide="$WORK_DIR/tf-vide"
+mkdir -p "$vide"
+verifie_code 1 "répertoire sans aucun environnement -> échec" \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" -d "$vide"
+verifie_contient 'Aucun environnement' "le message dit ce qui manque"
+
+journal="$(nouveau_journal terraform)"
+verifie_code 0 'cas nominal : validate passe sur les deux environnements' \
+  env FAKE_TERRAFORM_LOG="$journal" \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --validate -d "$envs"
+verifie_fichier_contient "$journal" 'fmt -check -recursive' 'la mise en forme est contrôlée'
+verifie_fichier_contient "$journal" 'init -backend=false' "l'init ne touche pas au backend en mode validate"
+verifie_fichier_contient "$journal" 'validate' 'la configuration est validée'
+
+# `terraform fmt -check` sort en 3, pas en 1. Un script qui testerait l'égalité
+# à 1 prendrait ce défaut pour un succès : c'est exactement ce que ce test
+# interdit de réintroduire.
+journal="$(nouveau_journal terraform)"
+verifie_code 1 'un fmt en échec (code 3) fait échouer le script' \
+  env FAKE_TERRAFORM_LOG="$journal" FAKE_TF_FMT_FAIL=3 \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --validate -d "$envs"
+verifie_contient 'terraform fmt -recursive' "le message donne la commande qui corrige"
+
+journal="$(nouveau_journal terraform)"
+verifie_code 1 'un validate en échec fait échouer le script' \
+  env FAKE_TERRAFORM_LOG="$journal" FAKE_TF_VALIDATE_FAIL=1 \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --validate -d "$envs"
+
+# Le point le plus utile de la série : un environnement en échec ne doit pas
+# empêcher l'autre d'être traité, sinon il faut deux exécutions pour voir deux
+# erreurs.
+journal="$(nouveau_journal terraform)"
+verifie_code 1 'staging en échec : production est quand même traité' \
+  env FAKE_TERRAFORM_LOG="$journal" FAKE_TF_VALIDATE_FAIL=1 FAKE_TF_FAIL_DIR=staging \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --validate -d "$envs"
+verifie_fichier_contient "$journal" 'production' "l'autre environnement a bien été traité"
+
+journal="$(nouveau_journal terraform)"
+verifie_code 1 "un init en échec n'enchaîne pas sur validate" \
+  env FAKE_TERRAFORM_LOG="$journal" FAKE_TF_INIT_FAIL=1 \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --validate -d "$envs"
+verifie_contient 'Validation non jouée' "le script dit pourquoi il n'a pas validé"
+
+journal="$(nouveau_journal terraform)"
+verifie_code 0 'mode --plan : init avec backend, puis plan' \
+  env FAKE_TERRAFORM_LOG="$journal" \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --plan -d "$envs"
+verifie_fichier_contient "$journal" 'plan -input=false' 'le plan ne demande aucune saisie'
+verifie_contient "ne dit donc RIEN de l'écart réel" \
+  "le mode --plan avertit sur ce qu'il ne prouve pas"
+
+# ⚠️ Le garde-fou qui compte : `--apply` écrit dans un vrai cluster. Sans -e, il
+# s'appliquerait à TOUS les environnements, donc à la production, dans le même
+# geste que le staging.
+verifie_code 1 '--apply sans -e est refusé' \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --apply -d "$envs"
+verifie_contient 'sans la nommer' "le refus explique pourquoi l'environnement doit être nommé"
+
+verifie_code 1 '-e sur un environnement inexistant est refusé' \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --validate -e recette -d "$envs"
+verifie_contient 'Disponibles' 'le message liste les environnements existants'
+
+journal="$(nouveau_journal terraform)"
+verifie_code 0 '--apply -e production ne touche que production' \
+  env FAKE_TERRAFORM_LOG="$journal" \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --apply -e production -d "$envs"
+verifie_fichier_contient "$journal" 'apply' "l'apply est bien lancé"
+verifie_fichier_contient_pas "$journal" 'staging' "staging n'a pas été touché"
+
+# L'apply est le seul mode qui écrit : son échec doit remonter, sans quoi un
+# pipeline vert laisserait croire que l'infrastructure est en place.
+journal="$(nouveau_journal terraform)"
+verifie_code 1 'un apply en échec fait échouer le job' \
+  env FAKE_TERRAFORM_LOG="$journal" FAKE_TF_APPLY_FAIL=1 \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --apply -e production -d "$envs"
+
+# ==========================================================================
+# ci/ansible_check.sh
+# ==========================================================================
+# Joué par le job `ansible-lint`. Le piège que ce script existe pour encoder :
+# `ansible/ansible.cfg` n'est lu que si le répertoire courant est `ansible/`.
+# Lancé depuis la racine, tout tourne sans inventaire et sans configuration,
+# en silence. Les stubs journalisent leur PWD, ce qui permet de le vérifier.
+titre 'ci/ansible_check.sh'
+
+verifie_code 0 '--help fonctionne' \
+  bash "$ROOT_DIR/scripts/ci/ansible_check.sh" --help
+verifie_contient_pas 'source "$(cd' "l'aide ne laisse pas fuiter le code source"
+
+verifie_code 1 'option inconnue -> erreur de configuration (1)' \
+  bash "$ROOT_DIR/scripts/ci/ansible_check.sh" --option-bidon
+
+verifie_code 1 'répertoire ansible inexistant -> échec explicite' \
+  bash "$ROOT_DIR/scripts/ci/ansible_check.sh" -d "$WORK_DIR/pas-dansible"
+
+journal="$(nouveau_journal ansible-lint)"
+journal_pb="$(nouveau_journal ansible-playbook)"
+verifie_code 0 'cas nominal : syntaxe puis lint' \
+  env FAKE_ANSIBLE_LINT_LOG="$journal" FAKE_ANSIBLE_PLAYBOOK_LOG="$journal_pb" \
+  bash "$ROOT_DIR/scripts/ci/ansible_check.sh" -d "$ROOT_DIR/ansible"
+verifie_fichier_contient "$journal_pb" '--syntax-check' 'la syntaxe du playbook est contrôlée'
+verifie_fichier_contient "$journal_pb" 'PWD=' 'le stub journalise son répertoire courant'
+verifie_fichier_contient "$journal_pb" '/ansible' "les outils tournent bien DANS ansible/, sans quoi ansible.cfg serait ignoré"
+
+journal="$(nouveau_journal ansible-lint)"
+verifie_code 1 'un lint en échec fait échouer le script' \
+  env FAKE_ANSIBLE_LINT_LOG="$journal" FAKE_ANSIBLE_LINT_FAIL=1 \
+  bash "$ROOT_DIR/scripts/ci/ansible_check.sh" -d "$ROOT_DIR/ansible"
+
+# Une erreur de syntaxe ne doit pas escamoter le lint : deux défauts doivent se
+# lire en une exécution.
+journal="$(nouveau_journal ansible-lint)"
+journal_pb="$(nouveau_journal ansible-playbook)"
+verifie_code 1 'une syntaxe en échec ne dispense pas de jouer le lint' \
+  env FAKE_ANSIBLE_LINT_LOG="$journal" FAKE_ANSIBLE_PLAYBOOK_LOG="$journal_pb" \
+  FAKE_ANSIBLE_PLAYBOOK_FAIL=1 \
+  bash "$ROOT_DIR/scripts/ci/ansible_check.sh" -d "$ROOT_DIR/ansible"
+verifie_fichier_contient "$journal" 'ansible-lint' "le lint a bien été joué malgré l'échec de syntaxe"
+
+# ==========================================================================
 # Bilan
 # ==========================================================================
 printf '\n---------------------------------------------\n'

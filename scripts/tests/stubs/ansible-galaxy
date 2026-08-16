@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+#
+# Faux ansible-galaxy, utilisé seulement par run_tests.sh.
+#
+# Il couvre l'option --collections d'ansible_check.sh. Le vrai ansible-galaxy
+# télécharge depuis internet : le laisser tourner dans les tests les rendrait
+# lents et dépendants du réseau, c'est-à-dire rouges pour une raison qui n'a
+# rien à voir avec le dépôt.
+#
+# ⚠️ Le cas d'échec compte plus que le cas nominal : ansible_check.sh utilise
+# `retry`, donc le test doit pouvoir vérifier que 3 tentatives ont bien eu lieu
+# puis que le script s'arrête là — sans lancer les contrôles suivants, dont le
+# diagnostic serait faux faute de collections. Chaque tentative laisse sa ligne
+# dans le journal, c'est ce qui permet de les compter.
+#
+# Variables qui pilotent son comportement (mises par le test) :
+#   FAKE_ANSIBLE_GALAXY_LOG   Fichier où sont écrites les commandes reçues.
+#   FAKE_ANSIBLE_GALAXY_FAIL  Si "1" : l'installation échoue (sortie en 1).
+
+if [[ -n "${FAKE_ANSIBLE_GALAXY_LOG:-}" ]]; then
+  echo "ansible-galaxy $*" >>"$FAKE_ANSIBLE_GALAXY_LOG"
+fi
+
+[[ "${FAKE_ANSIBLE_GALAXY_FAIL:-0}" == "1" ]] && exit 1
+exit 0
