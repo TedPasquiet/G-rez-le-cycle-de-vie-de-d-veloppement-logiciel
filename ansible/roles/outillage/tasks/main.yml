@@ -1,0 +1,207 @@
+---
+# Prépare l'outillage du poste : installe les formules Homebrew attendues,
+# vérifie que les versions obtenues atteignent le minimum du projet, et vérifie
+# — sans jamais l'installer — ce que le rôle refuse délibérément de poser.
+#
+# Le critère de validation du rôle est l'IDEMPOTENCE : une seconde exécution
+# consécutive ne signale aucun `changed`. Ce n'est pas une coquetterie, c'est ce
+# qui permet de rejouer le playbook sur un poste déjà prêt sans se demander ce
+# qu'il va y refaire. Trois règles suffisent à l'obtenir, et le rôle les
+# applique toutes les trois :
+#
+#   1. installer par MODULE, jamais par `command: brew install …`. Le module
+#      compare l'état réel avant d'agir ; le `command`, lui, ne compare rien et
+#      se déclare `changed` à chaque passage même quand il n'a rien fait ;
+#   2. `assert` et `debug` ne signalent JAMAIS `changed`, quoi qu'ils
+#      constatent — c'est ce qui les rend utilisables pour tout ce qui vérifie
+#      et tout ce qui affiche ;
+#   3. une tâche de LECTURE reste un `command`, et un `command` se croit
+#      modifiant par défaut. `changed_when: false` est ce qui rétablit la
+#      vérité, et son absence est la cause la plus banale d'un rôle qui n'est
+#      idempotent qu'à moitié.
+
+- name: Installer les formules Homebrew de l'outillage
+  # La liste part en UN appel plutôt qu'en boucle : `brew` recalcule son graphe
+  # de dépendances à chaque invocation, et cinq appels coûtent plusieurs
+  # secondes de plus pour un résultat identique.
+  #
+  # ⚠️ `state: present`, surtout pas `latest`. `latest` compare avec l'index
+  # distant : il installerait une mise à jour le matin de sa publication en
+  # amont, donc signalerait `changed` sans qu'aucun commit du dépôt ne
+  # l'explique — l'idempotence perdue au profit d'une mise à jour que personne
+  # n'a demandée. Le projet exige une version MINIMALE (group_vars/all.yml
+  # explique pourquoi), pas la dernière.
+  community.general.homebrew:
+    name: "{{ outillage_formules | map(attribute='formule') | list }}"
+    state: present
+    path: '{{ outillage_prefixe_homebrew }}/bin'
+    # `brew update` réécrit l'index du poste et ajoute des dizaines de secondes
+    # à chaque exécution, sans rien apporter à une installation « présent ou
+    # absent » : la formule manquante s'installe très bien depuis l'index déjà
+    # en place.
+    update_homebrew: false
+  when: outillage_installer | bool
+
+- name: Relever la version des outils installés par Homebrew
+  ansible.builtin.command:
+    cmd: >-
+      {{ outillage_outil.commande }}
+      {{ outillage_options_version[outillage_outil.commande]
+         | default(outillage_options_version_defaut) }}
+  register: outillage_mesures_formules
+  loop: '{{ outillage_formules }}'
+  loop_control:
+    loop_var: outillage_outil
+    label: '{{ outillage_outil.commande }}'
+  environment:
+    # Le `bin` de Homebrew est remis en tête explicitement : Ansible exécute la
+    # commande avec l'environnement du processus appelant, et rien ne garantit
+    # que celui d'un shell de connexion — ni celui d'un lancement automatisé —
+    # contienne ce répertoire. Sans cette ligne, le rôle installe une formule
+    # puis déclare son binaire introuvable.
+    PATH: "{{ outillage_prefixe_homebrew }}/bin:{{ ansible_facts.env.PATH | default('/usr/bin:/bin', true) }}"
+  # Lecture pure. Sans cette ligne la tâche se déclarerait `changed` à chaque
+  # exécution et ferait échouer à elle seule le seul critère qui compte ici.
+  changed_when: false
+  # L'absence d'un outil n'est pas une erreur DE CETTE TÂCHE : c'est le
+  # résultat qu'on lui demande de constater. L'échec, avec son message
+  # exploitable, appartient aux `assert` plus bas — un `failed` ici afficherait
+  # « non-zero return code » et rien de plus utile.
+  failed_when: false
+  # Un `command` est SAUTÉ en `--check`, faute pour Ansible de savoir s'il
+  # modifie quelque chose. Celui-ci ne modifie rien, et le sauter priverait de
+  # relevé toutes les tâches suivantes : `site.yml --check` échouerait sur une
+  # variable indéfinie au lieu de rendre le diagnostic qu'on lui demande.
+  check_mode: false
+
+- name: Relever la version des outils vérifiés sans installation
+  ansible.builtin.command:
+    cmd: >-
+      {{ outillage_outil.commande }}
+      {{ outillage_options_version[outillage_outil.commande]
+         | default(outillage_options_version_defaut) }}
+  register: outillage_mesures_verifiees
+  loop: '{{ outillage_verifies_seulement }}'
+  loop_control:
+    loop_var: outillage_outil
+    label: '{{ outillage_outil.commande }}'
+  environment:
+    PATH: "{{ outillage_prefixe_homebrew }}/bin:{{ ansible_facts.env.PATH | default('/usr/bin:/bin', true) }}"
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Constituer le relevé des versions
+  # Les deux relevés sont fusionnés ici, une bonne fois : la version trouvée
+  # n'est extraite QU'À CET ENDROIT, donc le message d'échec et le
+  # récapitulatif final ne peuvent pas afficher deux valeurs différentes pour
+  # le même outil. `set_fact` ne signale jamais `changed`, la fusion ne coûte
+  # donc rien à l'idempotence.
+  ansible.builtin.set_fact:
+    outillage_releve: >-
+      {{
+        outillage_releve | default([]) + [{
+          'commande': outillage_mesure.outillage_outil.commande,
+          'formule': outillage_mesure.outillage_outil.formule | default(''),
+          'geree': outillage_mesure.outillage_outil.version_minimale is defined,
+          'presente': outillage_mesure.rc | default(1) == 0,
+          'minimale': outillage_mesure.outillage_outil.version_minimale | default(''),
+          'raison': outillage_mesure.outillage_outil.raison | default(''),
+          'trouvee': outillage_trouvee,
+          'ligne': '%-14s %-9s %s' | format(outillage_mesure.outillage_outil.commande,
+                                            outillage_trouvee, outillage_note)
+        }]
+      }}
+  vars:
+    # ⚠️ Il n'y a volontairement PAS de variable intermédiaire pour « cet outil
+    # est-il géré par Homebrew ? », et c'est une correction, pas un oubli.
+    #
+    # Une valeur passée par `vars:` ressort en CHAÎNE : `false` y devient
+    # « False », qui n'est pas vide, donc VRAI pour `selectattr`. Le filtre plus
+    # bas aurait alors classé docker parmi les outils gérés par Homebrew et lui
+    # aurait opposé une version minimale qu'il n'a pas. Le contourner par
+    # `| bool` marchait, mais ansible-core l'a déprécié — « the bool filter
+    # coerced invalid value (str) to False, this feature will be removed from
+    # ansible-core 2.23 » — donc le contournement avait une date de péremption.
+    #
+    # Le test `is defined` est donc évalué là où il est utilisé, où il produit
+    # un vrai booléen.
+    # ⚠️ `stdout_lines` est ABSENT du résultat quand le binaire n'existe pas :
+    # le module échoue avant d'avoir la moindre sortie. D'où la cascade de
+    # `default` — sans elle, un outil manquant produit une erreur de gabarit
+    # illisible au lieu du message d'absence que le rôle a préparé.
+    #
+    # Une sortie présente mais illisible dégénère en « 0 », qui échoue
+    # forcément la comparaison de version : le rôle préfère un échec expliqué à
+    # une exception Jinja.
+    outillage_trouvee: >-
+      {{ outillage_mesure.stdout_lines | default([], true) | first | default('', true)
+         | regex_search(outillage_motif_version) | default('0', true) }}
+    # `version_relevee` de group_vars date le relevé fait sur ce poste. Le
+    # signaler quand il a divergé évite qu'une documentation périmée soit prise
+    # pour la réalité de la machine ; le rôle ne s'appuie jamais dessus pour
+    # décider, il ne relève que ce qu'il mesure.
+    outillage_note: >-
+      {{ 'minimum ' ~ outillage_mesure.outillage_outil.version_minimale
+         if outillage_mesure.outillage_outil.version_minimale is defined
+         else 'vérifié, jamais installé par ce rôle'
+      }}{{ ' ; group_vars annonce ' ~ outillage_mesure.outillage_outil.version_relevee
+           ~ ', relevé à rafraîchir'
+           if outillage_mesure.outillage_outil.version_minimale is defined
+           and outillage_mesure.outillage_outil.version_relevee | default('') != outillage_trouvee
+           else '' }}
+  loop: '{{ outillage_mesures_formules.results + outillage_mesures_verifiees.results }}'
+  loop_control:
+    loop_var: outillage_mesure
+    label: '{{ outillage_mesure.outillage_outil.commande }}'
+
+- name: Vérifier que chaque outil Homebrew atteint la version minimale attendue
+  ansible.builtin.assert:
+    that:
+      # L'ordre compte : `assert` s'arrête à la première condition fausse. La
+      # présence se teste donc avant la version, sans quoi un outil absent
+      # serait rapporté comme « version 0 trop ancienne », ce qui envoie
+      # chercher une mise à jour là où il faut une installation.
+      - outillage_outil.presente
+      # ⚠️ Le test `version` de Jinja, jamais un `>=` entre chaînes. En ordre
+      # lexicographique « 1.9 » est SUPÉRIEUR à « 1.30 », et « 24.0 » inférieur
+      # à « 9.0 » : une vérification écrite en comparaison de chaînes laisse
+      # passer précisément les cas qu'elle était censée attraper, en silence.
+      - outillage_outil.trouvee is version(outillage_outil.minimale, '>=')
+    fail_msg: >-
+      {{ outillage_outil.commande }} : version trouvée « {{ outillage_outil.trouvee }} »,
+      version attendue « {{ outillage_outil.minimale }} » au minimum.
+      {{ "Commande introuvable dans le PATH : vérifier que l'installation Homebrew a abouti."
+         if not outillage_outil.presente
+         else 'Corriger avec : brew upgrade ' ~ outillage_outil.formule }}
+    # `quiet` supprime l'écho des conditions satisfaites : le récapitulatif de
+    # fin est le seul rendu destiné à être lu, le reste est du bruit.
+    quiet: true
+  loop: "{{ outillage_releve | selectattr('geree') | list }}"
+  loop_control:
+    loop_var: outillage_outil
+    label: '{{ outillage_outil.commande }}'
+
+- name: Vérifier la présence des outils que le rôle n'installe pas
+  # Aucune exigence de version ici, seulement la présence : imposer un minimum
+  # à un outil qu'on ne sait pas installer laisserait la personne devant un
+  # échec qu'aucune action du playbook ne peut résoudre.
+  ansible.builtin.assert:
+    that:
+      - outillage_outil.presente
+    fail_msg: >-
+      {{ outillage_outil.commande }} est introuvable dans le PATH, et ce rôle ne
+      l'installe pas volontairement. {{ outillage_outil.raison }}
+    quiet: true
+  loop: "{{ outillage_releve | rejectattr('geree') | list }}"
+  loop_control:
+    loop_var: outillage_outil
+    label: '{{ outillage_outil.commande }}'
+
+- name: Afficher le récapitulatif de l'outillage
+  # Le rendu utile du rôle. Les `assert` ci-dessus disent ce qui bloque ; ce
+  # récapitulatif dit où en est le poste, ce qui est la question qu'on se pose
+  # quand tout passe. Une liste plutôt qu'une chaîne : le callback `yaml`
+  # configuré dans ansible.cfg la rend une ligne par entrée.
+  ansible.builtin.debug:
+    msg: "{{ outillage_releve | map(attribute='ligne') | list }}"

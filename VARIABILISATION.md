@@ -89,9 +89,10 @@ déclarées une seule fois.
 | `SONAR_SCANNER_IMAGE` | `sonarsource/sonar-scanner-cli:11.5`        | `latest`                   |
 | `CYPRESS_IMAGE`       | `cypress/browsers:node-22.21.0-chrome-141…` | `latest`                   |
 | `KUBECTL_IMAGE`       | `alpine/kubectl:1.34.2`                     | `bitnami/kubectl:latest`   |
+| `HELM_IMAGE`          | `alpine/k8s:1.36.2`                         | ajoutée avec le chart Helm |
 | `K6_IMAGE`            | `grafana/k6:2.1.0`                          | déjà figée                 |
 
-Deux choix méritent une note :
+Trois choix méritent une note :
 
 - **`cypress/browsers`** — le tag porte les versions de Node _et_ des
   navigateurs. C'est verbeux, mais c'est exactement ce qu'on veut figer : un
@@ -102,6 +103,11 @@ Deux choix méritent une note :
   avec de vraies versions. Conséquence : l'image est basée sur Alpine et n'a pas
   `bash`, que `.deploy_template` installe donc dans son `before_script`, comme le
   fait déjà `.package_template`.
+- **`alpine/k8s` plutôt qu'`alpine/helm`** pour `HELM_IMAGE` — le job `lint-helm`
+  ne se contente pas de linter le chart : il compare son rendu à celui des
+  overlays Kustomize, et cette comparaison exige `kubectl` en plus de `helm`.
+  `alpine/helm` n'embarque que `helm` (vérifié). `alpine/k8s:1.36.2` fournit les
+  deux, plus `kustomize`, et son tag suit la version de kubectl. Voir HELM.md §5.
 
 `NODE_IMAGE` et `GRADLE_IMAGE` sont alignées sur les Dockerfiles : le code est
 compilé avec la version qui a servi à le tester.

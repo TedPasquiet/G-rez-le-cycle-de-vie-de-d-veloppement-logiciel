@@ -12,3 +12,19 @@ back/.gradle
 
 # Documentation binaire
 *.odt
+
+# Templates Helm.
+#
+# Ce ne sont pas des fichiers YAML : ce sont des gabarits de texte, dont le
+# rendu est du YAML. Une directive `{{- include "microcrm.labels" . | nindent 4 }}`
+# placée là où un analyseur attend une clé le fait échouer — Prettier s'arrête
+# sur « Implicit keys need to be on a single line », et il a raison au sens
+# strict. Le formater serait de toute façon dangereux : Prettier réindenterait
+# des lignes dont l'indentation est calculée par `nindent`.
+#
+# Ce qui valide ces fichiers, c'est `helm lint` et la comparaison de leur rendu
+# à celui des overlays Kustomize, tous deux joués par le job lint-helm.
+#
+# Les `values*.yaml` et le `Chart.yaml` ne sont PAS exclus : ce sont du vrai
+# YAML, et ils restent formatés comme le reste du dépôt.
+helm/*/templates/

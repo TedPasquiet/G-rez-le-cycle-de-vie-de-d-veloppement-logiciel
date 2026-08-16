@@ -18,7 +18,7 @@ connaît pas. Sans l'import du §10.1, l'exécution échoue sur
 
 | Élément   | Version                                            |
 | --------- | -------------------------------------------------- |
-| Terraform | 1.15.7 (plancher déclaré : `>= 1.9`)               |
+| Terraform | 1.15.7 (plancher déclaré : `>= 1.5`)               |
 | Provider  | `hashicorp/kubernetes` 3.2.1 (contrainte `~> 3.2`) |
 | Cluster   | minikube, contexte `minikube`                      |
 

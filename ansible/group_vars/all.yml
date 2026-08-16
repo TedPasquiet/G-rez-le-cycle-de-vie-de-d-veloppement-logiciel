@@ -1,0 +1,76 @@
+# Variables communes aux deux rôles.
+#
+# C'est ici, et seulement ici, que se lisent les versions attendues et le
+# dimensionnement du cluster. Les rôles ne portent aucune valeur en dur : ils
+# décrivent un comportement, ce fichier décrit une cible.
+
+# ---------------------------------------------------------------------------
+# Outillage
+# ---------------------------------------------------------------------------
+# Chaque entrée est une formule Homebrew que le rôle `outillage` installe, avec
+# la version *minimale* que le projet attend.
+#
+# ⚠️ Minimale, et non exacte : Homebrew installe toujours la dernière version
+# d'une formule et ne sait pas revenir en arrière proprement. Exiger une
+# version exacte donnerait un rôle qui échoue le lendemain de la première mise
+# à jour du miroir, sans qu'aucun commit ne l'explique. Les versions exactes,
+# elles, sont figées là où elles comptent vraiment — les images d'outillage du
+# `.gitlab-ci.yml`, qui sont ce que la CI exécute réellement.
+#
+# `version_relevee` sert à l'affichage du récapitulatif ; c'est la version
+# trouvée sur ce poste le 2026-08-15.
+outillage_formules:
+  - formule: kubernetes-cli
+    commande: kubectl
+    version_minimale: '1.30'
+    version_relevee: '1.36.2'
+  - formule: helm
+    commande: helm
+    version_minimale: '3.14'
+    version_relevee: '4.2.2'
+  - formule: terraform
+    commande: terraform
+    version_minimale: '1.5'
+    version_relevee: '1.15.7'
+  - formule: minikube
+    commande: minikube
+    version_minimale: '1.30'
+    version_relevee: '1.38.1'
+  - formule: ansible-lint
+    commande: ansible-lint
+    version_minimale: '24.0'
+    version_relevee: '26.8.0'
+
+# Outils que le rôle VÉRIFIE sans jamais les installer, avec la raison. Un
+# playbook qui installe une application graphique sur le poste de quelqu'un
+# dépasse ce qu'on lui a demandé ; il vaut mieux échouer avec un message clair.
+outillage_verifies_seulement:
+  - commande: docker
+    raison: >-
+      Docker Desktop est une application graphique (cask Homebrew), souvent
+      installée à la main et parfois par un canal d'entreprise. L'installer
+      depuis un playbook risquerait de doubler une installation existante.
+
+# ---------------------------------------------------------------------------
+# Cluster
+# ---------------------------------------------------------------------------
+cluster_profil: minikube
+cluster_driver: docker
+
+# Addons requis par le déploiement. `ingress` n'est pas un confort : sans
+# contrôleur d'Ingress, l'Ingress de l'application est créé et ne route rien.
+# C'est le prérequis que K8S.md §10 listait sans que personne ne le possède —
+# c'est précisément le trou que ce rôle bouche.
+cluster_addons:
+  - ingress
+  - registry
+
+# ⚠️ Dimensionnement : INDICATIF, jamais appliqué à un profil existant.
+#
+# minikube ne sait pas redimensionner un cluster déjà créé : changer `--cpus`
+# ou `--memory` suppose de le détruire et de le recréer. Un rôle qui
+# « corrigerait » l'écart détruirait donc un cluster en service, avec tout ce
+# qu'il contient. Le rôle `cluster` se contente de SIGNALER l'écart, et laisse
+# la décision à un humain. Voir ANSIBLE.md §6.
+cluster_cpus: 2
+cluster_memoire_mo: 4096

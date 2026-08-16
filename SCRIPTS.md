@@ -36,7 +36,7 @@ scripts/
 │   └── rollback.sh          # revient en arrière sur Kubernetes
 └── tests/
     ├── run_tests.sh         # teste tous les scripts ci-dessus
-    ├── validate_k8s.sh      # valide les manifestes k8s/ (sans cluster)
+    ├── validate_k8s.sh      # valide les manifestes k8s/ et le chart helm/ (sans cluster)
     ├── run_k6.sh            # lance les tests de performance k6
     ├── fixtures/            # faux rapports JaCoCo
     └── stubs/               # faux kubectl / docker / trivy / k6
@@ -183,7 +183,9 @@ Le détail des scénarios et des seuils est dans [QUALITY.md](QUALITY.md) §5.
 Il valide les manifestes Kubernetes du dossier `k8s/` **sans cluster** : il
 construit chaque overlay avec le Kustomize embarqué dans `kubectl`, puis vérifie
 le rendu. C'est le pendant de `run_tests.sh` pour l'infrastructure — au lieu de
-tester les scripts, il teste ce que Kustomize produit réellement.
+tester les scripts, il teste ce que Kustomize produit réellement. Quand `helm`
+est disponible, il en fait autant du chart `helm/microcrm/` et compare les deux
+rendus.
 
 Ce qu'il vérifie :
 
@@ -209,19 +211,42 @@ Ce qu'il vérifie :
   un patch d'Ingress oublié (voir K8S.md §7) ;
 - staging et production produisent des valeurs différentes (ConfigMap, hôte
   d'Ingress, ressources du back) : c'est la preuve que les patches d'overlay
-  mordent au lieu d'être silencieux.
+  mordent au lieu d'être silencieux ;
+- **le chart Helm passe exactement les mêmes contrôles** (`helm template … -f
+values-<env>.yaml`, étiquetés `helm/staging` et `helm/production`) ;
+- **et surtout : son rendu est identique à celui de l'overlay correspondant**,
+  au seul label `app.kubernetes.io/managed-by` près (`kustomize` d'un côté,
+  `helm` de l'autre). Deux descriptions de la même application, c'est deux
+  occasions de diverger ; c'est cette assertion-là qui rend la divergence
+  visible ici plutôt qu'au déploiement. En cas d'écart, le script affiche les
+  premières lignes divergentes, côté par côté, sous la forme de faits
+  (`Kustomize seul : Deployment/back …limits.memory = 1Gi`) : on voit quel champ
+  a bougé sans relancer d'outil.
+
+**Quand `helm` est absent** — c'est le cas du job `lint-k8s`, dont l'image
+`$KUBECTL_IMAGE` ne le fournit pas — la section Helm n'est ni réussie ni en
+échec : elle est marquée `ignoré`, avec sa raison, et le bilan compte les
+sections ignorées à part. La compter en succès serait un mensonge, la compter en
+échec rendrait `lint-k8s` rouge sans raison. Un `0 en échec` accompagné d'un
+`⚠️ N section(s) ignorée(s)` dit exactement ce qui a été vérifié.
 
 L'option `--autotest` rejoue toutes ces assertions sur des rendus volontairement
 abîmés (Deployment renommé, conteneur renommé, ConfigMap fantôme, sonde sur un
 port inconnu, `runAsNonRoot` retiré, image en `latest`, pull secret absent ou
 mal nommé…) et vérifie qu'elles
 **échouent** bien. Une assertion qui ne se déclenche jamais ne prouve rien.
+L'assertion d'équivalence est auto-testée **dans les deux sens** : elle doit
+tomber sur une divergence réelle, et rester silencieuse sur la seule différence
+légitime, celle de `managed-by` — une comparaison rouge en permanence finit
+désactivée, donc ne protège plus rien.
 
 Variables (avec leurs valeurs par défaut) : `K8S_OVERLAYS_DIR` (`k8s/overlays`),
-`APP_BACK_NAME` (`back`), `APP_FRONT_NAME` (`front`),
-`REGISTRY_SECRET_NAME` (`gitlab-registry`) — les mêmes que celles du
-`.gitlab-ci.yml`, pour que le contrat vérifié soit celui que la CI déclare.
-Il renvoie : `0` si tout passe, `1` si au moins une assertion échoue.
+`HELM_CHART_DIR` (`helm/microcrm`), `APP_BACK_NAME` (`back`),
+`APP_FRONT_NAME` (`front`), `REGISTRY_SECRET_NAME` (`gitlab-registry`) — les
+mêmes que celles du `.gitlab-ci.yml`, pour que le contrat vérifié soit celui que
+la CI déclare.
+Il renvoie : `0` si tout passe, `1` si au moins une assertion échoue. Une
+section ignorée ne change pas le code de sortie.
 
 Il est écrit en **sh POSIX** et non en bash, contrairement aux autres scripts :
 l'image `alpine/kubectl` n'a que busybox `sh`. Les jobs de déploiement y
@@ -233,8 +258,11 @@ scripts/tests/validate_k8s.sh              # les assertions seules
 scripts/tests/validate_k8s.sh --autotest   # + preuve qu'elles se déclenchent
 ```
 
-Utilisé par le job `lint-k8s` (stage `lint`, image `$KUBECTL_IMAGE`).
-Le détail des manifestes est dans [K8S.md](K8S.md).
+Utilisé par **deux** jobs : `lint-k8s` (image `$KUBECTL_IMAGE`, sans helm, donc
+section Helm ignorée) et `lint-helm` (image `$HELM_IMAGE`, qui a helm _et_
+kubectl, donc tout est joué). Le recouvrement est assumé : chaque job reste
+autonome. Le détail des manifestes est dans [K8S.md](K8S.md), celui du chart
+dans [HELM.md](HELM.md).
 
 ---
 
@@ -272,9 +300,11 @@ Aujourd'hui : **95 tests**, tout passe.
 scripts/tests/run_tests.sh
 ```
 
-Les manifestes Kubernetes ont leur propre suite, `validate_k8s.sh` (60
-assertions, dont 10 d'auto-test), lancée par le job `lint-k8s` : elle a besoin de
-`kubectl`, que l'image `$PYTHON_IMAGE` de `test-scripts` ne fournit pas.
+Les manifestes Kubernetes ont leur propre suite, `validate_k8s.sh` : elle a
+besoin de `kubectl`, que l'image `$PYTHON_IMAGE` de `test-scripts` ne fournit
+pas. **60 assertions** dans le job `lint-k8s` (dont 10 d'auto-test, la section
+Helm y étant ignorée faute de `helm`), **108** dans `lint-helm`, qui joue en plus
+les contrôles du chart, l'équivalence des deux rendus et ses 2 auto-tests.
 
 Chaque test affiche `ok` ou `ÉCHEC` avec la raison, et le script sort en 1 si au
 moins un test rate.
