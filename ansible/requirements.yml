@@ -1,0 +1,28 @@
+---
+# Collections Ansible dont dépendent les rôles.
+#
+# Elles sont déjà fournies par le paquet `ansible` (14.1.0 sur ce poste), qui
+# est une distribution : il embarque des centaines de collections. Les déclarer
+# ici quand même a deux raisons, et ce n'est pas de la redondance.
+#
+# 1. Le paquet `ansible-core`, lui, n'embarque RIEN. Quiconque installe
+#    `ansible-core` plutôt que `ansible` — ce que fait la plupart des images de
+#    CI, parce qu'il pèse dix fois moins — n'aurait aucune de ces collections.
+#    Ce fichier est ce qui rend le projet installable dans ce cas.
+# 2. Les versions sont figées, comme les images d'outillage du
+#    `.gitlab-ci.yml` : une collection qui change de version peut changer le
+#    comportement d'un module sans qu'aucun commit du dépôt ne l'explique.
+#
+# Installation :
+#   ansible-galaxy collection install -r requirements.yml
+collections:
+  # Fournit `community.general.homebrew`, sur lequel repose tout le rôle
+  # outillage. C'est ce module qui rend l'installation idempotente : il ne
+  # signale `changed` que s'il a réellement installé quelque chose, là où un
+  # `command: brew install …` le signalerait à chaque exécution.
+  - name: community.general
+    version: '13.1.0'
+  # Utilisée pour les faits de plateforme. Déclarée parce que le rôle cluster
+  # distingue macOS du reste, et qu'un module manquant échouerait tard.
+  - name: ansible.posix
+    version: '2.2.0'

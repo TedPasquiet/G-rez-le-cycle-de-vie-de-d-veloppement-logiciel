@@ -1,0 +1,260 @@
+---
+# Ce rôle possède le SOCLE sur lequel tout le reste se pose : le profil minikube
+# et ses addons. Il s'arrête au bord du namespace et ne crée aucun objet
+# Kubernetes — c'est la frontière de TERRAFORM.md §3 prolongée d'un cran vers le
+# bas. Le namespace, son quota et ses policies appartiennent à Terraform ;
+# l'application appartient à Kustomize.
+#
+# ⚠️ Ce rôle ne DÉTRUIT jamais rien. minikube ne sait pas redimensionner un
+# profil existant : changer `--cpus` ou `--memory` suppose un `delete` suivi
+# d'un `start`, donc la perte de tout ce que le cluster contient — ici le
+# namespace `microcrm-staging` et l'application qui y tourne. Un rôle qui
+# « convergerait » vers `cluster_cpus` / `cluster_memoire_mo` serait donc un
+# rôle destructeur, avec la particularité de ne détruire que sur les postes déjà
+# en service. La décision est assumée : l'écart est SIGNALÉ, jamais corrigé, et
+# ni `minikube delete` ni un `start` sur un profil déjà démarré n'apparaissent
+# nulle part ci-dessous.
+#
+# L'idempotence est le critère de validation de ce rôle, et elle ne va pas de
+# soi : `ansible.builtin.command` signale `changed` par défaut, quoi qu'il
+# fasse. La règle appliquée partout ici est donc : une tâche qui LIT un état
+# porte `changed_when: false`, une tâche qui AGIT est conditionnée par l'état
+# relevé juste avant.
+#
+# Ces mêmes lectures portent `check_mode: false`. Sans lui, `--check` saute les
+# tâches `command` — y compris celles qui ne font que lire — et le rôle s'écroule
+# à la première interprétation d'une sortie vide. Un `--check` qui ne sait rien
+# lire ne peut rien prédire ; le laisser lire est ce qui rend l'option utile, et
+# aucune de ces commandes ne modifie quoi que ce soit.
+
+- name: Vérifier que le contrat d'entrée du rôle est fourni
+  ansible.builtin.assert:
+    that:
+      - cluster_profil | default('', true) | length > 0
+      - cluster_driver | default('', true) | length > 0
+      - cluster_addons is defined
+      - cluster_cpus | default(0) | int > 0
+      - cluster_memoire_mo | default(0) | int > 0
+    fail_msg: >-
+      Le rôle cluster attend `cluster_profil`, `cluster_driver`,
+      `cluster_addons`, `cluster_cpus` et `cluster_memoire_mo`. Ces valeurs sont
+      définies dans `group_vars/all.yml` : une exécution qui atteint ce message
+      tourne sans inventaire, probablement parce qu'elle a été lancée depuis la
+      racine du dépôt plutôt que depuis `ansible/` (voir ansible.cfg).
+    quiet: true
+
+# Le rôle `outillage` installe minikube, mais un `--tags cluster` le saute. Sans
+# cette vérification, l'absence du binaire remonterait sous la forme d'un
+# « No such file or directory » sur une tâche de relevé, à trois écrans du vrai
+# problème.
+- name: Relever la version de minikube
+  ansible.builtin.command:
+    cmd: minikube version -o json
+  register: cluster_version_minikube
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Vérifier que minikube est installé
+  ansible.builtin.assert:
+    that:
+      - cluster_version_minikube.rc == 0
+    fail_msg: >-
+      minikube est introuvable ou ne répond pas. Jouer d'abord
+      `ansible-playbook site.yml --tags outillage`, qui l'installe.
+    quiet: true
+
+# ⚠️ `minikube status` sort en 85 quand le profil n'existe pas, et en code non
+# nul quand il est simplement arrêté. C'est une INFORMATION, pas une erreur :
+# d'où `failed_when: false`, et une décision prise sur le code de retour.
+#
+# Le code de retour, et lui seul. La sortie n'est pas exploitable dans ce cas :
+# pour un profil inconnu, minikube émet deux documents JSON successifs, que
+# `from_json` refuse. Elle est reparsée plus bas, une fois le cluster démarré.
+- name: Relever le statut du profil minikube
+  ansible.builtin.command:
+    cmd: minikube status --profile {{ cluster_profil }} --output json
+  register: cluster_statut_initial
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# Sert uniquement à savoir si le profil EXISTE, ce que le statut ne distingue
+# pas d'un profil arrêté. La différence commande le passage de `--cpus` et
+# `--memory` : sur un profil existant, minikube les ignore avec un avertissement,
+# et les passer laisserait croire à la lecture que le rôle redimensionne.
+- name: Relever l'inventaire des profils minikube
+  ansible.builtin.command:
+    cmd: minikube profile list --output json
+  register: cluster_profils
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Déterminer si le profil ciblé existe déjà
+  ansible.builtin.set_fact:
+    cluster_profil_existe: >-
+      {{ cluster_profil in (inventaire.valid | map(attribute='Name') | list) }}
+  vars:
+    # Un poste sans aucun profil fait sortir la commande en non nul avec une
+    # sortie qui n'est pas de l'inventaire : on retombe alors sur une liste vide,
+    # qui est exactement ce que la situation décrit.
+    inventaire: >-
+      {{ cluster_profils.stdout | from_json
+         if cluster_profils.rc == 0 else {'valid': []} }}
+
+# Le seul `minikube start` du rôle, et il ne s'exécute que sur un cluster qui ne
+# tourne pas. Un `start` sur un profil déjà démarré n'est pas anodin : il
+# reconfigure le cluster, reconfigure kubectl, et surtout il signalerait
+# `changed` à chaque exécution — ce qui reviendrait à admettre que le rôle ne
+# sait pas dire si son travail est déjà fait.
+- name: Démarrer le profil minikube
+  ansible.builtin.command:
+    cmd: >-
+      minikube start
+      --profile {{ cluster_profil }}
+      --driver {{ cluster_driver }}
+      {{ dimensionnement if not cluster_profil_existe | bool else '' }}
+  vars:
+    dimensionnement: >-
+      --cpus {{ cluster_cpus | int }} --memory {{ cluster_memoire_mo | int }}mb
+  when: cluster_statut_initial.rc != 0
+  changed_when: true
+
+# Relevé après le démarrage, et non avant : sur un profil qui vient d'être créé,
+# c'est la seule lecture qui connaisse sa version de Kubernetes et son
+# dimensionnement réels.
+- name: Relever la configuration effective du profil
+  ansible.builtin.command:
+    cmd: minikube profile list --output json
+  register: cluster_profils_effectifs
+  changed_when: false
+  check_mode: false
+
+- name: Extraire la configuration du profil ciblé
+  ansible.builtin.set_fact:
+    cluster_config: >-
+      {{ (cluster_profils_effectifs.stdout | from_json).valid
+         | selectattr('Name', 'equalto', cluster_profil)
+         | map(attribute='Config') | first | default({}) }}
+
+# ⚠️ Le point le plus important du rôle : on CONSTATE, on ne corrige pas.
+#
+# Corriger imposerait `minikube delete`, donc la destruction du cluster et de
+# tout ce qui y vit. Le rôle refuse de prendre cette décision à la place d'un
+# humain. `cluster_cpus` et
+# `cluster_memoire_mo` n'ont donc que deux usages : dimensionner un cluster qui
+# n'existe pas encore, et alimenter cet avertissement.
+#
+# `debug` plutôt que `fail` : un écart de dimensionnement n'empêche pas
+# Terraform ni le déploiement de fonctionner, et faire échouer le playbook pour
+# cela pousserait à le contourner. `debug` ne signale jamais `changed`.
+- name: Signaler un écart de dimensionnement du profil
+  ansible.builtin.debug:
+    msg:
+      - '⚠️ Le profil {{ cluster_profil }} est EN DESSOUS du dimensionnement attendu.'
+      - "CPU : {{ cluster_config.CPUs | default('inconnu') }} relevés, {{ cluster_cpus }} attendus."
+      - "Mémoire : {{ cluster_config.Memory | default('inconnue') }} Mio relevés, {{ cluster_memoire_mo }} Mio attendus."
+      - >-
+        Aucune correction n'est appliquée : minikube ne sait pas redimensionner
+        un profil existant, et la manœuvre (`minikube delete` puis `minikube
+        start`) détruirait le contenu du cluster, namespaces compris. À décider
+        et à jouer à la main si l'écart est jugé gênant.
+  # Strictement INFÉRIEUR, et non « différent ». Le dimensionnement est un
+  # plancher : un profil qui dispose de plus que demandé satisfait le besoin.
+  # Avec une comparaison d'inégalité, ce poste — 6100 Mio pour 4096 demandés —
+  # afficherait l'avertissement à chaque exécution, et un avertissement qui se
+  # déclenche toujours cesse d'être lu.
+  when: >-
+    cluster_config.CPUs | default(cluster_cpus) | int < cluster_cpus | int or
+    cluster_config.Memory | default(cluster_memoire_mo) | int < cluster_memoire_mo | int
+
+# `-o json` plutôt que la sortie tabulaire : le tableau est destiné à l'œil
+# humain, ses colonnes sont alignées à l'espace et son format n'est garanti par
+# rien. Le découper produirait un rôle qui se met à activer des addons déjà
+# actifs le jour où minikube ajoute une colonne.
+- name: Relever l'état des addons du profil
+  ansible.builtin.command:
+    cmd: minikube addons list --profile {{ cluster_profil }} --output json
+  register: cluster_addons_releve
+  changed_when: false
+  check_mode: false
+
+- name: Établir la liste des addons déjà actifs
+  ansible.builtin.set_fact:
+    cluster_addons_actifs: >-
+      {{ cluster_addons_releve.stdout | from_json | dict2items
+         | selectattr('value.Status', 'equalto', 'enabled')
+         | map(attribute='key') | list }}
+
+# La boucle ne porte QUE sur les addons manquants. `minikube addons enable` est
+# certes réentrant, mais l'appeler sur un addon déjà actif ferait signaler
+# `changed` à chaque exécution : l'idempotence se joue ici, dans le `difference`,
+# pas dans la commande.
+- name: Activer les addons manquants
+  ansible.builtin.command:
+    cmd: minikube addons enable {{ item }} --profile {{ cluster_profil }}
+  loop: '{{ cluster_addons | difference(cluster_addons_actifs) }}'
+  changed_when: true
+
+# Dernière lecture, sans `failed_when: false` cette fois : à ce stade le cluster
+# doit tourner, et un statut en échec est une vraie erreur. Elle vaut mieux ici
+# que trois étapes plus loin, sur un `terraform apply` qui ne joint pas l'API.
+- name: Relever le statut final du cluster
+  ansible.builtin.command:
+    cmd: minikube status --profile {{ cluster_profil }} --output json
+  register: cluster_statut_final
+  changed_when: false
+  check_mode: false
+
+- name: Normaliser le statut relevé
+  ansible.builtin.set_fact:
+    # minikube renvoie un objet pour un cluster mono-nœud, et un tableau dès
+    # qu'il en compte plusieurs. Traiter les deux ici évite de supposer une
+    # topologie que rien n'impose.
+    cluster_etat: '{{ brut if brut is mapping else brut | first }}'
+  vars:
+    brut: '{{ cluster_statut_final.stdout | from_json }}'
+
+# « Prêt à recevoir Terraform » se résume à ceci : un serveur d'API qui répond.
+# L'affirmer sans le vérifier serait laisser au provider Kubernetes le soin de
+# découvrir le contraire.
+- name: Vérifier que le cluster est prêt à recevoir Terraform
+  ansible.builtin.assert:
+    that:
+      - cluster_etat.Host == 'Running'
+      - cluster_etat.APIServer == 'Running'
+      - cluster_etat.Kubeconfig == 'Configured'
+    fail_msg: >-
+      Le profil {{ cluster_profil }} ne répond pas comme un cluster prêt :
+      {{ cluster_etat }}. Un `minikube start --profile {{ cluster_profil }}`
+      manuel donnera le détail de l'échec.
+    quiet: true
+
+# Le contexte courant décide de la cible réelle d'un `terraform apply` ou d'un
+# `kubectl apply -k`, et rien dans ces deux commandes ne le rappelle. Il figure
+# donc au récapitulatif : c'est la variable qui fait déployer au mauvais endroit.
+- name: Relever le contexte kubectl courant
+  ansible.builtin.command:
+    cmd: kubectl config current-context
+  register: cluster_contexte
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Afficher le récapitulatif du cluster
+  ansible.builtin.debug:
+    msg:
+      - 'Profil        : {{ cluster_profil }} ({{ cluster_config.Driver | default(cluster_driver) }})'
+      - 'Statut        : hôte {{ cluster_etat.Host }}, API {{ cluster_etat.APIServer }}, kubelet {{ cluster_etat.Kubelet }}'
+      - "Kubernetes    : {{ cluster_config.KubernetesConfig.KubernetesVersion | default('inconnue') }}"
+      - "Dimensionnem. : {{ cluster_config.CPUs | default('?') }} CPU, {{ cluster_config.Memory | default('?') }} Mio"
+      # Union du relevé et des addons demandés : les manquants viennent d'être
+      # activés par la tâche précédente, qui aurait fait échouer le playbook
+      # sinon. Cela évite une seconde interrogation de minikube dont on connaît
+      # déjà la réponse.
+      - "Addons actifs : {{ (cluster_addons_actifs + cluster_addons) | unique | sort | join(', ') }}"
+      - >-
+        Contexte      : {{ cluster_contexte.stdout | trim
+                           if cluster_contexte.rc == 0
+                           else 'indéterminé (kubectl absent ou sans kubeconfig)' }}

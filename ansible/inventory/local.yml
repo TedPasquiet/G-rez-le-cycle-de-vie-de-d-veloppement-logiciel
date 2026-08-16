@@ -1,0 +1,18 @@
+# Inventaire local — le seul du projet.
+#
+# La décision D2 a retenu l'option locale : il n'existe ni serveur distant, ni
+# compte cloud, donc aucun hôte à joindre par SSH. Le poste de développement est
+# la cible, et `ansible_connection: local` court-circuite SSH plutôt que de
+# demander à la machine de se connecter à elle-même.
+#
+# Ce fichier est le seul endroit à changer le jour où un hôte distant
+# apparaîtrait : les rôles ne présument rien de la connexion.
+all:
+  hosts:
+    poste:
+      ansible_host: localhost
+      ansible_connection: local
+      # Sans cette ligne, Ansible utilise le Python qui l'exécute, celui de
+      # Homebrew. C'est ce qu'on veut ici — la préciser évite qu'une variable
+      # d'environnement héritée du shell change la cible sans prévenir.
+      ansible_python_interpreter: '{{ ansible_playbook_python }}'
