@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Stack de journalisation, décrite à part de k8s/base/ parce qu'elle n'a ni le
+# même cycle de vie ni le même public : l'application est redéployée à chaque
+# commit par la CI, l'ELK est une brique d'infrastructure qu'on pose une fois et
+# qui doit survivre aux déploiements applicatifs. Les mélanger reviendrait à
+# recréer Elasticsearch — et à perdre son PVC — à chaque `deploy.sh`.
+#
+# Comme dans k8s/base/, aucun `namespace:` ici. Le namespace `logging` est créé
+# par Terraform (TERRAFORM.md §3) et fourni à l'`apply` par `-n logging`. Voir
+# K8S.md §4 : Kustomize décrit la forme, l'appelant fournit les coordonnées.
+#
+# ⚠️ Une seule exception, inévitable : le sujet du ClusterRoleBinding de
+# Filebeat. Elle est justifiée en détail dans filebeat-rbac.yaml.
+
+resources:
+  - elk-config.yaml
+  - elasticsearch-config.yaml
+  - elasticsearch-pvc.yaml
+  - elasticsearch-deployment.yaml
+  - elasticsearch-service.yaml
+  - kibana-deployment.yaml
+  - kibana-service.yaml
+  - filebeat-rbac.yaml
+  - filebeat-config.yaml
+  - filebeat-daemonset.yaml
+
+# `part-of` distinct de celui de k8s/base/ (`microcrm`) : ces pods vivent dans un
+# autre namespace, ont un autre cycle de vie, et un
+# `kubectl get all -l app.kubernetes.io/part-of=microcrm` ne doit pas ramener la
+# stack d'observabilité au milieu de l'application qu'elle observe.
+#
+# `includeSelectors` reste à false pour la même raison que dans k8s/base/ :
+# `spec.selector` est immuable après création, y injecter un label ferait échouer
+# tous les `apply` ultérieurs. Les sélecteurs sont donc écrits à la main.
+labels:
+  - includeTemplates: true
+    pairs:
+      app.kubernetes.io/part-of: microcrm-logging
+      app.kubernetes.io/managed-by: kustomize

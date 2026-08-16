@@ -128,6 +128,29 @@ dependencies {
 	// L'exposition est volontairement réduite dans application.properties.
 	implementation 'org.springframework.boot:spring-boot-starter-actuator'
 	implementation 'ro.polak:spring-boot-data-fixtures:0.2.0'
+	// Encodeur de logs JSON, consommé uniquement par logback-spring.xml : aucune
+	// classe Java n'y fait référence, d'où `runtimeOnly` plutôt qu'`implementation`
+	// (il reste hors du classpath de compilation, donc personne ne peut coupler le
+	// code applicatif à une API de journalisation tierce par inadvertance).
+	//
+	// Pourquoi cette bibliothèque et pas Spring Boot lui-même : le *structured
+	// logging* natif (logging.structured.format.console=ecs) n'arrive qu'en Spring
+	// Boot 3.4 ; on est en 3.2.5 et monter la version du framework pour un besoin
+	// d'observabilité serait un risque sans rapport avec le gain.
+	//
+	// Pourquoi ECS et pas net.logstash.logback:logstash-logback-encoder : les deux
+	// produisent du JSON valide, mais l'encodeur Elastic émet directement le schéma
+	// ECS (@timestamp, log.level, log.logger, error.stack_trace...), qui est celui
+	// que les index templates et les écrans prêts à l'emploi de Kibana attendent.
+	// Avec l'encodeur Logstash il faudrait soit renommer chaque champ dans la
+	// configuration Logback, soit poser un pipeline d'ingestion côté Elasticsearch :
+	// de la traduction à maintenir en double, pour un JSON équivalent au bout.
+	// Le nommage ECS est aussi ce qui rend un champ corrélable entre le back et
+	// tout ce qui sera indexé plus tard (logs d'infrastructure, métriques).
+	//
+	// Version épinglée : le BOM Spring Boot ne gère pas ce groupe, une version
+	// flottante ferait dépendre le format des logs de la date du build.
+	runtimeOnly 'co.elastic.logging:logback-ecs-encoder:1.7.0'
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	runtimeOnly 'org.hsqldb:hsqldb'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

@@ -1,0 +1,205 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elasticsearch
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: logging
+spec:
+  # 1 replica, et ce n'est pas négociable tant que le stockage est un PVC
+  # ReadWriteOnce : deux pods se disputeraient le même node.lock. Même forme de
+  # contrainte que le back de k8s/base (K8S.md §8.1) — la limite vient du
+  # stockage, pas d'un arbitrage de dimensionnement.
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: elasticsearch
+  strategy:
+    # Recreate et pas RollingUpdate : un rolling update démarrerait le nouveau
+    # pod avant d'arrêter l'ancien, or le PVC est ReadWriteOnce et le répertoire
+    # de données est verrouillé. Le nouveau pod resterait bloqué en
+    # ContainerCreating (volume déjà attaché) ou planterait sur node.lock,
+    # pendant que l'ancien reste en place : un déploiement qui ne finit jamais.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: elasticsearch
+        app.kubernetes.io/component: logging
+    spec:
+      # Elasticsearch n'appelle pas l'API Kubernetes (c'est Filebeat qui le
+      # fait). Le jeton serait une surface d'attaque sans contrepartie.
+      automountServiceAccountToken: false
+      securityContext:
+        # UID/GID 1000 : l'image officielle crée l'utilisateur `elasticsearch`
+        # avec cet UID et le rattache au groupe root (GID 0), qui possède
+        # /usr/share/elasticsearch. Figer la valeur permet au kubelet de vérifier
+        # runAsNonRoot avant même de lancer le conteneur.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 0
+        # Le PVC est provisionné root:root. Sans fsGroup, le processus ne peut
+        # pas écrire dans son propre répertoire de données et s'arrête au
+        # démarrage avec une AccessDeniedException sur /usr/share/elasticsearch/data.
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: elasticsearch
+          # Version épinglée à l'identique sur les trois composants : Kibana
+          # refuse de démarrer face à un Elasticsearch d'une version majeure ou
+          # mineure différente, et Filebeat pousse un template d'index qui porte
+          # sa propre version. Un tag mobile ferait diverger les trois sans
+          # prévenir. Contrôlé par scripts/tests/validate_k8s.sh.
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.19.7
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 9200
+            - name: transport
+              containerPort: 9300
+          env:
+            # Tas fixé explicitement, et Xms = Xmx.
+            #
+            # Sans ES_JAVA_OPTS, Elasticsearch dimensionne son tas tout seul à
+            # partir de la mémoire qu'il CROIT disponible. Le résultat dépend de
+            # ce que le conteneur voit du nœud, pas de la limite qu'on lui a
+            # posée : sur un nœud à 7,75 Gio il peut viser bien plus que sa
+            # limite de 2 Gio, et se faire tuer par l'OOM killer sans que rien
+            # dans les logs n'explique pourquoi. Le fixer supprime la surprise.
+            #
+            # Xms = Xmx parce qu'un tas qui grandit à chaud provoque des pauses
+            # de réallocation, et parce que la JVM réserve de toute façon Xmx en
+            # mémoire virtuelle : laisser Xms plus bas ne rend rien au système.
+            - name: ES_JAVA_OPTS
+              value: '-Xms1g -Xmx1g'
+          # ⚠️ Dimensionnement — le piège explicite de ce lot.
+          #
+          # Mémoire : limite = 2 × le tas. Ce n'est PAS de la marge de confort.
+          # Une JVM consomme, en plus de son tas : la mémoire directe (netty y
+          # alloue ses tampons réseau, plafonnée par défaut à Xmx/2 pour
+          # Elasticsearch), le metaspace, le cache de code JIT, les piles de
+          # threads, et — décisif ici — le cache de pages des fichiers d'index,
+          # que `node.store.allow_mmap: false` fait passer par des tampons NIO
+          # comptés dans le cgroup. Une limite égale au tas rend l'OOMKill
+          # certain au premier pic ; c'est le mode de panne le plus courant
+          # d'Elasticsearch en conteneur, et le plus opaque (exit code 137, pas
+          # une ligne dans les logs de l'application).
+          #
+          # Les chiffres, calés sur l'allocatable RÉEL du nœud (14 CPU,
+          # 8125932 Kio ≈ 7,75 Gio) et sur le fait que ce nœud héberge DÉJÀ
+          # d'autres projets (≈ 2,7 Gio de requests réservés avant nous) :
+          #   - 1 Gio de tas, soit largement de quoi indexer les logs de deux
+          #     pods ; en dessous de 512 Mio Elasticsearch peine à démarrer, et
+          #     au-delà de 2 Gio on prend la place des autres sans rien y gagner ;
+          #   - limite 2 Gio, requests 1,5 Gio : l'ordonnanceur réserve de quoi
+          #     démarrer sans immobiliser toute la marge du nœud.
+          #
+          # CPU : le démarrage (chargement des modules, recouvrement du translog,
+          # compilation JIT) est le moment le plus gourmand, et c'est lui qui
+          # décide si le startupProbe tient dans son budget. D'où 2 CPU en
+          # limite — le nœud en a 14, dont 11,9 non réservés — pour un besoin de
+          # croisière très faible (500 m en request).
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1536Mi
+            limits:
+              cpu: '2'
+              memory: 2Gi
+          # Même raisonnement que pour le back (K8S.md §5) : le démarrage est
+          # long et variable, on le confie à un startupProbe plutôt que de
+          # dégrader liveness et readiness pour toute la vie du pod avec un
+          # initialDelaySeconds long.
+          #
+          # Budget : 30 × 10 s = 300 s. Elasticsearch démarre en 40 à 60 s sur ce
+          # nœud, mais le premier démarrage sur un PVC vierge crée l'index d'état
+          # du cluster et le keystore, et un nœud chargé par les autres projets
+          # peut tripler ce délai. Le budget est calé sur le pire cas observé,
+          # pas sur le cas nominal — un startupProbe trop court transforme un
+          # démarrage lent en CrashLoopBackOff permanent.
+          #
+          # `?local=true` : on interroge l'état vu par CE nœud sans passer par le
+          # maître élu. Sur un cluster à un nœud c'est équivalent, mais ça évite
+          # que la sonde dépende d'une élection qui n'est pas encore finie.
+          startupProbe:
+            httpGet:
+              path: /_cluster/health?local=true
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          # Liveness = « le processus est-il irrécupérable ? ». Un échec tue le
+          # conteneur, donc on vise le signe le moins ambigu possible : la racine
+          # répond dès que le serveur HTTP est debout, sans dépendre de l'état
+          # des index. On reste tolérant (3 échecs, 10 s de timeout) : une pause
+          # de GC un peu longue ne doit pas provoquer un redémarrage.
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 3
+          # Readiness = « peut-on lui envoyer du trafic ? ». Ici l'état du
+          # cluster est le bon critère : tant qu'il n'est pas au moins jaune,
+          # Filebeat et Kibana se prendraient des erreurs d'indexation. Un échec
+          # ne fait que sortir le pod du Service, c'est réversible, donc on peut
+          # être plus exigeant que la liveness.
+          #
+          # Jaune et non vert : à un seul nœud les répliques ne peuvent pas être
+          # allouées, donc le cluster est jaune EN PERMANENCE et par
+          # construction. Exiger le vert laisserait le pod NotReady pour
+          # toujours — c'est l'erreur classique sur une stack single-node.
+          readinessProbe:
+            httpGet:
+              path: /_cluster/health?local=true&wait_for_status=yellow&timeout=5s
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+            # ⚠️ Écart assumé avec k8s/base, qui met readOnlyRootFilesystem à
+            # true partout.
+            #
+            # L'entrypoint d'Elasticsearch 8 écrit dans son propre répertoire
+            # d'installation avant même de lancer la JVM : il crée
+            # config/elasticsearch.keystore s'il est absent, y ajoute les clés
+            # attendues, et écrit config/jvm.options.d ainsi que ses journaux
+            # sous logs/. Ces chemins sont dispersés dans une arborescence qui
+            # contient aussi les fichiers livrés par l'image (jvm.options,
+            # log4j2.properties, modules/) : y monter des emptyDir masquerait ces
+            # fichiers et le nœud ne démarrerait plus du tout.
+            #
+            # Le compromis retenu — racine inscriptible mais UID non-root,
+            # aucune capability, aucune escalade — laisse un attaquant modifier
+            # des fichiers dans une couche éphémère, détruite au redémarrage du
+            # pod. La seule vraie solution serait une image reconstruite qui
+            # sépare installation et état ; c'est ce que fait l'opérateur ECK, et
+            # ça dépasse le périmètre de ce lot.
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+            # subPath et non un montage de répertoire : monter le répertoire
+            # config/ entier masquerait jvm.options, log4j2.properties et
+            # l'emplacement du keystore, tous fournis par l'image. On ne
+            # superpose donc que ce seul fichier.
+            - name: config
+              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+              subPath: elasticsearch.yml
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: elasticsearch-data
+        - name: config
+          configMap:
+            name: elasticsearch-config

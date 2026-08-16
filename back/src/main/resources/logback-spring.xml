@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Le nom du fichier est contractuel : Logback lit `logback.xml` tout seul, mais
+  la balise <springProfile> n'est comprise que si c'est Spring Boot qui initialise
+  la journalisation, ce qu'il ne fait que pour `logback-spring.xml`. Renommer ce
+  fichier ne provoquerait pas une erreur franche : les blocs conditionnels
+  seraient simplement ignorés et l'application n'aurait plus AUCUN appender.
+
+  Objectif : un même artefact qui journalise en texte pour un humain et en JSON
+  pour une machine. Sans ce clivage il faut choisir son camp — soit Kibana ne
+  sait rien filtrer (une ligne de texte arrive comme une chaîne opaque, et
+  « toutes les erreurs 500 de la dernière heure » n'est plus une requête mais une
+  recherche plein texte), soit le développeur lit du JSON à la main dans son
+  terminal. Voir T7.4 de la feuille de route.
+-->
+<configuration>
+
+    <!--
+      Apporte les conversion rules de Spring Boot (%clr pour la couleur, %wEx
+      pour les piles d'exception raccourcies) et les variables CONSOLE_LOG_*.
+      Sans cet include, le pattern texte ci-dessous afficherait les mots-clés de
+      conversion tels quels.
+    -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!--
+      La valeur vient de application.properties et n'est donc pas connue de
+      Logback : <springProperty> est le seul pont entre l'Environment Spring et
+      le contexte Logback. Le defaultValue couvre l'instant où Logback démarre
+      avant que la propriété soit résolue (tests hors contexte web, notamment).
+    -->
+    <springProperty scope="context" name="serviceName" source="spring.application.name"
+                    defaultValue="microcrm"/>
+
+    <!--
+      Profil ABSENT = poste de développement. Choisir la négation plutôt que de
+      nommer un profil « dev » évite d'imposer au développeur d'activer quoi que
+      ce soit : `./gradlew bootRun` et les tests tombent dans ce cas par défaut.
+    -->
+    <springProfile name="!container">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>${CONSOLE_LOG_PATTERN}</pattern>
+                <charset>${CONSOLE_LOG_CHARSET}</charset>
+            </encoder>
+        </appender>
+    </springProfile>
+
+    <!--
+      Profil `container` = exécution dans le cluster, où plus personne ne lit la
+      sortie standard directement : elle est ramassée sur le nœud puis indexée.
+      ⚠️ Ce profil n'est activé par AUCUN manifeste à ce jour. Le conteneur reçoit
+      sa configuration par `envFrom: configMapRef: microcrm-config`
+      (k8s/base/back-deployment.yaml) ; il suffit donc d'ajouter
+      `SPRING_PROFILES_ACTIVE: container` aux données de k8s/base/configmap.yaml
+      pour que toute la chaîne bascule en JSON — les overlays staging et
+      production héritent de la base. Tant que cette clé n'existe pas, le pod
+      journalise en texte : la dégradation est silencieuse, c'est le prix du
+      choix ci-dessus (défaut lisible plutôt que défaut machine).
+
+      On écrit toujours sur stdout, jamais dans un fichier : un conteneur au
+      système de fichiers en lecture seule (readOnlyRootFilesystem: true) ne
+      pourrait pas ouvrir de fichier de log, et un log écrit dans un pod
+      disparaît avec lui.
+    -->
+    <springProfile name="container">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <!--
+              EcsEncoder émet un objet JSON par ligne, déjà au schéma ECS :
+              @timestamp, log.level, log.logger, message, process.thread.name, et
+              error.type / error.message / error.stack_trace quand un Throwable
+              accompagne l'événement. C'est ce qui rend la pile d'exception
+              interrogeable au lieu d'être noyée dans des lignes de continuation
+              que le collecteur découperait en autant d'événements distincts.
+            -->
+            <encoder class="co.elastic.logging.logback.EcsEncoder">
+                <!-- Discrimine les flux quand le back et d'autres services partagent un index. -->
+                <serviceName>${serviceName}</serviceName>
+                <!--
+                  HOSTNAME est renseigné par Logback lui-même ; dans un pod il vaut
+                  le nom du pod. Permet d'isoler l'instance fautive après un
+                  rolling update sans avoir à corréler sur les horodatages.
+                -->
+                <serviceNodeName>${HOSTNAME}</serviceNodeName>
+                <!--
+                  Les marqueurs deviennent des `tags` ECS, c'est-à-dire une facette
+                  Kibana. Sans ça un marqueur posé dans le code n'aurait aucun effet
+                  observable et donnerait l'illusion d'être exploitable.
+                -->
+                <includeMarkers>true</includeMarkers>
+                <!--
+                  Volontairement désactivé : la classe et la ligne d'origine sont
+                  obtenues en fabriquant une stack trace à CHAQUE événement, ce qui
+                  est le réglage le plus coûteux de cet encodeur. log.logger suffit
+                  à localiser la source.
+                -->
+                <includeOrigin>false</includeOrigin>
+            </encoder>
+        </appender>
+    </springProfile>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+</configuration>
