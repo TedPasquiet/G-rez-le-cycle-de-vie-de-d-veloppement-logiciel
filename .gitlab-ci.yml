@@ -3,6 +3,11 @@ stages:
   - test
   - quality
   - security
+  # L'infrastructure se valide AVANT qu'on ne construise quoi que ce soit :
+  # un chart, un manifeste ou un plan Terraform cassé n'a pas besoin d'attendre
+  # une compilation Gradle pour être signalé. Après `security` en revanche, pour
+  # que les scans tournent sur du code encore frais dans le cache.
+  - infra
   - build
   - package
   - perf
@@ -53,6 +58,23 @@ variables:
   # 4.2.1, un correctif derrière le 4.2.2 du poste, ce qui est sans effet sur le
   # rendu (vérifié : les deux produisent les mêmes objets).
   HELM_IMAGE: 'alpine/k8s:1.36.2'
+  # Terraform. Le tag suit exactement la version du poste de développement :
+  # `terraform validate` peut accepter en 1.15 ce qu'une autre mineure refuse,
+  # et un écart entre les deux ferait échouer la CI sur du HCL validé en local.
+  #
+  # ⚠️ L'image est basée sur Alpine et n'a PAS bash, alors que
+  # scripts/ci/terraform_check.sh en est. Le job l'installe donc, comme le fait
+  # déjà .deploy_template pour alpine/kubectl. Son entrypoint est `terraform`,
+  # d'où le `entrypoint: ['']` sans lequel la première commande du script serait
+  # passée en argument à terraform.
+  TERRAFORM_IMAGE: 'hashicorp/terraform:1.15.7'
+  # Ansible n'a pas d'image officielle versionnée exploitable : le seul dépôt
+  # courant (pipelinecomponents/ansible-lint) ne publie que `edge` et des tags
+  # de commit — impossible à figer, même problème que bitnami/kubectl
+  # (VARIABILISATION.md). On installe donc les deux paquets, à version exacte,
+  # dans $PYTHON_IMAGE qui est déjà figée. Ce sont ces deux numéros qui font foi.
+  ANSIBLE_VERSION: '14.1.0'
+  ANSIBLE_LINT_VERSION: '26.8.0'
   # Figée de longue date : d'une version de k6 à l'autre les mesures ne
   # seraient plus comparables.
   K6_IMAGE: 'grafana/k6:2.1.0'
@@ -82,6 +104,11 @@ variables:
   # l'exigence du brief sans remplacer le mécanisme qui déploie réellement.
   # C'est Kustomize qui fait foi — voir HELM.md §3.
   HELM_CHART_DIR: 'helm/microcrm'
+  # Racine des environnements Terraform et du projet Ansible. Les scripts de
+  # scripts/ci/ les lisent depuis ces variables, jamais en dur : c'est ce qui
+  # permet de les jouer en local sur une copie sans toucher au dépôt.
+  TERRAFORM_ENVS_DIR: 'terraform/environments'
+  ANSIBLE_DIR: 'ansible'
   # Overlay éphémère fabriqué par les jobs de déploiement : il compose l'overlay
   # d'environnement et pose par-dessus le chemin de registry et le tag du commit,
   # de sorte que `apply` reçoive directement la bonne image (voir K8S.md §6).
@@ -439,6 +466,125 @@ trivy-fs:
     - trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --exit-code 0 --no-progress .
   allow_failure: true
   <<: *rules_test
+
+# ===========================================================================
+# INFRA (Terraform et Ansible — l'infrastructure comme code)
+# ===========================================================================
+# Ces jobs valident ce qui PORTE l'application, là où les étapes précédentes
+# valident l'application elle-même. Le partage des responsabilités est écrit
+# dans ANSIBLE.md §2 : Ansible possède le poste et le cluster, Terraform le
+# namespace et ses garde-fous, Kustomize l'application, la CI les secrets.
+#
+# Toute la logique vit dans scripts/ci/, pas dans ces blocs YAML — même règle
+# que pour validate_k8s.sh (SCRIPTS.md) : un script est testable en local,
+# relu par ShellCheck, et doublé de faux binaires qui permettent d'éprouver ses
+# chemins d'échec dans test-scripts. Un bloc YAML n'est rien de tout cela.
+
+# Validation hors ligne des configurations Terraform : mise en forme, puis
+# `init -backend=false` et `validate` sur chaque environnement.
+#
+# `-backend=false` est ce qui rend le job jouable sur une branche de feature :
+# il télécharge les providers sans jamais toucher à l'état, donc sans avoir
+# besoin ni du backend ni d'un cluster.
+terraform-validate:
+  image:
+    name: $TERRAFORM_IMAGE
+    entrypoint: ['']
+  stage: infra
+  needs: []
+  before_script:
+    # L'image hashicorp/terraform est basée sur Alpine et n'a que busybox sh ;
+    # le script est en bash. Même remède que .deploy_template pour
+    # alpine/kubectl.
+    - apk add --no-cache bash
+  script:
+    - terraform version
+    - bash scripts/ci/terraform_check.sh --validate -d "$TERRAFORM_ENVS_DIR"
+  <<: *rules_test
+
+# Lint du projet Ansible : syntaxe du playbook, puis ansible-lint.
+#
+# Pas d'image Ansible figée disponible (voir le bloc variables), donc les deux
+# paquets sont installés à version exacte dans $PYTHON_IMAGE. `--no-cache-dir`
+# évite de garder un cache pip que rien ne réutilisera d'un job à l'autre.
+ansible-lint:
+  image: $PYTHON_IMAGE
+  stage: infra
+  needs: []
+  before_script:
+    - pip install --no-cache-dir "ansible==$ANSIBLE_VERSION" "ansible-lint==$ANSIBLE_LINT_VERSION"
+    - ansible --version | head -1
+    - ansible-lint --version | head -1
+  script:
+    - bash scripts/ci/ansible_check.sh -d "$ANSIBLE_DIR"
+  <<: *rules_test
+
+# ⚠️ `terraform plan` N'EST PAS sur les mêmes règles que `terraform-validate`,
+# et ce n'est pas un oubli. Deux raisons, toutes deux mesurées :
+#
+# 1. Le plan exige qu'un FICHIER kubeconfig existe. Vérifié : avec un
+#    `config_path` inexistant, la commande échoue sur « refers to an invalid
+#    path » avant même de planifier. Or $KUBE_CONFIG est une variable protégée,
+#    donc absente des branches de feature — le job y échouerait toujours.
+#
+# 2. Ce plan ne prouverait de toute façon presque rien. L'état est local et
+#    n'est jamais commité (TERRAFORM.md §4) : la CI repart d'un état VIDE à
+#    chaque exécution, donc le plan annonce « tout à créer » quel que soit le
+#    contenu réel du cluster. Vérifié aussi : contre un kubeconfig valide
+#    pointant sur un cluster injoignable, `plan` sort en 0 et annonce
+#    « 6 to add ». Il ne détecte aucune dérive tant que l'état n'est pas
+#    partagé — la bascule vers l'état managé GitLab est décrite en
+#    TERRAFORM.md §4, et c'est elle qui rendra ce job réellement utile.
+#
+# Il reste en manuel, sur les branches où le kubeconfig existe, parce qu'il
+# répond quand même à une question : « ce que le dépôt décrit est-il
+# planifiable ? ». Pas à « qu'est-ce qui va changer ? ».
+terraform-plan:
+  image:
+    name: $TERRAFORM_IMAGE
+    entrypoint: ['']
+  stage: infra
+  needs: []
+  variables:
+    KUBECONFIG: '$KUBE_CONFIG'
+  before_script:
+    - apk add --no-cache bash
+  script:
+    - bash scripts/ci/terraform_check.sh --plan -d "$TERRAFORM_ENVS_DIR"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+      allow_failure: true
+
+# Application réelle de l'infrastructure. Manuel, sur `main` seulement, et
+# jamais en `allow_failure` : contrairement au plan, un `apply` qui échoue
+# laisse l'infrastructure dans un état intermédiaire, et le pipeline doit le
+# dire.
+#
+# ⚠️ Sur un environnement dont le namespace a été créé à la main, cet apply
+# échoue sur « namespaces … already exists » tant que l'objet n'a pas été
+# importé. La procédure est en TERRAFORM.md §10.1 ; elle ne peut pas être
+# automatisée ici sans rendre le job destructeur sur un cluster vierge.
+terraform-apply:
+  image:
+    name: $TERRAFORM_IMAGE
+    entrypoint: ['']
+  stage: infra
+  needs: ['terraform-validate']
+  environment:
+    name: production
+  variables:
+    KUBECONFIG: '$KUBE_CONFIG'
+  before_script:
+    - apk add --no-cache bash
+  script:
+    - bash scripts/ci/terraform_check.sh --apply -d "$TERRAFORM_ENVS_DIR"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
 
 # ===========================================================================
 # BUILD (compilation des artefacts)

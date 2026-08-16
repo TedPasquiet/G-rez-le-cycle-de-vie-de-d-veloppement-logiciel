@@ -182,8 +182,11 @@ est utilisé, où il produit un vrai booléen.
 
 **`stdout_callback = yaml` fait échouer le playbook entier.** Ce greffon venait
 de `community.general` et en a été **retiré** en 12.0.0 ; le poste est en 13.1.0.
-L'échec survient avant la première tâche. Le remplaçant est
-`result_format = yaml`, une option du greffon par défaut d'ansible-core.
+L'échec survient avant la première tâche. Le remplaçant est une option du
+greffon par défaut d'ansible-core — et son nom de clé ini est
+`callback_result_format`, **pas** `result_format`. Ce second piège a coûté un
+aller-retour : une clé mal nommée est acceptée sans broncher et purement
+ignorée, la sortie restant en JSON sans qu'aucun message ne le signale.
 
 **`ansible.cfg` n'est lu que si le répertoire courant est `ansible/`.** Un
 `ansible-playbook ansible/site.yml` lancé depuis la racine du dépôt l'ignore en

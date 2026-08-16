@@ -76,6 +76,64 @@ Utilisé par les jobs `package-back` et `package-front`.
 
 ---
 
+## `ci/terraform_check.sh`
+
+Contrôle les configurations Terraform de `terraform/environments/`. Trois modes,
+qui n'ont ni le même coût ni la même valeur de preuve :
+
+| Mode                  | Ce qu'il fait                                                            | Où il tourne                                      |
+| --------------------- | ------------------------------------------------------------------------ | ------------------------------------------------- |
+| `--validate` (défaut) | `fmt -check`, puis `init -backend=false` et `validate` par environnement | job `terraform-validate`, sur toutes les branches |
+| `--plan`              | `init` puis `plan` par environnement                                     | job `terraform-plan`, manuel                      |
+| `--apply`             | `init` puis `apply -auto-approve`                                        | job `terraform-apply`, manuel sur `main`          |
+
+Les environnements sont **découverts**, jamais listés en dur : un troisième
+environnement ajouté demain est contrôlé sans toucher au script. Tous sont
+traités même après un échec, pour que deux erreurs se lisent en une exécution.
+
+⚠️ **`--apply` exige `-e <environnement>`.** Appliquer en boucle sur tous les
+environnements ferait passer la production dans le même geste que le staging,
+sans que rien ne le distingue à la lecture du pipeline. La confirmation
+interactive qu'on perd avec `-auto-approve` est remplacée par l'obligation
+d'écrire l'environnement visé.
+
+⚠️ **Ce que `--plan` ne prouve pas.** Mesuré : avec un kubeconfig valide pointant
+sur un cluster éteint, `terraform plan` sort en `0` et annonce « 6 to add ». Et
+comme l'état est local et jamais commité ([TERRAFORM.md](TERRAFORM.md) §4), la
+CI repart d'un état vide à chaque exécution. Ce mode contrôle donc que la
+configuration se résout, pas l'écart avec la réalité — le script le redit à
+l'exécution, parce qu'une sortie de job se lit sans le code sous les yeux.
+
+```bash
+scripts/ci/terraform_check.sh                       # validate, hors cluster
+scripts/ci/terraform_check.sh --plan
+scripts/ci/terraform_check.sh --apply -e production
+```
+
+Le détail des ressources est dans [TERRAFORM.md](TERRAFORM.md).
+
+## `ci/ansible_check.sh`
+
+Contrôle le projet Ansible : `--syntax-check` du playbook, puis `ansible-lint`.
+Utilisé par le job `ansible-lint`.
+
+**Sa raison d'être tient dans un `cd`.** `ansible/ansible.cfg` n'est lu que si le
+répertoire courant est `ansible/` : un `ansible-lint ansible/` lancé depuis la
+racine du dépôt l'ignore en silence, tourne sans inventaire et sans la
+configuration du projet — et sort en `0`. Le script entre donc dans le
+répertoire avant d'agir, et c'est ce que les stubs vérifient en journalisant
+leur répertoire courant.
+
+Comme pour Terraform, les échecs sont cumulés : une erreur de syntaxe n'escamote
+pas le lint.
+
+```bash
+scripts/ci/ansible_check.sh
+scripts/ci/ansible_check.sh --collections   # installe d'abord les collections figées
+```
+
+Le périmètre des rôles est dans [ANSIBLE.md](ANSIBLE.md).
+
 ## `ci/quality_gate.py`
 
 Il demande à SonarCloud si le Quality Gate est passé, et fait échouer le job si
