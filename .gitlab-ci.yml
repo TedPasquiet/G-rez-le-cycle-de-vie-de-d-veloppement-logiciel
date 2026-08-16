@@ -44,6 +44,15 @@ variables:
   # catalogue Bitnami (2025) : seul `latest` subsiste, donc impossible à figer.
   # alpine/kubectl offre les mêmes commandes avec de vraies versions.
   KUBECTL_IMAGE: 'alpine/kubectl:1.34.2'
+  # Outillage du chart Helm. alpine/k8s embarque kubectl, helm ET kustomize dans
+  # la même image, et c'est ce qui décide du choix : le job lint-helm compare le
+  # rendu du chart à celui des overlays Kustomize, il lui faut donc les deux
+  # dans le même conteneur. Une image helm seule (alpine/helm) ne saurait pas
+  # construire le rendu de référence. Le tag suit la version de kubectl —
+  # 1.36.2 ici, la même que le poste de développement ; le helm embarqué est en
+  # 4.2.1, un correctif derrière le 4.2.2 du poste, ce qui est sans effet sur le
+  # rendu (vérifié : les deux produisent les mêmes objets).
+  HELM_IMAGE: 'alpine/k8s:1.36.2'
   # Figée de longue date : d'une version de k6 à l'autre les mesures ne
   # seraient plus comparables.
   K6_IMAGE: 'grafana/k6:2.1.0'
@@ -69,6 +78,10 @@ variables:
   # l'application ; le namespace et le chemin du registry restent fournis par la
   # CI (voir K8S.md §4).
   K8S_OVERLAYS_DIR: 'k8s/overlays'
+  # Racine du chart Helm. Le chart double les overlays Kustomize : il répond à
+  # l'exigence du brief sans remplacer le mécanisme qui déploie réellement.
+  # C'est Kustomize qui fait foi — voir HELM.md §3.
+  HELM_CHART_DIR: 'helm/microcrm'
   # Overlay éphémère fabriqué par les jobs de déploiement : il compose l'overlay
   # d'environnement et pose par-dessus le chemin de registry et le tag du commit,
   # de sorte que `apply` reçoive directement la bonne image (voir K8S.md §6).
@@ -203,6 +216,51 @@ lint-k8s:
   # qu'un miroir Alpine est indisponible.
   script:
     - kubectl version --client
+    - sh scripts/tests/validate_k8s.sh --autotest
+  <<: *rules_test
+
+# Validation du chart Helm, sans cluster.
+#
+# Le chart de helm/microcrm décrit la même application que les overlays
+# Kustomize. Deux descriptions de la même chose, c'est deux occasions de
+# diverger : ce job existe pour que la divergence se voie ici, et pas au
+# déploiement.
+#
+# Trois contrôles, du plus faible au plus fort :
+#
+#   1. `helm lint` — syntaxe du chart et valeurs manquantes. Joué sur les DEUX
+#      jeux de valeurs : un chart peut très bien se rendre avec les valeurs de
+#      staging et échouer avec celles de production.
+#   2. Les assertions de validate_k8s.sh, rejouées telles quelles sur le rendu
+#      du chart. Le contrat de nommage avec deploy.sh, le socle de sécurité,
+#      les tags figés et le pull secret valent pour le chart exactement comme
+#      pour les overlays.
+#   3. L'équivalence des deux rendus. C'est le contrôle qui compte : il compare
+#      objet par objet ce que produit `helm template` et ce que produit
+#      `kubectl kustomize`, et échoue à la moindre divergence. Sans lui, le
+#      chart pourrait dériver silencieusement et ne plus décrire l'application
+#      réellement déployée.
+#
+# C'est pour ce troisième point que le job tourne sur $HELM_IMAGE et non sur une
+# image helm seule : il lui faut kubectl pour construire le rendu de référence.
+#
+# Le recouvrement avec lint-k8s est assumé — les deux jouent les assertions
+# Kustomize. Chaque job reste ainsi autonome, et lint-k8s continue de passer sur
+# une image qui n'a pas helm.
+lint-helm:
+  image:
+    name: $HELM_IMAGE
+    entrypoint: ['']
+  stage: lint
+  needs: []
+  script:
+    - helm version --short
+    - kubectl version --client
+    # `helm lint` ne lit pas les fichiers de valeurs d'environnement tout seul :
+    # sans -f, il ne validerait que values.yaml, c'est-à-dire le seul jeu que
+    # personne ne déploie.
+    - helm lint "$HELM_CHART_DIR" -f "$HELM_CHART_DIR/values-staging.yaml"
+    - helm lint "$HELM_CHART_DIR" -f "$HELM_CHART_DIR/values-production.yaml"
     - sh scripts/tests/validate_k8s.sh --autotest
   <<: *rules_test
 

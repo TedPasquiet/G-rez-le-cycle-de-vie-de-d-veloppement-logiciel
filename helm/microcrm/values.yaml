@@ -1,0 +1,68 @@
+# Valeurs par défaut = la base Kustomize (k8s/base/), à l'identique : sans
+# aucun `-f`, `helm template` rend les mêmes objets que `kubectl kustomize
+# k8s/base`. Ce n'est pas une commodité, c'est ce qui rend les deux
+# descriptions comparables et donc le portage vérifiable.
+#
+# N'y figure que ce qui varie réellement d'un environnement à l'autre (K8S.md
+# §7), plus les coordonnées d'image. Les ports, les sondes, les
+# `securityContext`, le nom du pull secret et les replicas du back sont
+# identiques partout : les exposer inviterait à les diverger.
+
+# Environnement déployé. Pilote les deux labels d'identité que les overlays
+# posent (`app.kubernetes.io/instance` = microcrm-<env>,
+# `app.kubernetes.io/environment` = <env>).
+#
+# Vide par défaut : la base Kustomize ne porte pas ces labels, elle n'appartient
+# à aucun environnement. Les deux labels ne sont alors pas émis du tout.
+environment: ''
+
+# Coordonnées de l'image. Elles ne varient pas entre environnements mais entre
+# exécutions de pipeline, d'où leur présence ici : c'est l'équivalent Helm de
+# l'overlay éphémère que les jobs de déploiement composent pour Kustomize
+# (K8S.md §6). La CI passe --set image.repository="$CI_REGISTRY_IMAGE"
+# --set image.tag="$CI_COMMIT_SHORT_SHA".
+image:
+  # Préfixe du chemin dans le registry, `$CI_REGISTRY_IMAGE` en CI. La valeur
+  # par défaut est le placeholder de la base — elle ne part jamais vers un
+  # cluster, mais elle permet de rendre et de valider le chart sans aucune
+  # coordonnée de registry, exactement comme `kubectl kustomize`.
+  repository: microcrm
+  tag: PLACEHOLDER
+
+back:
+  # Relevées en production : le back ne peut pas monter en replicas (HSQLDB en
+  # mémoire, K8S.md §8.1), la seule marge disponible est verticale.
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      # Quantité CPU entière : à citer, sinon YAML en fait un entier là où
+      # l'API attend une chaîne.
+      cpu: '1'
+      memory: 768Mi
+
+front:
+  # Sans état, donc librement extensible — contrairement au back, dont les
+  # replicas ne sont volontairement pas paramétrables.
+  replicas: 1
+
+# Les deux clés de la ConfigMap microcrm-config.
+config:
+  # Origine du front, telle que le navigateur la mettra dans l'en-tête Origin.
+  # Doit correspondre exactement à ingress.frontHost, schéma compris : front et
+  # API sont sur des origines différentes, le CORS n'est donc pas décoratif
+  # (K8S.md §7).
+  corsAllowedOrigins: http://localhost:4200
+  # URL de l'API vue depuis le NAVIGATEUR, pas depuis le cluster : un nom de
+  # Service n'y serait pas résoluble. Doit valoir ingress.apiHost.
+  apiBaseUrl: http://localhost:8080
+
+# Deux hôtes plutôt qu'un hôte et un préfixe /api — voir templates/ingress.yaml.
+ingress:
+  # Hôtes en `.invalid` (RFC 2606, non résolvable) par défaut : si les valeurs
+  # par défaut portaient les hôtes d'un environnement réel, oublier de les
+  # surcharger routerait silencieusement vers le mauvais environnement au lieu
+  # d'échouer. K8S.md §7.
+  frontHost: microcrm.invalid
+  apiHost: api.microcrm.invalid

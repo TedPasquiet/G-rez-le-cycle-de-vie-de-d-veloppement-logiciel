@@ -1,0 +1,46 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: microcrm
+  labels:
+    app.kubernetes.io/name: microcrm
+    {{- include "microcrm.labels" . | nindent 4 }}
+spec:
+  # Deux hôtes plutôt qu'un hôte et deux chemins.
+  #
+  # Le front est une application Angular : c'est le NAVIGATEUR de l'utilisateur
+  # qui appelle l'API, pas le pod front. Le back doit donc être joignable depuis
+  # l'extérieur du cluster, le Service ClusterIP ne suffit pas.
+  #
+  # Router l'API sur un préfixe (/api) du même hôte aurait supposé de réécrire
+  # le chemin avant de le transmettre, Spring Data REST exposant ses collections
+  # à la racine (/persons, /organizations). Cette réécriture passe par des
+  # annotations propres à chaque contrôleur d'Ingress, ce qui rendrait ce
+  # manifeste non portable. Voir K8S.md §7.
+  #
+  # Corollaire : front et API sont sur des origines différentes, donc
+  # config.corsAllowedOrigins doit contenir l'hôte du front, schéma compris.
+  #
+  # Aucun `ingressClassName` n'est fixé, faute de savoir quel contrôleur équipe
+  # le cluster cible.
+  rules:
+    - host: {{ .Values.ingress.frontHost | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: front
+                port:
+                  name: http
+    - host: {{ .Values.ingress.apiHost | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: back
+                port:
+                  name: http

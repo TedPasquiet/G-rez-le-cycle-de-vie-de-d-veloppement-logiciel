@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: back
+  labels:
+    app.kubernetes.io/name: back
+    app.kubernetes.io/component: api
+    {{- include "microcrm.labels" . | nindent 4 }}
+spec:
+  # ClusterIP : l'exposition vers l'extérieur est le rôle de l'Ingress, pas
+  # celui du Service. Un NodePort ou un LoadBalancer par service contournerait
+  # l'Ingress et sortirait du contrôle de routage.
+  type: ClusterIP
+  # Ne cible que `name`, comme le `matchLabels` du Deployment : un Service dont
+  # le sélecteur est plus large que celui du ReplicaSet ne trouverait plus ses
+  # pods dès qu'un des autres labels changerait.
+  selector:
+    app.kubernetes.io/name: back
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

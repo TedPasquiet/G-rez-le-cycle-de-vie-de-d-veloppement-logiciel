@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  # ⚠️ Nom contractuel, sans préfixe de release : deploy.sh cible
+  # `deployment/back`. Voir _helpers.tpl.
+  name: back
+  labels:
+    app.kubernetes.io/name: back
+    app.kubernetes.io/component: api
+    {{- include "microcrm.labels" . | nindent 4 }}
+spec:
+  # ⚠️ Écrit en dur, et délibérément absent de values.yaml : ce n'est pas un
+  # choix de dimensionnement mais une contrainte. HSQLDB tourne EN MÉMOIRE dans
+  # le processus, alimentée au démarrage par InitialDataFixture. Deux pods =
+  # deux bases distinctes, et une requête sur deux qui ne voit pas ce que
+  # l'autre a écrit — sans qu'aucune erreur ne soit levée. Le rendre
+  # paramétrable inviterait à le monter. Tant que la persistance n'est pas
+  # externalisée, ce 1 est un invariant du projet. Voir K8S.md §8.1.
+  replicas: 1
+  revisionHistoryLimit: 3
+  # ⚠️ Le sélecteur ne porte QUE `name`, jamais `instance` ni `part-of` :
+  # `spec.selector` est immuable après création, donc y ajouter un label ferait
+  # échouer toute mise à jour d'un environnement déjà déployé. C'est la raison
+  # pour laquelle Kustomize laisse `includeSelectors` à false
+  # (k8s/base/kustomization.yaml).
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: back
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxUnavailable 0 : on ne retire l'ancien pod qu'une fois le nouveau
+      # prêt, donc pas de coupure pendant un déploiement à 1 replica.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      # Les labels d'identité vont aussi sur le pod, sans quoi un
+      # `kubectl get pods -l app.kubernetes.io/part-of=microcrm` ne renverrait
+      # rien. C'est ce que fait `includeTemplates: true` côté Kustomize.
+      labels:
+        app.kubernetes.io/name: back
+        app.kubernetes.io/component: api
+        {{- include "microcrm.labels" . | nindent 8 }}
+    spec:
+      # Rien dans l'application n'appelle l'API Kubernetes : monter un jeton de
+      # ServiceAccount dans le pod n'apporterait qu'une surface d'attaque.
+      automountServiceAccountToken: false
+      # Le registry GitLab est privé : sans identifiants, le pod reste en
+      # ImagePullBackOff. Le Secret ne peut pas être versionné (il contient un
+      # mot de passe) ; il est créé par la CI juste avant le déploiement. Le nom
+      # n'est pas paramétrable parce qu'il ne varie pas entre environnements, et
+      # qu'il doit rester cohérent avec $REGISTRY_SECRET_NAME du .gitlab-ci.yml.
+      # Voir K8S.md §12.
+      imagePullSecrets:
+        - name: gitlab-registry
+      securityContext:
+        # UID 1000 : celui que reçoit l'utilisateur `app` créé par
+        # `adduser -D -H app` dans back/Dockerfile. Figé ici pour que
+        # `runAsNonRoot` soit contrôlable par le kubelet avant même de démarrer
+        # le conteneur.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        # ⚠️ Le nom `back` est contractuel lui aussi : deploy.sh exécute
+        # `kubectl set image deployment/back back=<image>`.
+        - name: back
+          # Les valeurs par défaut composent le placeholder de la base
+          # (microcrm/back:PLACEHOLDER), ce qui permet de rendre et de valider
+          # le chart sans coordonnée de registry. Les jobs de déploiement
+          # passent l'image réelle par --set. Voir K8S.md §6.
+          image: {{ include "microcrm.image" (dict "root" . "name" "back") }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: microcrm-config
+          # Mémoire : la JVM dimensionne son tas à 25 % de la limite mémoire du
+          # conteneur, soit ~192 Mio pour 768 Mio ; le reste couvre le hors-tas
+          # (metaspace, code cache, piles), couramment 150 à 250 Mio. Descendre
+          # la limite sous 512 Mio expose à des OOMKill au démarrage.
+          #
+          # CPU : le démarrage d'une JVM est le moment le plus gourmand du cycle
+          # de vie (chargement de classes, JIT). Une limite basse allongerait le
+          # démarrage et ferait échouer les sondes.
+          resources:
+            {{- toYaml .Values.back.resources | nindent 12 }}
+          # Une JVM Spring Boot met plusieurs dizaines de secondes à démarrer, et
+          # ce délai varie avec la charge du nœud. Un `initialDelaySeconds` long
+          # sur la liveness retarderait aussi la détection des blocages *après*
+          # le démarrage, pendant toute la vie du pod : l'attente est donc
+          # confiée à un startupProbe, qui suspend les deux autres jusqu'à son
+          # succès. Budget : 30 × 5 s = 150 s. Voir K8S.md §5.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 30
+          # Liveness = « le processus est-il irrécupérable ? ». En cas d'échec le
+          # kubelet tue le conteneur, donc on reste tolérant.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Readiness = « peut-on lui envoyer du trafic ? ». Un échec retire
+          # seulement le pod du Service, c'est réversible : on peut être plus
+          # réactif.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            # readOnlyRootFilesystem impose de rendre /tmp inscriptible par
+            # ailleurs : la JVM y écrit hsperfdata et le Tomcat embarqué de
+            # Spring Boot y crée son répertoire de travail. Sans ce volume,
+            # l'application ne démarre pas.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
