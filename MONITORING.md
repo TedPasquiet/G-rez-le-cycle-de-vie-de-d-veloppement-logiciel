@@ -76,20 +76,51 @@ L'autodiscover ne collecte donc que le namespace de l'application, et ce
 namespace est une valeur de configuration, pas une chaîne enfouie dans le YAML.
 Vérifié après coup : sur 50 documents, **100 % viennent de `microcrm-staging`**.
 
-**Le décodage JSON est restreint au conteneur `back`**, et cette restriction a
-une cause précise. Le front (Caddy) n'écrit pas du texte comme on pouvait le
-croire : il écrit du **JSON non-ECS**, dont les champs entrent en collision avec
-ceux de Filebeat. Un décodage appliqué à tous les conteneurs faisait rejeter ses
-documents par Elasticsearch :
+**Deux décodages JSON, et un seul à la racine.** Le back produit de l'ECS, décodé
+à la racine. Le front (Caddy) écrit lui aussi du JSON, mais **non-ECS**, dont les
+champs portent les mêmes noms que ceux de Filebeat sans avoir la même forme. Un
+décodage appliqué à tous les conteneurs faisait rejeter ses documents :
 
 ```
 document_parsing_exception: object mapping for [file] tried to parse field [file] as object
 ```
 
-La collision est irréversible une fois le mapping posé. Le décodage est donc
-conditionné au conteneur qui produit de l'ECS.
+Une collision de mapping est **irréversible** : une fois le champ typé dans
+l'index, aucun document contradictoire n'y entrera plus. Le journal du front est
+donc décodé sous le préfixe `caddy`, ce qui isole ses champs de l'espace ECS et
+laisse les deux formats cohabiter.
 
-## 5. Le dimensionnement, et pourquoi il tient
+## 5. La latence : d'où elle vient, et pourquoi elle n'existait pas
+
+Il n'y avait, au départ, **aucune donnée de latence dans toute la chaîne**. Les
+logs applicatifs du back portent ce que l'application raconte, pas le temps
+qu'elle met ; et le Caddyfile n'avait aucune directive `log`, donc le front
+n'écrivait que ses journaux internes de démarrage et de maintenance TLS. Un
+écran « latence » construit là-dessus aurait été décoratif.
+
+Le journal d'accès de Caddy a donc été activé (`front/Caddyfile`). C'est la
+seule source qui voit réellement passer le trafic, et elle porte les trois
+mesures d'un coup : `caddy.status`, `caddy.duration` et le simple comptage.
+
+Mesuré après 105 requêtes :
+
+```
+p50 = 0,14 ms     p95 = 1,60 ms     p99 = 3,11 ms
+```
+
+⚠️ **C'est la latence vue par le serveur web, pas par l'API.** Caddy sert le
+bundle Angular et `/config.json` ; les appels à l'API partent du navigateur vers
+un hôte distinct et ne passent pas par lui. Mesurer la latence de l'API
+demanderait de l'instrumenter elle-même — c'est le domaine des métriques, pas
+des logs.
+
+⚠️ **Le front ne produira quasiment jamais de 4xx.** C'est une application
+Angular servie avec `try_files {path} /index.html` : tout chemin inconnu renvoie
+`200` avec la page, à charge pour le routeur Angular de décider. Vérifié — 12
+requêtes vers des chemins inexistants ont toutes renvoyé `200`. Les erreurs
+réelles se lisent donc côté back, dans `log.level`.
+
+## 6. Le dimensionnement, et pourquoi il tient
 
 Point de vigilance explicite du brief : une stack sous-dimensionnée ne démarre
 pas. Les chiffres, et la règle qui les gouverne :
@@ -130,7 +161,7 @@ Ce sont exactement les valeurs calculées dans `terraform.tfvars`, au mégaoctet
 près. C'est aussi la première fois qu'un quota posé par Terraform est confronté à
 une charge réelle — ce que `TERRAFORM.md` §9.4 listait comme non vérifié.
 
-## 6. Les pièges écartés
+## 7. Les pièges écartés
 
 Ils sont documentés parce qu'ils se reproduiront.
 
@@ -158,14 +189,44 @@ Filebeat restent en `true`.
 nom `.ds-microcrm-logs-…` dans `_cat/indices`, et `setup.ilm.enabled: false`
 comme contrepartie d'un nommage propre au projet.
 
-## 7. Ce qui n'est pas fait
+## 8. Les tableaux de bord, et pourquoi ils sont dans le dépôt
 
-**Aucun tableau de bord Kibana n'est versionné.** C'est le principal reste de ce
-lot. Kibana est déployé et interrogeable, les données sont là et structurées,
-mais les écrans « erreurs / latence / volume » restent à construire — et surtout
-à **exporter en objets sauvegardés** pour qu'ils vivent dans le dépôt plutôt que
-dans le disque d'un pod. Un tableau de bord qui n'existe que dans une instance
-disparaît avec elle.
+Six panneaux, assemblés en un tableau de bord : volume par conteneur, latence
+(p50/p95/p99), erreurs applicatives, erreurs HTTP, répartition des statuts, et
+une table des logs récents.
+
+**Le livrable n'est pas « des écrans dans Kibana », c'est un fichier.** Un
+tableau de bord qui n'existe que dans une instance disparaît avec elle — et
+celle-ci tourne sur un `emptyDir` de poste de développement. Les huit objets
+sauvegardés sont donc exportés dans `k8s/elk/dashboards/microcrm.ndjson`, vue de
+données comprise : un export qui l'oublierait produirait à la réimportation des
+panneaux vides et un message obscur.
+
+Vérifié en supprimant d'abord les objets de l'instance, pour que le test soit
+froid et non un simple écrasement :
+
+```
+$ curl -X POST '…/api/saved_objects/_import?overwrite=true' \
+    -H 'kbn-xsrf: true' --form file=@k8s/elk/dashboards/microcrm.ndjson
+{"success": true, "successCount": 8, "warnings": []}
+```
+
+Et chaque panneau a été confronté à la même agrégation jouée directement contre
+Elasticsearch : mêmes chiffres des deux côtés, y compris la latence après
+conversion des secondes en millisecondes.
+
+⚠️ **L'unité de `caddy.duration` est déclarée dans la vue de données**
+(`fieldFormatMap`, secondes → millisecondes), pas dans une formule de chaque
+panneau. Un panneau ajouté demain en hérite ; c'est aussi ce qui rend la vue de
+données indispensable à l'export.
+
+⚠️ **Un NDJSON écrit à la main ne s'importe pas.** Sans `typeMigrationVersion`,
+Kibana rejoue toute la chaîne de migration 7.x → 8.x et échoue sur
+`Cannot read properties of undefined (reading 'layers')`. Les objets doivent
+être créés par l'API puis exportés — jamais rédigés à la main. C'est écrit dans
+`k8s/elk/dashboards/README.md`, avec la commande de régénération.
+
+## 9. Ce qui n'est pas fait
 
 **La sécurité d'Elasticsearch est désactivée** (`xpack.security.enabled: false`).
 En 8.x elle est active par défaut, et Kibana ne peut s'y connecter sans
@@ -191,7 +252,7 @@ mettent l'index en lecture seule bien avant que le volume soit plein.
 
 **Rien n'est automatisé.** Aucun job de CI ne déploie ni ne teste cette stack.
 
-## 8. Rejouer
+## 10. Rejouer
 
 ```shell
 # 1. Le namespace, son quota et ses limites (Terraform possède le contenant)

@@ -36,3 +36,8 @@ data:
   # scripts/deploy/deploy.sh et vérifié par scripts/tests/validate_k8s.sh
   # (K8S.md §6). Si ce contrat change, il change ici aussi.
   MICROCRM_ECS_CONTAINER: back
+  # Conteneur du serveur web, dont le journal d'accès est la SEULE source de
+  # latence de toute la chaîne : les logs applicatifs du back portent ce que
+  # l'application raconte, pas le temps qu'elle a mis. Ses champs sont décodés
+  # sous un préfixe dédié — voir filebeat-config.yaml.
+  MICROCRM_WEB_CONTAINER: front

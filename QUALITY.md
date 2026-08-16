@@ -347,13 +347,13 @@ si sa base était joignable, ni ce qu'elle racontait.
 
 **Ce qui a été fait, et où c'est décrit.**
 
-| Volet                             | État       | Détail                                                                                                                                                                           |
-| --------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sondes de santé                   | fait       | Actuator est en dépendance, et les trois sondes (`startup`, `liveness`, `readiness`) sont posées sur les deux Deployments — [K8S.md](K8S.md) §5. Vérifiées sous kubelet en §14.3 |
-| Centralisation des logs           | fait       | Elasticsearch, Kibana et Filebeat sur le cluster local ; les logs du back sont en JSON ECS et arrivent décodés — [MONITORING.md](MONITORING.md)                                  |
-| Tableaux de bord                  | **absent** | Kibana est déployé et interrogeable, mais aucun écran n'est versionné. C'est le principal reste — voir MONITORING.md §7                                                          |
-| Métriques (CPU, mémoire, latence) | **absent** | seuls les logs sont collectés. Il n'y a ni Prometheus ni `metrics-server` sur le cluster                                                                                         |
-| Alerting                          | **absent** | rien ne prévient : la supervision se consulte, elle ne réveille personne                                                                                                         |
+| Volet                             | État       | Détail                                                                                                                                                                                       |
+| --------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sondes de santé                   | fait       | Actuator est en dépendance, et les trois sondes (`startup`, `liveness`, `readiness`) sont posées sur les deux Deployments — [K8S.md](K8S.md) §5. Vérifiées sous kubelet en §14.3             |
+| Centralisation des logs           | fait       | Elasticsearch, Kibana et Filebeat sur le cluster local ; les logs du back sont en JSON ECS et arrivent décodés — [MONITORING.md](MONITORING.md)                                              |
+| Tableaux de bord                  | fait       | 6 panneaux — volume, latence, erreurs applicatives et HTTP, statuts, logs récents — exportés en objets sauvegardés versionnés dans `k8s/elk/dashboards/` — [MONITORING.md](MONITORING.md) §8 |
+| Métriques (CPU, mémoire, latence) | **absent** | seuls les logs sont collectés. Il n'y a ni Prometheus ni `metrics-server` sur le cluster                                                                                                     |
+| Alerting                          | **absent** | rien ne prévient : la supervision se consulte, elle ne réveille personne                                                                                                                     |
 
 Ce qui suit dans cette section décrivait l'ajout d'Actuator ; c'est fait, et le
 détail des sondes est désormais dans [K8S.md](K8S.md) §5. Conservé ici pour le

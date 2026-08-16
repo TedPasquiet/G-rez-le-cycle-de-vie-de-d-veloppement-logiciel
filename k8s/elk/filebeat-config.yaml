@@ -116,6 +116,38 @@ data:
           # mapping) au premier log applicatif un peu bavard.
           max_depth: 2
 
+      # Second décodage, pour le journal d'accès du serveur web — et sous un
+      # PRÉFIXE, contrairement au précédent.
+      #
+      # ⚠️ C'est toute la différence, et elle est structurelle. Caddy n'écrit pas
+      # de l'ECS : ses champs portent les mêmes noms que ceux de Filebeat sans
+      # avoir la même forme, et un décodage à la racine faisait rejeter ses
+      # documents par Elasticsearch :
+      #
+      #   document_parsing_exception: object mapping for [file]
+      #   tried to parse field [file] as object
+      #
+      # Une collision de mapping est IRRÉVERSIBLE : une fois le champ typé dans
+      # l'index, aucun document contradictoire n'y entrera plus. Le préfixe
+      # `caddy` isole donc ces champs de l'espace ECS, et les deux formats
+      # cohabitent sans se marcher dessus.
+      #
+      # Ce que ça débloque : `caddy.status` (les erreurs), `caddy.duration` (la
+      # latence, en secondes) et le simple comptage (le volume). Les trois
+      # écrans attendus viennent de là, et de nulle part ailleurs.
+      - decode_json_fields:
+          when:
+            equals:
+              kubernetes.container.name: ${MICROCRM_WEB_CONTAINER}
+          fields: ['message']
+          target: 'caddy'
+          overwrite_keys: true
+          add_error_key: false
+          # Plus profond que pour l'ECS : le journal d'accès imbrique
+          # `request.headers`, donc trois niveaux. Au-delà, on ne collecterait
+          # que des en-têtes dont personne ne se sert.
+          max_depth: 3
+
       # Rien d'autre, et deux absences méritent d'être justifiées :
       # `add_kubernetes_metadata` est inutile ici — le provider autodiscover
       # enrichit DÉJÀ chaque événement des champs `kubernetes.*`, l'ajouter
