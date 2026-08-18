@@ -117,3 +117,58 @@ plutôt qu'un écran vide sur une plage de 15 minutes.
 
 Aucune alerte : ces écrans se regardent, ils ne préviennent pas. Aucune
 rétention non plus — sans ILM, l'historique s'arrête là où le PVC se remplit.
+
+## Le second tableau de bord : `dora.ndjson`
+
+13 objets, index `microcrm-dora`, alimenté par `scripts/ci/collect_dora.py`.
+
+```shell
+kubectl -n logging port-forward svc/kibana 5601:5601
+curl -s -X POST 'http://127.0.0.1:5601/api/saved_objects/_import?overwrite=true' \
+  -H 'kbn-xsrf: true' --form file=@k8s/elk/dashboards/dora.ndjson
+```
+
+### ⚠️ Ce que ces écrans affichent, et qu'il faut lire avant de conclure
+
+**Ce projet n'a jamais réussi un seul déploiement.** Sept ont été déclenchés,
+sept ont échoué ; `deploy-production` et `rollback-production` n'ont jamais été
+lancés. Les chiffres ne sont donc pas mauvais par accident de mesure : ils
+disent ce que le projet a fait.
+
+| Indicateur                   | Valeur     | Ce que ça veut dire                                                                           |
+| ---------------------------- | ---------- | --------------------------------------------------------------------------------------------- |
+| Fréquence de déploiement     | `0,0`/jour | **mesuré** — sept tentatives, aucune aboutie                                                  |
+| Délai de mise en production  | `null`     | **pas de donnée** — aucune arrivée en production vers laquelle mesurer                        |
+| Temps de rétablissement      | `null`     | **pas de donnée** — le MTTR se mesure d'un échec au succès suivant, et ce succès n'existe pas |
+| Taux d'échec des changements | `100 %`    | mesuré sur 7 observations                                                                     |
+
+### Pourquoi deux indicateurs ne sont pas des métriques
+
+`lead_time_for_changes` et `mean_time_to_restore` sont rendus par des panneaux
+de **texte**, pas par des panneaux de métrique. Ce n'est pas un détour
+esthétique : Kibana affiche `0` ou `-` pour une métrique vide, et un délai de
+mise en production de zéro heure se lit comme la performance parfaite — là où
+il n'y a simplement jamais eu de mise en production.
+
+Confondre « zéro mesuré » et « pas de donnée » est le pire défaut qu'un tableau
+de bord puisse avoir, parce que le second se lit comme un exploit. Le panneau
+« Comment lire ce tableau de bord » est là pour la même raison, et le titre du
+tableau de bord porte la réserve.
+
+### Régénérer après modification
+
+Comme pour `microcrm.ndjson` : modifier dans Kibana, puis exporter — **jamais
+éditer le NDJSON à la main**, un objet sans `typeMigrationVersion` fait échouer
+l'import sur `Cannot read properties of undefined (reading 'layers')`.
+
+```shell
+curl -s -X POST 'http://127.0.0.1:5601/api/saved_objects/_export' \
+  -H 'kbn-xsrf: true' -H 'Content-Type: application/json' \
+  -d '{"objects":[{"type":"dashboard","id":"dora-dashboard"}],"includeReferencesDeep":true}' \
+  > k8s/elk/dashboards/dora.ndjson
+```
+
+Vérifié le 2026-08-18, objets préalablement supprimés pour que le test soit
+froid : `{"success": true, "successCount": 13}`, aucune erreur. Et les quatre
+valeurs lues dans l'index correspondent exactement à ce que rend le collecteur,
+`null` compris.

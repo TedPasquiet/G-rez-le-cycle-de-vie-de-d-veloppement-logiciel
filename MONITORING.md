@@ -226,7 +226,88 @@ Kibana rejoue toute la chaîne de migration 7.x → 8.x et échoue sur
 être créés par l'API puis exportés — jamais rédigés à la main. C'est écrit dans
 `k8s/elk/dashboards/README.md`, avec la commande de régénération.
 
-## 9. Ce qui n'est pas fait
+## 9. Les métriques DORA
+
+Les quatre indicateurs DORA sont calculés par `scripts/ci/collect_dora.py`, en
+Python standard et sans aucune dépendance — même règle que le reste de
+`scripts/ci/`, parce que le job tourne dans une image qui n'a pas `pip install`.
+
+**Pourquoi un collecteur maison.** Les métriques DORA natives de GitLab sont
+réservées aux offres payantes. Sur le Free Tier, il faut les calculer soi-même
+depuis l'API — et le projet est mesurable sans jeton : le dépôt GitHub se
+miroite vers un projet GitLab **public**, où le pipeline tourne réellement.
+
+### 9.1 Ce que les chiffres disent, et il faut l'entendre
+
+Mesuré sur les 44 pipelines de l'historique :
+
+| Indicateur                   | Valeur           | Observations |
+| ---------------------------- | ---------------- | ------------ |
+| Fréquence de déploiement     | **0,0** par jour | 0            |
+| Délai de mise en production  | **`null`**       | 0            |
+| Temps de rétablissement      | **`null`**       | 0            |
+| Taux d'échec des changements | **100 %**        | 7            |
+
+**Sept déploiements ont été déclenchés dans toute l'histoire du projet. Les sept
+ont échoué.** `deploy-production` et `rollback-production` n'ont jamais été
+lancés. Il n'existe aucun déploiement réussi.
+
+C'est un résultat, pas une panne du collecteur. Le projet a une chaîne de
+déploiement complète, éprouvée sur un cluster local (`K8S.md` §14), mais qui n'a
+jamais abouti depuis la CI — le dernier pipeline s'est arrêté sur
+`ci_quota_exceeded`, les minutes du Free Tier étant épuisées.
+
+### 9.2 ⚠️ Zéro mesuré et absence de donnée ne sont pas la même chose
+
+C'est la règle qui gouverne tout le collecteur, et la seule qui puisse le rendre
+utile plutôt que décoratif.
+
+- `deployment_frequency` vaut **`0.0`** : c'est une mesure. Zéro déploiement
+  a bien eu lieu, sur une fenêtre connue, après sept tentatives.
+- `lead_time_for_changes` vaut **`null`**, accompagné de sa raison : il n'existe
+  aucune arrivée en production vers laquelle mesurer un délai.
+
+Rendre le second en `0` afficherait un délai de mise en production de zéro
+heure, c'est-à-dire **la performance parfaite** — là où il n'y a simplement
+jamais eu de mise en production. Un test de `run_tests.sh` échoue si un
+indicateur sans donnée se met à ressortir en `0`.
+
+### 9.3 Comment il est testé
+
+Sur des **fixtures**, c'est-à-dire des réponses d'API enregistrées, et pas contre
+le réseau : un test qui dépend d'un service tiers échoue les jours où ce service
+est lent, et on finit par ne plus le croire.
+
+Deux jeux, et la distinction est délibérée :
+
+- `scripts/tests/fixtures/` — **réel**, enregistré verbatim depuis l'API : les
+  44 pipelines et les jobs des 7 pipelines ayant déclenché un déploiement ;
+- `scripts/tests/fixtures/dora-scenario-fabrique/` — **fabriqué**, et nommé pour
+  qu'on ne s'y trompe pas. Il contient ce que le réel n'offre pas — des
+  déploiements réussis — sans quoi les formules du délai et du MTTR ne seraient
+  empruntées par aucun test. On ne vérifierait alors qu'une chose : la capacité
+  du collecteur à dire « je n'ai rien ».
+
+### 9.4 Rejouer
+
+```shell
+# Contre la vraie API, sans jeton (le projet miroir est public)
+python3 scripts/ci/collect_dora.py --project 84606666 --days 30
+
+# Hors ligne, sur les fixtures
+python3 scripts/ci/collect_dora.py --fixtures scripts/tests/fixtures --days 0
+
+# Injection dans Elasticsearch, pour le tableau de bord
+kubectl -n logging port-forward svc/elasticsearch 9200:9200 &
+python3 scripts/ci/collect_dora.py --project 84606666 --days 0 \
+  --elasticsearch http://127.0.0.1:9200 --es-index microcrm-dora
+```
+
+⚠️ **Aucun job de CI n'exécute ce collecteur.** Il se lance à la main. L'y
+ajouter appartiendrait à une évolution du pipeline, et se heurterait de toute
+façon au quota épuisé qui empêche aujourd'hui tout job de démarrer.
+
+## 10. Ce qui n'est pas fait
 
 **La sécurité d'Elasticsearch est désactivée** (`xpack.security.enabled: false`).
 En 8.x elle est active par défaut, et Kibana ne peut s'y connecter sans
@@ -252,7 +333,7 @@ mettent l'index en lecture seule bien avant que le volume soit plein.
 
 **Rien n'est automatisé.** Aucun job de CI ne déploie ni ne teste cette stack.
 
-## 10. Rejouer
+## 11. Rejouer
 
 ```shell
 # 1. Le namespace, son quota et ses limites (Terraform possède le contenant)
