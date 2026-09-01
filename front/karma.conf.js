@@ -33,6 +33,26 @@ module.exports = function (config) {
         { type: "text-summary" },
         { type: "lcovonly" },
       ],
+      // Seuils bloquants : en dessous, `ng test --code-coverage` sort en erreur
+      // et le job test-front échoue. Le pendant côté back est
+      // jacocoTestCoverageVerification (back/build.gradle).
+      //
+      // Ils ne s'appliquent qu'avec --code-coverage, donc au lancement de la
+      // CI ; un `ng test` local reste rapide et sans contrainte.
+      //
+      // `branches` est plus bas que le reste, et c'est volontaire : les
+      // garde-fous des composants (`if (id === undefined) return`) créent des
+      // branches nombreuses et peu nourrissantes. Le chiffre est calé juste
+      // sous la valeur réelle pour détecter une baisse, pas pour afficher un
+      // objectif qu'on abaisserait à la première gêne.
+      check: {
+        global: {
+          statements: 90,
+          lines: 90,
+          functions: 90,
+          branches: 80,
+        },
+      },
     },
     reporters: ["progress", "kjhtml"],
     browsers: ["ChromeHeadlessNoSandbox", "ChromeHeadless", "Chrome"],

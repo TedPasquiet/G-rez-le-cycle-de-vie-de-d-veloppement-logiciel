@@ -9,6 +9,7 @@ plugins {
 	id 'org.springframework.boot' version '3.2.5'
 	id 'io.spring.dependency-management' version '1.1.4'
 	id 'com.adarshr.test-logger' version '4.0.0'
+	id 'info.solidsoft.pitest' version '1.15.0'
 }
 
 group = 'com.openclassroom.devops.orion'
@@ -55,6 +56,80 @@ jacocoTestReport {
 	}
 }
 
+// Seuil de couverture appliqué localement, dans `./gradlew check`.
+//
+// Il fait doublon avec scripts/ci/check_coverage.py — volontairement. Le script
+// est le garde-fou de la CI (il lit le XML, il marche sans réseau) ; cette règle
+// est celui du poste de développement : elle échoue avant le push, pas après.
+// Un seuil qui ne se déclenche qu'en CI se découvre toujours trop tard.
+//
+// Deux compteurs plutôt qu'un : la couverture de LIGNES seule se satisfait de
+// tests qui traversent le code sans jamais emprunter la branche d'erreur. C'est
+// exactement ce qui laissait passer les 500 corrigés sur les suppressions.
+jacocoTestCoverageVerification {
+	dependsOn jacocoTestReport
+	violationRules {
+		rule {
+			// MicroCRMApplication.main() ne contient que l'amorçage Spring Boot :
+			// le couvrir demanderait de démarrer un vrai serveur pour zéro
+			// information. C'est la seule exclusion, et elle est nommée — pas un
+			// motif large qui absorberait silencieusement du code métier.
+			excludes = ['com.openclassroom.devops.orion.microcrm.MicroCRMApplication']
+			limit {
+				counter = 'LINE'
+				minimum = 0.95
+			}
+			limit {
+				counter = 'BRANCH'
+				minimum = 0.90
+			}
+		}
+	}
+}
+tasks.named('check') {
+	dependsOn jacocoTestCoverageVerification
+}
+
+// Tests de mutation (PIT).
+//
+// Réponse à la question que la couverture ne sait pas poser : « ces tests
+// vérifient-ils quelque chose ? ». JaCoCo compte les lignes exécutées ; un test
+// sans aucune assertion affiche 100 %. PIT modifie le bytecode — inverse une
+// condition, remplace un retour par null, vide un appel — puis relance les tests
+// qui couvrent la ligne. Si aucun ne devient rouge, le mutant « survit » : cette
+// ligne est traversée mais pas vérifiée.
+//
+// Hors de `check` : PIT relance la suite une fois par mutant, c'est trop lent
+// pour un cycle de développement. Il tourne à la demande et dans son propre job
+// de CI (`./gradlew pitest`).
+pitest {
+	pitestVersion = '1.16.1'
+	// Sans ce greffon, PIT ne voit aucun test : la suite est en JUnit 5.
+	junit5PluginVersion = '1.2.1'
+	targetClasses = ['com.openclassroom.devops.orion.microcrm.*']
+	// Même exclusion que pour la couverture, pour la même raison.
+	excludedClasses = ['com.openclassroom.devops.orion.microcrm.MicroCRMApplication']
+	// DEFAULTS couvre les mutations classiques (conditions, retours, arithmétique).
+	// On y ajoute les opérateurs qui touchent précisément ce qu'un modèle JPA
+	// fait de plus fragile : les appels sans valeur de retour (VOID_METHOD_CALLS,
+	// par exemple `org.removePerson(this)` retiré du hook @PreRemove) et les
+	// retours de collections vides ou nulles.
+	mutators = ['DEFAULTS', 'VOID_METHOD_CALLS', 'EMPTY_RETURNS', 'NULL_RETURNS']
+	// Échoue si la proportion de mutants tués passe sous ce seuil. Surchargeable
+	// par MUTATION_MIN, la variable du pipeline (voir .gitlab-ci.yml), sur le
+	// même principe que SONAR_* et NVD_API_KEY plus haut : la valeur écrite ici
+	// est le défaut utilisable en local, pas la référence.
+	mutationThreshold = (System.getenv('MUTATION_MIN') ?: '80') as int
+	// Un mutant qui ne fait échouer aucun test parce qu'AUCUN test ne couvre la
+	// ligne serait un faux confort : on exige aussi une couverture de test réelle.
+	coverageThreshold = 90
+	timestampedReports = false
+	outputFormats = ['HTML', 'XML']
+	threads = 2
+	// Les tests de mutation ne s'exécutent que si la suite passe d'abord.
+	verbose = false
+}
+
 // Analyse statique (recherche de bugs). Exclusions : back/config/spotbugs/exclude.xml
 spotbugs {
 	excludeFilter = file("${rootDir}/config/spotbugs/exclude.xml")
@@ -66,6 +141,14 @@ spotbugsMain {
 		xml.required = true
 		html.required = true
 	}
+}
+// Même choix que pour Checkstyle plus haut : l'analyse porte sur le code de
+// production. Sur le code de test elle ne produisait que des faux positifs
+// « valeur potentiellement nulle » sur les en-têtes HTTP lus dans les
+// assistants de test — dont l'absence est précisément ce que le test vérifie
+// juste avant, par un `requireNonNull` que l'analyseur ne modélise pas.
+spotbugsTest {
+	enabled = false
 }
 
 // SCA : dépendances vulnérables (OWASP). Faux positifs : suppressions.xml
