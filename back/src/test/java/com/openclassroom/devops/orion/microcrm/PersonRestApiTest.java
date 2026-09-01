@@ -11,16 +11,18 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Tests de la couche REST exposée automatiquement par Spring Data REST.
- * Vérifient les endpoints HAL, l'exposition des identifiants configurée dans
- * {@link SpringDataRestCustomization} et la configuration CORS.
+ * Tests de lecture de la couche REST exposée automatiquement par Spring Data
+ * REST : endpoints HAL, exposition des identifiants configurée dans
+ * {@link SpringDataRestCustomization} et forme des charges utiles.
+ *
+ * <p>Les écritures sont dans {@link PersonRestLifecycleTest}, la politique CORS
+ * dans {@link CorsPolicyTest}.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -133,29 +135,50 @@ class PersonRestApiTest {
     }
 
     @Test
+    @DisplayName("Les horodatages sont exposés : le front les affiche")
+    void timestampsAreExposedInPayloads() throws Exception {
+        // Les gabarits person-details et organization-details passent createdAt
+        // et updatedAt dans un DatePipe. Sans ces champs, la page afficherait
+        // des cases vides sans qu'aucun test ne bronche.
+        mockMvc.perform(get("/persons/1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.createdAt").exists())
+                .andExpect(jsonPath("$.updatedAt").exists());
+    }
+
+    @Test
+    @DisplayName("Un email déjà pris retourne 409 et ne crée rien")
+    void duplicateEmailIsRejectedWithConflict() throws Exception {
+        // La contrainte d'unicité est portée par la base (Person.email est
+        // @Column(unique = true)) : c'est le seul garde-fou, l'entité n'a
+        // aucune validation applicative. On vérifie qu'elle remonte bien en
+        // 409 au client, et pas en 500.
+        long before = totalPersons();
+
+        mockMvc.perform(post("/persons")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"firstName":"Imposteur","lastName":"Doe","email":"jdoe@example.net"}
+                        """))
+                .andExpect(status().isConflict());
+
+        org.junit.jupiter.api.Assertions.assertEquals(before, totalPersons(),
+                "aucune ligne n'est insérée quand la contrainte rejette l'écriture");
+    }
+
+    private long totalPersons() throws Exception {
+        String body = mockMvc.perform(get("/persons")).andReturn().getResponse().getContentAsString();
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\"totalElements\"\\s*:\\s*(\\d+)").matcher(body);
+        org.junit.jupiter.api.Assertions.assertTrue(m.find(), "totalElements absent de la réponse");
+        return Long.parseLong(m.group(1));
+    }
+
+    @Test
     @DisplayName("GET sur une personne inexistante retourne 404")
     void getUnknownPersonReturnsNotFound() throws Exception {
         mockMvc.perform(get("/persons/999999"))
                 .andExpect(status().isNotFound());
     }
 
-    @Test
-    @DisplayName("Le préflight CORS autorise une origine tierce")
-    void corsPreflightAllowsCrossOriginRequests() throws Exception {
-        mockMvc.perform(options("/persons")
-                .header("Origin", "http://localhost:4200")
-                .header("Access-Control-Request-Method", "GET"))
-                .andExpect(status().isOk())
-                .andExpect(header().exists("Access-Control-Allow-Origin"));
-    }
-
-    @Test
-    @DisplayName("Le préflight CORS rejette une méthode non autorisée (PUT)")
-    void corsPreflightRejectsUnlistedMethod() throws Exception {
-        // La configuration n'autorise que GET, POST, PATCH, DELETE.
-        mockMvc.perform(options("/persons")
-                .header("Origin", "http://localhost:4200")
-                .header("Access-Control-Request-Method", "PUT"))
-                .andExpect(status().isForbidden());
-    }
 }
