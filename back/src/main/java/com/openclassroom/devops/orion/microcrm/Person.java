@@ -1,6 +1,7 @@
 package com.openclassroom.devops.orion.microcrm;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 
 import org.hibernate.annotations.CreationTimestamp;
@@ -107,7 +108,16 @@ public class Person {
 
   @PreRemove
   private void remoteFromOrganization() {
-    for (Organization org : organizations) {
+    // organizations est le cote INVERSE du many-to-many : Hibernate ne
+    // l'initialise qu'en relisant l'entite depuis la base. Sur une instance
+    // supprimee dans la transaction qui vient de la creer, il vaut null, et la
+    // boucle partait en NullPointerException — HTTP 500 sur DELETE /persons/{id}.
+    if (organizations == null) {
+      return;
+    }
+    // Copie defensive : org.removePerson() ecrit dans la collection que
+    // Hibernate peut etre en train de parcourir pour propager la suppression.
+    for (Organization org : new ArrayList<>(organizations)) {
       org.removePerson(this);
     }
   }

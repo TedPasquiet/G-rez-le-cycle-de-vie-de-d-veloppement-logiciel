@@ -72,23 +72,26 @@ export class PersonDetailsComponent implements OnInit {
     });
   }
 
-  addSelectedOrganization() {
+  // Les deux méthodes attendent la fin de l'écriture avant de recharger la
+  // fiche. Sans le `await`, le rechargement partait en parallèle de la requête
+  // de rattachement : l'écran réaffichait l'état d'avant, et le rattachement
+  // n'apparaissait qu'au rafraîchissement suivant.
+  async addSelectedOrganization() {
     if (this.selectedOrganization?.id === undefined || this.person.id === undefined) return;
-    this.organizationService.addPerson(this.selectedOrganization.id, this.person.id);
-    this.refresh();
+    await this.organizationService.addPerson(this.selectedOrganization.id, this.person.id);
+    await this.refresh();
   }
 
-  removeOrganization(org: Organization) {
+  async removeOrganization(org: Organization) {
     if (org?.id === undefined || this.person.id === undefined) return;
-    this.organizationService.removePerson(org.id, this.person.id);
-    this.refresh();
+    await this.organizationService.removePerson(org.id, this.person.id);
+    await this.refresh();
   }
 
-  refresh() {
+  async refresh() {
     if (this.person.id === undefined) return;
-    this.personService.fetchById(this.person.id).then((p) => {
-      this.person = p;
-      this.isNew = false;
-    });
+    const rechargee = await this.personService.fetchById(this.person.id);
+    this.person = rechargee;
+    this.isNew = false;
   }
 }

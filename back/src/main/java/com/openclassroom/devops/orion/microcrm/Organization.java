@@ -25,8 +25,23 @@ public class Organization {
     return id;
   }
 
-  @ManyToMany(cascade = CascadeType.ALL)
-  private List<Person> persons;
+  // Pas de CascadeType.ALL ici : REMOVE se propagerait de l'organisation vers
+  // ses membres, alors qu'une personne existe indépendamment et peut appartenir
+  // à plusieurs organisations. Concrètement, la cascade faisait échouer
+  // DELETE /organizations/{id} en HTTP 500 (ConcurrentModificationException) :
+  // Hibernate parcourait `persons` pour propager la suppression pendant que le
+  // hook @PreRemove de Person retirait chaque membre de cette même liste.
+  // PERSIST et MERGE suffisent au besoin réel : enregistrer une organisation
+  // enregistre les personnes qu'on vient de lui rattacher.
+  // Voir PersonDeletionIntegrationTest et OrganizationRestApiTest.
+  // Initialisée dès la construction, et non paresseusement dans addPerson :
+  // Spring Data REST ajoute directement dans la collection quand le front
+  // rattache une personne (POST /organizations/{id}/persons), sans passer par
+  // addPerson. Sur une organisation encore vide la collection valait null, et
+  // l'appel partait en NullPointerException — HTTP 500 côté navigateur.
+  // Voir OrganizationRestApiTest.AssociationEndpoints.
+  @ManyToMany(cascade = { CascadeType.PERSIST, CascadeType.MERGE })
+  private List<Person> persons = new ArrayList<Person>();
 
   public List<Person> addPerson(Person person) {
     if (this.persons == null) {
