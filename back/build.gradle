@@ -128,6 +128,10 @@ pitest {
 	threads = 2
 	// Les tests de mutation ne s'exécutent que si la suite passe d'abord.
 	verbose = false
+	// PIT lance ses propres JVM, qui n'héritent pas des `systemProperty` de la
+	// tâche `test` : sans cet argument, ddl-auto retombe à `none` et tous les
+	// tests échouent contre une base vierge — donc à chaque exécution en CI.
+	jvmArgs = ['-Dspring.jpa.hibernate.ddl-auto=update']
 }
 
 // Analyse statique (recherche de bugs). Exclusions : back/config/spotbugs/exclude.xml
@@ -236,11 +240,21 @@ dependencies {
 	runtimeOnly 'co.elastic.logging:logback-ecs-encoder:1.7.0'
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	runtimeOnly 'org.hsqldb:hsqldb'
+	// Pilote PostgreSQL au seul classpath de test : la suite vise un vrai
+	// PostgreSQL quand SPRING_DATASOURCE_URL est fournie, mais le jar livré reste
+	// sur la base embarquée — et dependencyCheck n'analyse que runtimeClasspath.
+	testRuntimeOnly 'org.postgresql:postgresql'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 test {
     useJUnitPlatform()
+
+    // Sans ce réglage, PostgreSQL échoue faute de tables : Spring Boot ne met
+    // `create-drop` que sur une base embarquée. `update` et non `create-drop`,
+    // car les quatre contextes Spring de la suite partagent une seule base réelle.
+    systemProperty 'spring.jpa.hibernate.ddl-auto', 'update'
+
     // Génère automatiquement le rapport de couverture après les tests.
     finalizedBy jacocoTestReport
 }

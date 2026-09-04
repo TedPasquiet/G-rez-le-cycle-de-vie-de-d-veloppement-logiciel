@@ -110,6 +110,38 @@ cd back
 ./gradlew test
 ```
 
+Sans autre réglage, la suite s'exécute sur une base **HSQLDB en mémoire** :
+rien à installer, rien à démarrer.
+
+##### Contre PostgreSQL, comme le fait la CI
+
+Le moteur réellement déployé est PostgreSQL, et c'est sur lui que le job
+`test-back` exécute la suite. Le choix du moteur ne tient à aucun profil ni
+fichier de configuration : il tient aux trois variables standard de Spring.
+Absentes, HSQLDB ; présentes, PostgreSQL.
+
+```shell
+# Une base jetable, qui disparaît avec le conteneur
+docker run --rm -d --name microcrm-pg -p 5432:5432 \
+  -e POSTGRES_DB=microcrm_test \
+  -e POSTGRES_USER=microcrm \
+  -e POSTGRES_PASSWORD=microcrm \
+  postgres:16-alpine
+
+cd back
+SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/microcrm_test \
+SPRING_DATASOURCE_USERNAME=microcrm \
+SPRING_DATASOURCE_PASSWORD=microcrm \
+  ./gradlew test
+
+docker rm -f microcrm-pg
+```
+
+L'hôte est `localhost` ici parce que le port est publié sur la machine ; en CI
+c'est `postgres`, l'alias du service GitLab. C'est la seule différence entre les
+deux exécutions — voir [QUALITY.md](./QUALITY.md) §7 et
+[DATABASE.md](./DATABASE.md).
+
 #### Tests de performance (k6)
 
 **Dépendances**

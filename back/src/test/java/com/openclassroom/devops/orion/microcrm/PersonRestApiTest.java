@@ -2,14 +2,19 @@ package com.openclassroom.devops.orion.microcrm;
 
 import java.net.URI;
 
+import com.jayway.jsonpath.JsonPath;
+
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.MockMvc;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -28,8 +33,51 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 class PersonRestApiTest {
 
+    /** Email de la personne du jeu initial ({@link InitialDataFixture}). */
+    private static final String EMAIL_DU_JEU_INITIAL = "jdoe@example.net";
+
+    /** Email de la seule personne que cette classe crée, et donc committe. */
+    private static final String EMAIL_CREE_PAR_LA_CLASSE = "jroe-post@example.net";
+
     @Autowired
     private MockMvc mockMvc;
+
+    /**
+     * Identifiant de la personne du jeu initial, résolu par son email.
+     *
+     * <p>Il valait 1 en dur, ce qui n'est vrai que sur une base neuve : sur un
+     * PostgreSQL partagé, les tests {@code @DataJpaTest} consomment
+     * {@code person_seq} par blocs de 50 et l'identifiant dépend de l'ordre.
+     */
+    private String idDuJeuInitial() throws Exception {
+        String corps = mockMvc.perform(get("/persons/search/findByEmail")
+                .param("email", EMAIL_DU_JEU_INITIAL))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        // Le type est déclaré Object à dessein : JsonPath.read() est générique,
+        // et String.valueOf() sur son résultat inféré compile vers la surcharge
+        // char[] — un ClassCastException à l'exécution.
+        Object id = JsonPath.parse(corps).read("$.id");
+        return id.toString();
+    }
+
+    /**
+     * Range derrière les tests qui écrivent.
+     *
+     * <p>La classe ne peut pas être {@code @Transactional} (le test du doublon
+     * met la transaction PostgreSQL en échec) : ses écritures sont committées.
+     * Sans ce ménage, la 2ᵉ exécution recevrait 409 au lieu de 201.
+     */
+    @AfterEach
+    void supprimeLesLignesCommitteesParLesTests() throws Exception {
+        MockHttpServletResponse recherche = mockMvc.perform(get("/persons/search/findByEmail")
+                .param("email", EMAIL_CREE_PAR_LA_CLASSE))
+                .andReturn().getResponse();
+        if (recherche.getStatus() == 200) {
+            Object id = JsonPath.parse(recherche.getContentAsString()).read("$.id");
+            mockMvc.perform(delete("/persons/" + id)).andExpect(status().isNoContent());
+        }
+    }
 
     @Test
     @DisplayName("GET /persons retourne une collection HAL paginée")
@@ -69,7 +117,7 @@ class PersonRestApiTest {
     @Test
     @DisplayName("L'association organizations d'une personne est navigable")
     void personOrganizationsAssociationIsNavigable() throws Exception {
-        mockMvc.perform(get("/persons/1/organizations"))
+        mockMvc.perform(get("/persons/" + idDuJeuInitial() + "/organizations"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$._embedded.organizations").isArray());
     }
@@ -86,9 +134,9 @@ class PersonRestApiTest {
     @Test
     @DisplayName("L'endpoint de recherche findByEmail est publié et exploitable")
     void findByEmailSearchEndpointIsExposed() throws Exception {
-        mockMvc.perform(get("/persons/search/findByEmail").param("email", "jdoe@example.net"))
+        mockMvc.perform(get("/persons/search/findByEmail").param("email", EMAIL_DU_JEU_INITIAL))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.email").value("jdoe@example.net"));
+                .andExpect(jsonPath("$.email").value(EMAIL_DU_JEU_INITIAL));
     }
 
     @Test
@@ -127,9 +175,9 @@ class PersonRestApiTest {
         mockMvc.perform(get(URI.create(location)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.firstName").value("Jane"))
-                .andExpect(jsonPath("$.email").value("jroe-post@example.net"));
+                .andExpect(jsonPath("$.email").value(EMAIL_CREE_PAR_LA_CLASSE));
 
-        mockMvc.perform(get("/persons/search/findByEmail").param("email", "jroe-post@example.net"))
+        mockMvc.perform(get("/persons/search/findByEmail").param("email", EMAIL_CREE_PAR_LA_CLASSE))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.lastName").value("Roe"));
     }
@@ -140,7 +188,7 @@ class PersonRestApiTest {
         // Les gabarits person-details et organization-details passent createdAt
         // et updatedAt dans un DatePipe. Sans ces champs, la page afficherait
         // des cases vides sans qu'aucun test ne bronche.
-        mockMvc.perform(get("/persons/1"))
+        mockMvc.perform(get("/persons/" + idDuJeuInitial()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.createdAt").exists())
                 .andExpect(jsonPath("$.updatedAt").exists());
