@@ -1,0 +1,42 @@
+%% Schéma 3 — Le flux des logs, du stdout d'un pod au tableau de bord Kibana.
+%% Source versionnée du bloc Mermaid d'ARCHITECTURE.md §8.3.
+%% Les deux embranchements ne sont pas décoratifs : le filtre de namespace évite
+%% de collecter les projets voisins du cluster, et le décodage conditionnel évite
+%% une collision de mapping irréversible dans Elasticsearch. MONITORING.md §4.
+flowchart TB
+    subgraph app["Namespace microcrm-staging"]
+        back["pod back : Spring Boot<br/>profil container, encodeur ECS"]
+        front["pod front : Caddy<br/>journal d'accès"]
+    end
+
+    tiers["Namespaces dev, staging, default<br/>projets tiers du même cluster"]
+
+    back -->|"stdout : JSON ECS"| files
+    front -->|"stdout : JSON non-ECS"| files
+    tiers -->|"stdout"| files
+
+    files["Nœud minikube<br/>/var/log/containers/*.log"]
+    files --> fb
+
+    subgraph logging["Namespace logging — créé par Terraform"]
+        fb["Filebeat, DaemonSet<br/>provider autodiscover kubernetes"]
+        f1{"namespace observé<br/>= microcrm-staging ?"}
+        drop["écarté : hors périmètre"]
+        f2{"quel conteneur ?"}
+        d1["decode_json_fields à la racine<br/>champs ECS : log.level,<br/>log.logger, service.name"]
+        d2["decode_json_fields sous le<br/>préfixe caddy : caddy.status,<br/>caddy.duration"]
+        es[("Elasticsearch<br/>data stream microcrm-logs-AAAA.MM.JJ")]
+        kb["Kibana<br/>tableaux de bord exportés en NDJSON<br/>et versionnés dans le dépôt"]
+
+        fb --> f1
+        f1 -->|non| drop
+        f1 -->|oui| f2
+        f2 -->|back| d1
+        f2 -->|front| d2
+        d1 --> es
+        d2 --> es
+        es --> kb
+    end
+
+    dora["scripts/ci/collect_dora.py<br/>API GitLab, index microcrm-dora"] -.-> es
+    ope(["kubectl -n logging port-forward svc/kibana 5601"]) -.->|"aucun Ingress :<br/>sécurité Elasticsearch désactivée"| kb

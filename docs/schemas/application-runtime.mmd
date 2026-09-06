@@ -1,0 +1,25 @@
+%% Schéma — L'application en exécution.
+%% Source versionnée du bloc Mermaid de docs/schema-architecture.md §4.
+%% L'état applicatif vit entièrement dans PostgreSQL : aucun pod ne détient de
+%% donnée que les autres ignorent, et le nombre de replicas devient un réglage.
+%% La configuration est lue au démarrage, jamais au build — c'est ce qui permet à
+%% la même image de servir en staging et en production.
+flowchart TB
+    user(["Navigateur"]) --> ing["Ingress"]
+
+    subgraph ns["Namespace de l'environnement"]
+        direction TB
+        front["Deployment front — N replicas<br/>Caddy :80, bundle Angular"]
+        back["Deployment back — N replicas<br/>Spring Boot :8080, API REST"]
+        subgraph d["StatefulSet PostgreSQL"]
+            direction LR
+            pg[("PostgreSQL :5432")] --- pvc[["PersistentVolumeClaim"]]
+        end
+        conf["ConfigMap microcrm-config<br/>+ Secret identifiants base"]
+    end
+
+    ing -->|"microcrm.example.com"| front
+    ing -->|"api.microcrm.example.com"| back
+    back -->|"JDBC"| pg
+    conf -.->|"lus au démarrage"| front
+    conf -.-> back

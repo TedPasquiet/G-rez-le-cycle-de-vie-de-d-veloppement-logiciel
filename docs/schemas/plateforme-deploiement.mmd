@@ -1,0 +1,46 @@
+%% Schéma 1 — La plateforme de déploiement, du commit au pod.
+%% Source versionnée du bloc Mermaid d'ARCHITECTURE.md §8.1.
+%% Convention : trait plein = chemin réellement emprunté ;
+%%              pointillé   = chemin décrit, jamais abouti.
+%% Les identifiants de nœuds restent en ASCII, seuls les libellés sont accentués.
+flowchart TB
+    dev(["git push / merge"]) --> gh["GitHub<br/>dépôt de travail, Pull Requests"]
+    gh -->|"GitHub Actions : mirror-to-gitlab.yaml<br/>push --prune de toutes les refs"| gl["GitLab<br/>miroir en lecture seule"]
+    gl --> pipe
+
+    subgraph pipe["Pipeline GitLab CI : 9 étapes, 30 jobs"]
+        direction LR
+        s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
+    end
+
+    s7 -->|"docker push<br/>tag = CI_COMMIT_SHORT_SHA, jamais latest"| reg[("Registry GitLab<br/>privé")]
+    s5 -.->|"terraform plan / apply<br/>manuels"| tf["Namespace, quota,<br/>limites, policies"]
+
+    s9 == "déclenchement MANUEL<br/>develop, main ou tag" ==> jobs
+
+    subgraph jobs["Étape deploy : 3 jobs, aucun n'a jamais abouti"]
+        direction TB
+        j1["1. kubectl create secret docker-registry"]
+        j2["2. overlay éphémère Kustomize<br/>images: newName + newTag"]
+        j3["3. kubectl apply -k"]
+        j4["4. deploy.sh : attente de rollout,<br/>retour arrière automatique si échec"]
+        j1 --> j2 --> j3 --> j4
+    end
+
+    reg -.->|"imagePullSecrets"| j3
+    tf -.-> ns
+    j4 -.-> ns
+
+    subgraph ns["Namespace microcrm-staging ou microcrm-prod"]
+        direction LR
+        ing["Ingress<br/>2 hôtes"]
+        pb["pod back<br/>1 replica imposé"]
+        pf["pod front"]
+        ing --> pb
+        ing --> pf
+    end
+
+    poste(["Poste : docker build<br/>+ minikube image load"]) ==>|"le seul chemin<br/>réellement déployé<br/>K8S.md §14"| ns
+
+    classDef jamais stroke-dasharray: 5 5;
+    class jobs,tf jamais;

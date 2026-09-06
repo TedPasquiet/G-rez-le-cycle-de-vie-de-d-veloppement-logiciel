@@ -1,0 +1,17 @@
+%% Schéma — Les artefacts : un service, une image.
+%% Source versionnée du bloc Mermaid de docs/schema-architecture.md §5.
+%% Multi-stage : l'étape de compilation est jetée, l'image livrée ne contient que
+%% l'artefact et son runtime. Deux images et deux seulement — les cadences sont
+%% découplées, la montée en charge est indépendante, la surface à analyser reste
+%% minimale.
+flowchart LR
+    subgraph bb["back/Dockerfile — multi-stage"]
+        direction LR
+        g["gradle:8.14 jdk21<br/>compilation, tests"] -->|"copie le .jar"| ba["alpine + JRE<br/>image finale"]
+    end
+    subgraph fb["front/Dockerfile — multi-stage"]
+        direction LR
+        n["node:22<br/>npm ci, ng build"] -->|"copie les fichiers"| ca["caddy:2-alpine<br/>image finale"]
+    end
+    ba --> reg[("Registry privé<br/>tag = SHA, image signée")]
+    ca --> reg

@@ -1,0 +1,32 @@
+%% Schéma — Le cycle de release actuel, tel que décrit par les deux équipes.
+%% Source versionnée du bloc Mermaid de docs/plan-optimisation-release.md §1.1.
+%% 7 étapes Dev, 3 étapes Ops, et entre les deux : un email. Le retour à
+%% l'envoyeur après scan Trivy est l'irritant cité par les deux équipes.
+flowchart TB
+    subgraph DEV["Équipe Dev — 7 étapes déclarées"]
+        direction TB
+        d1["1. Réception des évolutions"]
+        d2["2. Chiffrage et priorisation<br/>avec le Product Owner"]
+        d3["3. Développement"]
+        d4["4. Démonstration de mi-itération"]
+        d5["5. Intégration des retours"]
+        d6["6. Derniers correctifs bloquants"]
+        d7["7. Génération des images<br/>et envoi des références"]
+        d1 --> d2 --> d3 --> d4 --> d5 --> d6 --> d7
+    end
+
+    subgraph MUR["La frontière, aujourd'hui"]
+        m1["Email<br/>+ échanges de vive voix"]:::pain
+    end
+
+    subgraph OPS["Équipe Ops — 3 étapes déclarées"]
+        direction TB
+        o1["1. Réception d'un numéro de version"]
+        o2["2. Analyse Trivy de l'image"]
+        o3["3. Déploiement MANUEL<br/>en commandes Docker"]
+        o1 --> o2 --> o3
+    end
+
+    d7 --> m1 --> o1
+    o2 -. "CVE détectée :<br/>RETOUR À L'ENVOYEUR" .-> d6
+    classDef pain fill:#f8d7da,stroke:#a94442,color:#6b2020

@@ -1,0 +1,21 @@
+%% Schéma — Le déploiement et le retour arrière.
+%% Source versionnée du bloc Mermaid de docs/schema-architecture.md §9.
+%% Le retour arrière est acquis avant d'être nécessaire : le script suit le
+%% rollout et rétablit de lui-même la version précédente. Une équipe qui traite un
+%% incident n'a pas à se souvenir d'une commande sous pression.
+flowchart TB
+    start(["Image validée<br/>dans le registry"]) --> c1
+
+    subgraph can["Déploiement progressif"]
+        direction TB
+        c1["La nouvelle version reçoit<br/>une fraction du trafic"] --> c2{"Sondes et indicateurs<br/>sur cette fraction"}
+        c2 -->|"conformes"| c3["Montée en charge<br/>par paliers"]
+    end
+
+    c3 --> full["100 % du trafic sur<br/>la nouvelle version"]
+    full --> post{"Tests post-déploiement<br/>TestInfra"}
+    post -->|"verts"| done(["Déploiement acquis"])
+
+    c2 -->|"non conformes"| rb["Retour arrière automatique"]
+    post -->|"rouges"| rb
+    rb --> prev(["Version précédente rétablie"])

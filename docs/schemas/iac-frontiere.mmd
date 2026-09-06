@@ -1,0 +1,39 @@
+%% Schéma 2 — L'IaC et sa frontière : qui possède quoi.
+%% Source versionnée du bloc Mermaid d'ARCHITECTURE.md §8.2.
+%% Règle : quatre couches, aucun recouvrement. Un objet a un propriétaire et un
+%% seul — c'est ce qui évite qu'un `terraform plan` propose sans fin de défaire
+%% ce que le dernier `kubectl apply` a posé. TERRAFORM.md §3, ANSIBLE.md §2.
+flowchart TB
+    subgraph L1["1. Ansible possède le poste et le cluster"]
+        a1["outillage : docker, kubectl,<br/>helm, terraform, ansible-lint"]
+        a2["profil minikube<br/>addons ingress et registry"]
+    end
+
+    subgraph L2["2. Terraform possède le contenant"]
+        t1["Namespace"]
+        t2["ResourceQuota"]
+        t3["LimitRange"]
+        t4["NetworkPolicy"]
+    end
+
+    subgraph L3["3. Kustomize possède l'application"]
+        k1["Deployment"]
+        k2["Service"]
+        k3["Ingress"]
+        k4["ConfigMap"]
+    end
+
+    subgraph L4["La CI possède les secrets, et eux seuls"]
+        c1["Secret du registry<br/>recréé à chaque déploiement"]
+    end
+
+    L1 -->|"ansible-playbook site.yml"| L2
+    L2 -->|"terraform apply"| L3
+    L4 -.->|"kubectl create secret,<br/>avant l'apply"| L3
+
+    helm["Helm : même rendu, autre mécanisme.<br/>Équivalence prouvée objet par objet,<br/>jamais déployé, exclusif de Kustomize"]
+    helm -.->|"n'applique rien"| L3
+
+    lbl["Frontière lisible dans le cluster :<br/>app.kubernetes.io/managed-by<br/>vaut terraform ou kustomize"]
+    L2 -.- lbl
+    L3 -.- lbl
