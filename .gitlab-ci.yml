@@ -452,7 +452,9 @@ mutation-back:
   image: $GRADLE_IMAGE
   stage: quality
   needs: ['test-back']
-  timeout: 45 minutes
+  # Mesuré à 1 min 46 sur le runner partagé, base PostgreSQL comprise : 45 min
+  # ne signalait plus rien. 10 min laisse de la marge tout en restant un signal.
+  timeout: 10 minutes
   script:
     - cd back
     - ./gradlew pitest
@@ -510,8 +512,10 @@ dependency-check-back:
       paths:
         - .gradle/dependency-check-data
       when: always
-  # Garde-fou : au-delà, c'est que le téléchargement de la base part en vrille
-  timeout: 10 minutes
+  # 40 min : la base NVD n'a jamais été constituée par une exécution réussie,
+  # et sans clé API le NVD bride à 5 requêtes par 30 s. À redescendre vers 10
+  # une fois le cache `nvd-data` réellement à jour.
+  timeout: 40 minutes
   script:
     - cd back
     - ./gradlew dependencyCheckAnalyze
