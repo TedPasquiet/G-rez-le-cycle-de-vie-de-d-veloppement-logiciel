@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elk-config
+  labels:
+    app.kubernetes.io/name: elk-config
+    app.kubernetes.io/component: logging
+data:
+  # Le périmètre de collecte, sorti de filebeat.yml et remonté ici.
+  #
+  # ⚠️ Ce cluster n'est pas dédié au projet : il héberge aussi `dev`, `staging`
+  # (olympic-games-app, workshop-organizer) et des pods dans `default`. Un
+  # Filebeat sans filtre aspirerait leurs journaux — donc les données de projets
+  # tiers — dans un Elasticsearch monté pour MicroCRM. Ce n'est pas seulement du
+  # bruit et du volume : c'est une collecte qu'on n'a pas le droit de faire.
+  #
+  # La valeur vit dans une ConfigMap plutôt qu'au fond de filebeat.yml pour deux
+  # raisons concrètes : on peut la relire d'un coup d'œil
+  # (`kubectl -n logging get cm elk-config -o yaml`) au lieu de fouiller un YAML
+  # imbriqué dans un bloc littéral, et un overlay peut la surcharger sans
+  # dupliquer toute la configuration de Filebeat. Elle est injectée dans le
+  # conteneur en variable d'environnement et déréférencée par `${...}` dans
+  # filebeat.yml.
+  #
+  # Changer cette valeur ne redémarre PAS le DaemonSet (même limite qu'en
+  # K8S.md §8.3) : il faut un `kubectl -n logging rollout restart ds/filebeat`.
+  MICROCRM_NAMESPACE: microcrm-staging
+
+  # Le seul conteneur dont les journaux sont du JSON au format ECS, et donc le
+  # seul dont on remonte le contenu décodé à la racine du document. Voir le bloc
+  # `decode_json_fields` de filebeat-config.yaml : ce n'est pas un réglage de
+  # confort, c'est ce qui empêche les journaux d'un autre conteneur de créer des
+  # conflits de mapping dans Elasticsearch.
+  #
+  # La valeur `back` n'est pas arbitraire : c'est le nom de conteneur imposé par
+  # scripts/deploy/deploy.sh et vérifié par scripts/tests/validate_k8s.sh
+  # (K8S.md §6). Si ce contrat change, il change ici aussi.
+  MICROCRM_ECS_CONTAINER: back
+  # Conteneur du serveur web, dont le journal d'accès est la SEULE source de
+  # latence de toute la chaîne : les logs applicatifs du back portent ce que
+  # l'application raconte, pas le temps qu'elle a mis. Ses champs sont décodés
+  # sous un préfixe dédié — voir filebeat-config.yaml.
+  MICROCRM_WEB_CONTAINER: front

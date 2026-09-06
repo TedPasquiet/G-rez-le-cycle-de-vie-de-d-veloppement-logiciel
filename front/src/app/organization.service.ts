@@ -56,8 +56,17 @@ export class OrganizationService {
     return org;
   }
 
+  /**
+   * Rattache une personne à une organisation.
+   *
+   * POST et non PUT : sur un lien d'association, Spring Data REST traite le
+   * POST comme un ajout et le PUT comme un REMPLACEMENT de la liste entière.
+   * En PUT, rattacher une personne évinçait silencieusement tous les autres
+   * membres de l'organisation — sans erreur côté client.
+   * Contrat vérifié par OrganizationRestApiTest.AssociationEndpoints (back).
+   */
   async addPerson(orgId: number, personId: number) {
-    const response = await this.client.put(
+    const response = await this.client.post(
       `${apiBaseUrl()}/organizations/${orgId}/persons`,
       `${apiBaseUrl()}/persons/${personId}`,
       { headers: { 'Content-Type': 'text/uri-list' } },
@@ -65,9 +74,18 @@ export class OrganizationService {
     await firstValueFrom(response);
   }
 
+  /**
+   * Détache une personne d'une organisation.
+   *
+   * L'URL passe par l'organisation, côté PROPRIÉTAIRE du many-to-many.
+   * `Person.organizations` est le côté inverse (`mappedBy`) : il n'écrit pas
+   * dans la table de jointure. Un DELETE sur
+   * `/persons/{personId}/organizations/{orgId}` répond bien 204, mais
+   * l'appartenance reste — le bouton semblait fonctionner sans rien faire.
+   */
   async removePerson(orgId: number, personId: number) {
     const response = await this.client.delete(
-      `${apiBaseUrl()}/persons/${personId}/organizations/${orgId}`,
+      `${apiBaseUrl()}/organizations/${orgId}/persons/${personId}`,
     );
     await firstValueFrom(response);
   }

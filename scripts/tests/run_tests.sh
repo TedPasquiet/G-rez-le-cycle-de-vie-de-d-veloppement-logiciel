@@ -581,6 +581,90 @@ verifie_code 1 'une syntaxe en échec ne dispense pas de jouer le lint' \
 verifie_fichier_contient "$journal" 'ansible-lint' "le lint a bien été joué malgré l'échec de syntaxe"
 
 # ==========================================================================
+# ci/collect_dora.py
+# ==========================================================================
+# Le collecteur interroge l'API GitLab. Il est donc testé sur des FIXTURES —
+# des réponses d'API enregistrées — plutôt que contre le réseau : un test qui
+# dépend d'un service tiers échoue les jours où ce service est lent, et on
+# finit par ne plus le croire.
+#
+# Deux jeux de fixtures, et la distinction est le cœur de ces tests :
+#
+#   scripts/tests/fixtures/                      RÉEL. Les 44 pipelines du
+#                                                projet et les jobs des 7
+#                                                pipelines qui ont déclenché un
+#                                                déploiement. Aucun n'a réussi.
+#   scripts/tests/fixtures/dora-scenario-fabrique/  FABRIQUÉ. Contient ce que
+#                                                le réel n'offre pas — des
+#                                                déploiements RÉUSSIS — sans
+#                                                quoi le calcul du lead time et
+#                                                du MTTR ne serait jamais
+#                                                emprunté par aucun test.
+#
+# `--days 0` partout : les fixtures sont datées, et une fenêtre glissante de 30
+# jours les ferait sortir du périmètre dans un mois. Un test qui se met à
+# échouer tout seul avec le temps est un test qu'on finit par désactiver.
+titre 'ci/collect_dora.py'
+
+verifie_code 0 '--help fonctionne' \
+  python3 "$ROOT_DIR/scripts/ci/collect_dora.py" --help
+verifie_contient '--fixtures' "l'aide mentionne le mode hors ligne"
+
+verifie_code 1 'un répertoire de fixtures inexistant -> erreur (1)' \
+  python3 "$ROOT_DIR/scripts/ci/collect_dora.py" --fixtures "$WORK_DIR/nexiste-pas"
+
+# --- Sur les données RÉELLES : aucun déploiement n'a jamais abouti ---------
+sortie_reelle="$WORK_DIR/dora-reel.json"
+verifie_code 0 'collecte sur les fixtures réelles' \
+  python3 "$ROOT_DIR/scripts/ci/collect_dora.py" \
+  --fixtures "$TESTS_DIR/fixtures" --days 0 --output "$sortie_reelle"
+
+# ⚠️ L'assertion qui compte le plus de toute cette série. Trois indicateurs sur
+# quatre n'ont PAS de valeur sur ces données, et le collecteur doit le dire par
+# un `null` explicite. S'il rendait `0`, un tableau de bord afficherait un
+# délai de livraison de zéro heure — c'est-à-dire la performance parfaite, là
+# où il n'y a simplement jamais eu de livraison.
+verifie_fichier_contient "$sortie_reelle" '"lead_time_for_changes"' "l'indicateur de délai est présent"
+verifie_fichier_contient "$sortie_reelle" '"valeur": null' "un indicateur sans donnée vaut null, pas zéro"
+verifie_fichier_contient "$sortie_reelle" '"change_failure_rate"' "le taux d'échec est présent"
+
+python3 - "$sortie_reelle" <<'PYTEST' >"$WORK_DIR/dora-reel.txt"
+import json, sys
+d = json.load(open(sys.argv[1]))
+ind = {i["cle"]: i for i in d["indicateurs"]}
+print("frequence", ind["deployment_frequency"]["valeur"])
+print("leadtime", ind["lead_time_for_changes"]["valeur"])
+print("mttr", ind["mean_time_to_restore"]["valeur"])
+print("echec", ind["change_failure_rate"]["valeur"])
+print("tentatives", ind["change_failure_rate"]["observations"])
+PYTEST
+verifie_fichier_contient "$WORK_DIR/dora-reel.txt" 'frequence 0.0' 'aucun déploiement réussi : fréquence à 0'
+verifie_fichier_contient "$WORK_DIR/dora-reel.txt" 'leadtime None' "le délai de livraison est indéfini, pas nul"
+verifie_fichier_contient "$WORK_DIR/dora-reel.txt" 'mttr None' 'le MTTR est indéfini, pas nul'
+verifie_fichier_contient "$WORK_DIR/dora-reel.txt" 'echec 100.0' "le taux d'échec vaut 100 %"
+verifie_fichier_contient "$WORK_DIR/dora-reel.txt" 'tentatives 7' 'les 7 tentatives réelles sont comptées'
+
+# --- Sur les données FABRIQUÉES : le calcul est réellement emprunté --------
+# Sans ce second jeu, les quatre formules ne seraient jamais exécutées : on
+# testerait uniquement la capacité du collecteur à dire « je n'ai rien ».
+sortie_fab="$WORK_DIR/dora-fabrique.json"
+verifie_code 0 'collecte sur le scénario fabriqué' \
+  python3 "$ROOT_DIR/scripts/ci/collect_dora.py" \
+  --fixtures "$TESTS_DIR/fixtures/dora-scenario-fabrique" --days 0 --output "$sortie_fab"
+
+python3 - "$sortie_fab" <<'PYTEST' >"$WORK_DIR/dora-fab.txt"
+import json, sys
+d = json.load(open(sys.argv[1]))
+ind = {i["cle"]: i for i in d["indicateurs"]}
+for cle in ("deployment_frequency", "lead_time_for_changes", "mean_time_to_restore", "change_failure_rate"):
+    v = ind[cle]["valeur"]
+    print(cle, "defini" if v is not None else "indefini", ind[cle]["observations"])
+PYTEST
+verifie_fichier_contient "$WORK_DIR/dora-fab.txt" 'lead_time_for_changes defini' 'le délai se calcule dès qu un déploiement réussit'
+verifie_fichier_contient "$WORK_DIR/dora-fab.txt" 'mean_time_to_restore defini' 'le MTTR se calcule dès qu une panne est rétablie'
+verifie_fichier_contient "$WORK_DIR/dora-fab.txt" 'deployment_frequency defini' 'la fréquence se calcule sur des succès'
+
+# ==========================================================================
 # Bilan
 # ==========================================================================
 printf '\n---------------------------------------------\n'

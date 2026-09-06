@@ -155,28 +155,77 @@ describe('OrganizationService', () => {
 
       await tick();
       const req = httpMock.expectOne(`${apiBaseUrl()}/organizations/10/persons`);
-      expect(req.request.method).toBe('PUT');
       expect(req.request.body).toBe(`${apiBaseUrl()}/persons/7`);
       expect(req.request.headers.get('Content-Type')).toBe('text/uri-list');
       req.flush(null);
 
       await expectAsync(promise).toBeResolved();
     });
+
+    it('utilise POST, qui AJOUTE, et non PUT, qui remplace toute la liste', async () => {
+      // La distinction n'est pas cosmétique. Sur un lien d'association, Spring
+      // Data REST traite PUT comme un remplacement complet : rattacher une
+      // personne en PUT évinçait tous les autres membres de l'organisation,
+      // en répondant 204 comme si tout allait bien.
+      // Comportement établi côté back par
+      // OrganizationRestApiTest.AssociationEndpoints.
+      const promise = service.addPerson(10, 7);
+
+      await tick();
+      const req = httpMock.expectOne(`${apiBaseUrl()}/organizations/10/persons`);
+      expect(req.request.method).toBe('POST');
+      req.flush(null);
+
+      await promise;
+    });
+
+    it("propage l'erreur au lieu de la masquer", async () => {
+      const promise = service.addPerson(10, 7);
+
+      await tick();
+      httpMock
+        .expectOne(`${apiBaseUrl()}/organizations/10/persons`)
+        .flush('boom', { status: 500, statusText: 'Server Error' });
+
+      await expectAsync(promise).toBeRejected();
+    });
   });
 
   describe('removePerson', () => {
-    it('détache la personne via la sous-ressource organizations de la personne', async () => {
+    it("détache la personne par l'URL côté organisation", async () => {
+      // Côté PROPRIÉTAIRE du many-to-many. L'URL symétrique
+      // /persons/{id}/organizations/{id} vise le côté inverse (`mappedBy`),
+      // qui n'écrit pas dans la table de jointure : le serveur répond 204 et
+      // l'appartenance reste. Le bouton « retirer » ne faisait donc rien.
       const promise = service.removePerson(10, 7);
 
-      // Le détachement passe par le côté "person" de l'association, alors que
-      // le rattachement passe par le côté "organization" : dissymétrie voulue
-      // par l'API Spring Data REST.
       await tick();
-      const req = httpMock.expectOne(`${apiBaseUrl()}/persons/7/organizations/10`);
+      const req = httpMock.expectOne(`${apiBaseUrl()}/organizations/10/persons/7`);
       expect(req.request.method).toBe('DELETE');
       req.flush(null);
 
       await expectAsync(promise).toBeResolved();
+    });
+
+    it("n'appelle jamais l'URL côté personne, sans effet sur l'association", async () => {
+      const promise = service.removePerson(10, 7);
+
+      await tick();
+      httpMock.expectNone(`${apiBaseUrl()}/persons/7/organizations/10`);
+      httpMock.expectOne(`${apiBaseUrl()}/organizations/10/persons/7`).flush(null);
+
+      await promise;
+    });
+
+    it("propage l'erreur au lieu de la masquer", async () => {
+      const promise = service.removePerson(10, 7);
+
+      await tick();
+      httpMock
+        .expectOne(`${apiBaseUrl()}/organizations/10/persons/7`)
+        .flush('boom', { status: 404, statusText: 'Not Found' });
+
+      await expectAsync(promise).toBeRejected();
     });
   });
 });

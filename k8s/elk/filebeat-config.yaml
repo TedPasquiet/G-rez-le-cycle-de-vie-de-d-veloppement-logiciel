@@ -1,0 +1,214 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: filebeat-config
+  labels:
+    app.kubernetes.io/name: filebeat
+    app.kubernetes.io/component: logging
+data:
+  filebeat.yml: |
+    # ------------------------------------------------------------------------
+    # Découverte des sources
+    # ------------------------------------------------------------------------
+    # `autodiscover` plutôt qu'un input statique sur /var/log/containers/*.log :
+    # un input statique lit TOUT ce qui traîne sur le nœud et n'a aucune notion
+    # de pod, donc aucun moyen de filtrer par namespace ni d'enrichir les
+    # documents. Autodiscover interroge l'API Kubernetes, ce qui rend le filtre
+    # possible — et c'est ce qui justifie le RBAC de filebeat-rbac.yaml.
+    filebeat.autodiscover:
+      providers:
+        - type: kubernetes
+          # Chaque pod du DaemonSet ne surveille que les pods de SON nœud. Sans
+          # ce réglage, les N pods Filebeat regardent tous les pods du cluster,
+          # ouvrent N watches sur l'API et cherchent des fichiers journaux qui
+          # ne sont pas sur leur disque. Un seul nœud ici, mais c'est le genre de
+          # défaut qui ne se voit qu'en ajoutant le deuxième.
+          node: ${NODE_NAME}
+
+          # ⚠️ Premier niveau du filtre : le watch API lui-même est restreint.
+          # ⚠️ Ce cluster héberge d'autres projets (namespaces `dev`, `staging`,
+          # `default`). Sans ce réglage, Filebeat ingérerait leurs journaux dans
+          # un Elasticsearch monté pour MicroCRM.
+          #
+          # La valeur vient de la ConfigMap `elk-config`, injectée en variable
+          # d'environnement dans le conteneur : le périmètre de collecte est une
+          # décision d'exploitation, elle se lit et se change au même endroit que
+          # les autres, pas au fond de ce fichier.
+          namespace: ${MICROCRM_NAMESPACE}
+
+          templates:
+            - condition:
+                # Second niveau, volontairement redondant avec `namespace:`
+                # ci-dessus. Ce n'est pas de la ceinture et des bretelles
+                # gratuites : `namespace:` restreint ce que Filebeat OBSERVE,
+                # la condition restreint ce qu'il ACCEPTE de lire. Si un jour
+                # le provider est élargi (ajout d'un second namespace, passage
+                # en autodiscover par hints), la condition reste le garde-fou
+                # qui empêche la collecte de déborder silencieusement.
+                equals:
+                  kubernetes.namespace: ${MICROCRM_NAMESPACE}
+              config:
+                - type: container
+                  # Le chemin porte l'ID du conteneur découvert, pas un
+                  # joker : c'est ce qui garantit qu'un pod hors périmètre,
+                  # dont le fichier est pourtant à côté dans le même
+                  # répertoire, n'est jamais ouvert.
+                  paths:
+                    - /var/log/containers/*-${data.kubernetes.container.id}.log
+
+    # ------------------------------------------------------------------------
+    # Traitement des événements
+    # ------------------------------------------------------------------------
+    processors:
+      # ⚠️ Le back émet des logs JSON au format ECS. Le reste — bannière Spring
+      # au démarrage, avertissements de la JVM sur stderr, et tout conteneur qui
+      # s'ajouterait — émet du texte. Les deux passent par le même DaemonSet et
+      # finissent dans le même index : le décodage doit donc pouvoir échouer sans
+      # conséquence, ET ne s'appliquer qu'à ce qu'il sait décoder.
+      #
+      # `add_error_key: false` couvre le premier point : sur une ligne qui n'est
+      # pas du JSON, le processeur renonce, ne tague rien, et laisse le champ
+      # `message` intact — la ligne de texte est indexée telle quelle. Avec la
+      # valeur par défaut (true), chaque ligne de la bannière Spring porterait un
+      # `error.message` : des erreurs qui n'en sont pas, et qui finissent par
+      # masquer les vraies.
+      #
+      # ⚠️ `when` couvre le second point, et il a été ajouté APRÈS constat sur ce
+      # cluster, pas par précaution. Le front écrit lui aussi du JSON — c'est le
+      # format par défaut de Caddy — mais avec ses propres noms de champs
+      # (`ts`, `msg`, `level`, `file`). Remontés à la racine, ils entrent en
+      # collision avec le mapping ECS que Filebeat installe : Elasticsearch a
+      # rejeté ces documents avec
+      #   document_parsing_exception: object mapping for [file] tried to parse
+      #   field [file] as object, but found a concrete value
+      # (`file` est un OBJET en ECS, une chaîne pour Caddy), et Filebeat les a
+      # perdus. Une collision de mapping ne se répare pas après coup : le type
+      # d'un champ est figé pour toute la durée de vie de l'index.
+      #
+      # Décoder à la racine n'est donc légitime que pour un producteur dont on
+      # SAIT que les noms de champs sont ECS. Les autres conservent leur ligne
+      # brute dans `message` : moins exploitable, mais indexé et lisible, alors
+      # que l'alternative était de le perdre.
+      #
+      # `target: ""` remonte les champs décodés à la racine du document, ce qui
+      # est indispensable pour que les champs ECS du back (`log.level`,
+      # `service.name`, `error.stack_trace`) tombent là où Kibana les attend, et
+      # non sous un préfixe. Filebeat traite au passage `@timestamp` de façon
+      # particulière : il le convertit en horodatage de l'événement au lieu de
+      # l'écrire comme un champ ordinaire, si bien que la date affichée dans
+      # Kibana est celle produite PAR L'APPLICATION, pas celle de la lecture du
+      # fichier par Filebeat. C'est ce qui rend les logs relisibles dans l'ordre
+      # après un redémarrage ou un rattrapage.
+      #
+      # `overwrite_keys: true` est nécessaire au point précédent : sans lui, le
+      # `@timestamp` déjà posé par l'input bloquerait celui de l'application.
+      - decode_json_fields:
+          when:
+            equals:
+              kubernetes.container.name: ${MICROCRM_ECS_CONTAINER}
+          fields: ['message']
+          target: ''
+          overwrite_keys: true
+          add_error_key: false
+          # Les logs ECS sont plats ou presque ; se limiter à 2 niveaux évite de
+          # dépenser du CPU à décoder des structures profondes qui, elles,
+          # feraient exploser le nombre de champs de l'index (explosion de
+          # mapping) au premier log applicatif un peu bavard.
+          max_depth: 2
+
+      # Second décodage, pour le journal d'accès du serveur web — et sous un
+      # PRÉFIXE, contrairement au précédent.
+      #
+      # ⚠️ C'est toute la différence, et elle est structurelle. Caddy n'écrit pas
+      # de l'ECS : ses champs portent les mêmes noms que ceux de Filebeat sans
+      # avoir la même forme, et un décodage à la racine faisait rejeter ses
+      # documents par Elasticsearch :
+      #
+      #   document_parsing_exception: object mapping for [file]
+      #   tried to parse field [file] as object
+      #
+      # Une collision de mapping est IRRÉVERSIBLE : une fois le champ typé dans
+      # l'index, aucun document contradictoire n'y entrera plus. Le préfixe
+      # `caddy` isole donc ces champs de l'espace ECS, et les deux formats
+      # cohabitent sans se marcher dessus.
+      #
+      # Ce que ça débloque : `caddy.status` (les erreurs), `caddy.duration` (la
+      # latence, en secondes) et le simple comptage (le volume). Les trois
+      # écrans attendus viennent de là, et de nulle part ailleurs.
+      - decode_json_fields:
+          when:
+            equals:
+              kubernetes.container.name: ${MICROCRM_WEB_CONTAINER}
+          fields: ['message']
+          target: 'caddy'
+          overwrite_keys: true
+          add_error_key: false
+          # Plus profond que pour l'ECS : le journal d'accès imbrique
+          # `request.headers`, donc trois niveaux. Au-delà, on ne collecterait
+          # que des en-têtes dont personne ne se sert.
+          max_depth: 3
+
+      # Rien d'autre, et deux absences méritent d'être justifiées :
+      # `add_kubernetes_metadata` est inutile ici — le provider autodiscover
+      # enrichit DÉJÀ chaque événement des champs `kubernetes.*`, l'ajouter
+      # ferait le travail deux fois ; `add_host_metadata` remonterait le nom
+      # d'hôte du CONTENEUR Filebeat, pas celui du pod dont vient le log, ce qui
+      # est plus trompeur qu'utile sur un cluster à un nœud.
+
+    # ------------------------------------------------------------------------
+    # Sortie
+    # ------------------------------------------------------------------------
+    output.elasticsearch:
+      # Nom court du Service : Filebeat vit dans le même namespace
+      # qu'Elasticsearch, donc la résolution DNS courte suffit et le namespace
+      # n'a pas à être écrit ici (K8S.md §4).
+      hosts: ['http://elasticsearch:9200']
+      # Nom porté par le projet plutôt que le `filebeat-8.19.7-*` par défaut :
+      # sur un cluster partagé, un `_cat/indices` doit dire d'un coup d'œil à qui
+      # appartient la donnée. Le suffixe quotidien permet en plus de supprimer
+      # une journée entière (`DELETE _data_stream/microcrm-logs-2026.08.15`) sans
+      # toucher au reste.
+      #
+      # En 8.x Filebeat écrit dans des data streams, pas dans des index
+      # classiques : ce nom est donc celui du DATA STREAM, et `_cat/indices`
+      # montre son index de soutien, `.ds-microcrm-logs-<date>-<date>-000001`.
+      # Savoir lire cette indirection évite de croire que rien n'est indexé.
+      index: 'microcrm-logs-%{+yyyy.MM.dd}'
+
+    # Dès qu'on nomme l'index soi-même, il faut nommer aussi le template qui
+    # porte son mapping — sinon Filebeat installe le sien, dont le motif ne
+    # correspond plus à rien, et tous les champs retombent sur le mapping
+    # dynamique d'Elasticsearch (les dates deviennent des chaînes, les niveaux de
+    # log des champs analysés, et les agrégations de Kibana ne fonctionnent plus).
+    setup.template.name: 'microcrm-logs'
+    setup.template.pattern: 'microcrm-logs-*'
+
+    # ⚠️ Effet de bord connu et sans conséquence : au démarrage, Filebeat tente
+    # de créer un data stream portant le NOM du template (`microcrm-logs`), qui
+    # ne correspond pas à son propre motif (`microcrm-logs-*`). Elasticsearch
+    # répond 400 « no matching index template found for data stream », Filebeat
+    # se reconnecte, constate que le template est déjà chargé et enchaîne. Les
+    # data streams réels sont créés à la première écriture. Faire correspondre le
+    # motif au nom supprimerait cette erreur, mais laisserait un data stream vide
+    # et inutilisé dans le cluster : le bruit d'une ligne au démarrage est moins
+    # gênant qu'un objet fantôme permanent.
+
+    # ILM est actif par défaut et, quand il l'est, il IMPOSE ses propres noms :
+    # le réglage `index` ci-dessus serait purement et simplement ignoré. Le
+    # désactiver est donc la contrepartie obligée d'un nommage choisi.
+    # Contrepartie assumée : plus de rotation ni de suppression automatiques. Sur
+    # une stack de démonstration à durée de vie courte, la purge se fait à la
+    # main ; sur une vraie stack, c'est ILM qu'il faut garder et le nom d'index
+    # qu'il faut abandonner — pas l'inverse.
+    setup.ilm.enabled: false
+
+    # Filebeat ne pousse pas de tableaux de bord : il faudrait lui donner
+    # l'adresse de Kibana et attendre que Kibana soit prêt AVANT de démarrer,
+    # ce qui transforme une dépendance souple en ordre de démarrage imposé.
+    setup.dashboards.enabled: false
+
+    # Journaux de Filebeat lui-même sur la sortie standard, pas dans un fichier :
+    # c'est ce que le conteneur doit faire, et ça évite d'avoir à rendre un
+    # répertoire de logs inscriptible.
+    logging.to_files: false
+    logging.level: info

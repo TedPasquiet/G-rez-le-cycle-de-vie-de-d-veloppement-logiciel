@@ -44,7 +44,7 @@ class OrganizationRepositoryIntegrationTest {
     }
 
     @Test
-    @DisplayName("CascadeType.ALL persiste les personnes rattachées à l'organisation")
+    @DisplayName("CascadeType.PERSIST enregistre les personnes rattachées à l'organisation")
     void savingAnOrganizationCascadesToItsPersons() {
         Organization org = new Organization();
         org.setName("Orion Incorporated");
@@ -141,7 +141,7 @@ class OrganizationRepositoryIntegrationTest {
         entityManager.clear();
 
         Organization reloaded = organizationRepository.findById(id).orElseThrow();
-        assertTrue(reloaded.getPersons() == null || reloaded.getPersons().isEmpty());
+        assertTrue(reloaded.getPersons().isEmpty());
         assertEquals(0, personRepository.count());
     }
 

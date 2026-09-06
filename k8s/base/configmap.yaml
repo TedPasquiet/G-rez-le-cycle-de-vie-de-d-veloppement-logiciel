@@ -21,3 +21,16 @@ data:
   # La valeur ci-dessous est celle de la stack locale ; chaque overlay la
   # remplace par l'hôte d'API réel de son environnement.
   FRONT_API_BASE_URL: http://localhost:8080
+
+  # Profil Spring actif dans le conteneur. Il n'y a pas de secret ici : c'est
+  # ce qui bascule les logs du back du texte lisible vers du JSON au format ECS
+  # (back/src/main/resources/logback-spring.xml).
+  #
+  # ⚠️ Sans cette clé, le pod journalise en TEXTE, sans que rien ne le signale —
+  # et Filebeat déverse alors dans Elasticsearch des lignes opaques que Kibana
+  # ne sait pas filtrer. Le défaut lisible-par-l'humain est délibéré côté
+  # application ; c'est donc ici, et seulement ici, que la bascule se décide.
+  #
+  # Le back la reçoit par `envFrom` (toute la ConfigMap) ; le front ne prend
+  # qu'une clé nommée et n'est donc pas concerné. Voir MONITORING.md.
+  SPRING_PROFILES_ACTIVE: container

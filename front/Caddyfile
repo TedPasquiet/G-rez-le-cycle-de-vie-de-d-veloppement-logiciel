@@ -12,6 +12,26 @@
 :{$SITE_PORT:80} {
 	encode gzip
 
+	# Journal d'accès, en JSON sur la sortie standard.
+	#
+	# Sans cette directive, Caddy n'écrit QUE ses journaux internes (démarrage,
+	# maintenance TLS) : aucune trace des requêtes servies. C'est le trou qui
+	# rendait impossible tout tableau de bord de latence — les logs applicatifs
+	# du back ne portent pas la durée d'une requête, et personne d'autre ne la
+	# mesure. Voir MONITORING.md.
+	#
+	# Chaque entrée porte `status`, `duration` et `request.uri` : de quoi
+	# alimenter les trois écrans attendus — erreurs, latence, volume — depuis
+	# une seule source, celle qui voit réellement passer le trafic.
+	#
+	# `stdout` et pas un fichier : c'est la convention des conteneurs, et c'est
+	# ce que Filebeat collecte depuis /var/log/containers sur le nœud. Écrire
+	# dans un fichier obligerait à monter un volume et à le faire tourner.
+	log {
+		output stdout
+		format json
+	}
+
 	# Configuration d'exécution du front, fabriquée ici plutôt que copiée dans
 	# le bundle : c'est le point qui supprime le `localhost:8080` compilé en dur
 	# (VARIABILISATION.md §5). Lue par src/app/config.ts avant le démarrage de

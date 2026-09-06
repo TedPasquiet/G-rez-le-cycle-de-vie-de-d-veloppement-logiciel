@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: logging
+spec:
+  # ClusterIP, et surtout aucun Ingress : la sécurité d'Elasticsearch est
+  # désactivée (voir elasticsearch-config.yaml). Exposer ce Service hors du
+  # cluster reviendrait à publier une base de données sans authentification. Le
+  # seul accès depuis le poste doit passer par `kubectl port-forward`, qui est
+  # tracé et volontaire.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: elasticsearch
+  ports:
+    - name: http
+      port: 9200
+      targetPort: http
+    # Le port de transport est déclaré alors qu'aucun autre nœud ne l'utilise :
+    # sur un cluster à un nœud il ne sert à rien aujourd'hui, mais l'omettre
+    # transformerait l'ajout d'un second nœud en debug d'un cluster qui ne se
+    # forme pas.
+    - name: transport
+      port: 9300
+      targetPort: transport

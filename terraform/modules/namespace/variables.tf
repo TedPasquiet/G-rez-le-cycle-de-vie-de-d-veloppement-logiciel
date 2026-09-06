@@ -4,7 +4,7 @@ variable "name" {
 }
 
 variable "environment" {
-  description = "Environnement porté par ce namespace (\"staging\" ou \"production\")."
+  description = "Valeur du label d'identité app.kubernetes.io/environment (\"staging\", \"production\" ou \"logging\")."
   type        = string
 
   # Sans cette validation, une faute de frappe (« prod », « Production ») passerait
@@ -13,9 +13,21 @@ variable "environment" {
   # `kubectl get ns -l app.kubernetes.io/environment=production` reviendrait
   # vide. Échouer au plan coûte quelques secondes, l'autre chemin coûte une
   # enquête.
+  #
+  # ⚠️ La liste est un vocabulaire FERMÉ, et c'est tout son intérêt : y ajouter
+  # une valeur est un geste délibéré, qui se relit en revue. « logging » y est
+  # entré le 2026-08-16, à la première réutilisation réelle du module hors des
+  # deux environnements applicatifs — la stack ELK. Ce jour-là le module a
+  # échoué au plan, ce qui a prouvé deux choses d'un coup : que la validation
+  # sert, et que « réutilisable » est une affirmation qui ne vaut que testée.
+  #
+  # `logging` n'est pas un environnement au sens des deux autres : c'est un
+  # namespace de plateforme, qui porte un composant partagé et non une version
+  # de l'application. Le label le dit tel quel plutôt que d'inventer une
+  # taxonomie que rien d'autre ne lirait.
   validation {
-    condition     = contains(["staging", "production"], var.environment)
-    error_message = "environment doit valoir \"staging\" ou \"production\"."
+    condition     = contains(["staging", "production", "logging"], var.environment)
+    error_message = "environment doit valoir \"staging\", \"production\" ou \"logging\"."
   }
 }
 

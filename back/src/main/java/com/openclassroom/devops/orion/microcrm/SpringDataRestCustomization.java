@@ -32,7 +32,7 @@ public class SpringDataRestCustomization implements RepositoryRestConfigurer {
         config.exposeIdsFor(Person.class, Organization.class);
         cors.addMapping("/**")
                 .allowedOrigins(allowedOrigins.toArray(String[]::new))
-                .allowedMethods("GET", "POST", "PATCH", "DELETE")
+                .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE")
                 .exposedHeaders("Access-Control-Allow-Origin")
                 .allowCredentials(false).maxAge(3600);
         RepositoryRestConfigurer.super.configureRepositoryRestConfiguration(config, cors);

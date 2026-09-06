@@ -88,8 +88,15 @@ variables:
   SONAR_PROJECT_KEY_FRONT: 'pasquietted_G-rez-le-cycle-de-vie-de-d-veloppement-logiciel-front'
 
   # --- Réglages du pipeline ------------------------------------------------
-  # Couverture minimale du back exigée par coverage-gate.
-  COVERAGE_MIN: '70'
+  # Couverture minimale du back exigée par coverage-gate. Le seuil est calé
+  # juste sous la couverture réelle (97 %) : assez haut pour qu'une régression
+  # se voie, assez bas pour ne pas se déclencher sur une ligne de plus.
+  # Le même seuil est appliqué en local par jacocoTestCoverageVerification
+  # (back/build.gradle), pour échouer avant le push et pas après.
+  COVERAGE_MIN: '90'
+  # Proportion minimale de mutants tués par PIT (job mutation-back). Mesure la
+  # force des assertions, là où COVERAGE_MIN ne mesure que les lignes atteintes.
+  MUTATION_MIN: '80'
   # Noms des Deployments et des conteneurs Kubernetes, qui servent aussi de
   # noms d'images dans le registry ($CI_REGISTRY_IMAGE/<nom>).
   APP_BACK_NAME: 'back'
@@ -391,10 +398,39 @@ coverage-gate:
     - python3 scripts/ci/check_coverage.py
       --report back/build/reports/jacoco/test/jacocoTestReport.xml
       --min "$COVERAGE_MIN"
-  # Pour l'instant je mets allow_failure: true, donc ça n'arrête pas le pipeline
-  # si la couverture est trop basse. Il suffit de mettre false pour que ça bloque.
-  allow_failure: true
+  # Gate bloquant. Il ne l'était pas tant que la couverture flottait loin du
+  # seuil ; elle est maintenant tenue par les tests et vérifiée aussi en local,
+  # un échec ici signale donc une vraie régression, pas un réglage à ajuster.
+  allow_failure: false
   <<: *rules_test
+
+# Tests de mutation du back.
+#
+# La couverture répond à « quelles lignes les tests traversent-ils ? », pas à
+# « que vérifient-ils ? ». Un test sans assertion affiche 100 % de couverture.
+# PIT modifie le bytecode (inverse une condition, remplace un retour par null,
+# supprime un appel) et relance les tests qui couvrent la ligne : un mutant qui
+# survit désigne du code exécuté mais pas vérifié.
+#
+# Job séparé et non bloquant : PIT relance la suite une fois par mutant, il est
+# nettement plus lent que `test-back`, et son seuil ne doit pas arrêter une
+# livraison sur un mutant équivalent (une mutation qui ne change réellement
+# rien, comme la suppression d'un appel à une implémentation par défaut vide).
+# Le rapport HTML est publié en artefact pour être lu à la revue.
+mutation-back:
+  image: $GRADLE_IMAGE
+  stage: quality
+  needs: ['test-back']
+  script:
+    - cd back
+    - ./gradlew pitest
+  artifacts:
+    when: always
+    paths:
+      - back/build/reports/pitest/
+    expire_in: 1 week
+  allow_failure: true
+  <<: [*cache_gradle, *rules_test]
 
 # Ce job lance mon script Python qui demande à SonarCloud si le Quality Gate
 # est passé, une fois que l'analyse a été envoyée.
