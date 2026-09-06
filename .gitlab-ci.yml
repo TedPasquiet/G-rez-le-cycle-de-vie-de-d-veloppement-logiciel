@@ -512,10 +512,10 @@ dependency-check-back:
       paths:
         - .gradle/dependency-check-data
       when: always
-  # 40 min : la base NVD n'a jamais été constituée par une exécution réussie,
-  # et sans clé API le NVD bride à 5 requêtes par 30 s. À redescendre vers 10
-  # une fois le cache `nvd-data` réellement à jour.
-  timeout: 40 minutes
+  # Mesuré à 3 min 41 une fois le cache `nvd-data` réellement constitué.
+  # 15 min laissent de la marge pour un rattrapage sans faire du délai un
+  # plafond qui ne signale plus rien.
+  timeout: 15 minutes
   script:
     - cd back
     - ./gradlew dependencyCheckAnalyze
@@ -524,7 +524,10 @@ dependency-check-back:
     paths:
       - back/build/reports/dependency-check-report.*
     expire_in: 1 week
-  allow_failure: true
+  # Bloquant : le scan trouve 0 vulnérabilité sur le runtimeClasspath, la porte
+  # se ferme donc sur du vide. Toute CVE >= CVSS 7 introduite ensuite arrête
+  # le pipeline, au lieu d'être signalée dans un job que personne ne relit.
+  allow_failure: false
   <<: *rules_test
 
 trivy-fs:
