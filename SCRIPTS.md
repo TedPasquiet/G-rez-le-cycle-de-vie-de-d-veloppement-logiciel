@@ -351,7 +351,7 @@ dont un XML cassé et un rapport vide pour vérifier les cas d'erreur. Et pour
 `run_k6.sh`, le faux `k6` permet de rejouer les cas qu'on ne peut pas provoquer
 à la demande avec un vrai serveur : seuils dépassés, API injoignable.
 
-Aujourd'hui : **95 tests**, tout passe.
+Aujourd'hui : **151 tests**, tout passe. Le compte a suivi les lots successifs — 95 avant l'intégration de Terraform et d'Ansible au pipeline, 135 après, 151 depuis le collecteur DORA.
 
 ```bash
 # Lancer toute la suite (rien n'est construit ni déployé)

@@ -1,0 +1,20 @@
+%% Schéma — L'infrastructure comme code : trois couches.
+%% Source versionnée du bloc Mermaid de docs/schema-architecture.md §8.
+%% Un objet a un propriétaire, et un seul. Si Terraform décrivait aussi les
+%% Deployments, chaque plan proposerait sans fin de défaire ce que le dernier
+%% déploiement a posé. Voir aussi iac-frontiere.mmd, la même règle vue depuis
+%% ARCHITECTURE.md.
+flowchart TB
+    subgraph A["Ansible — les machines"]
+        a1["Paquets, Docker, cluster,<br/>outillage du poste"]
+    end
+    subgraph T["Terraform — l'enveloppe de l'environnement"]
+        t1["Namespace, ResourceQuota,<br/>LimitRange, NetworkPolicy"]
+    end
+    subgraph K["Kustomize et Helm — l'application"]
+        k1["Deployments, Services, Ingress,<br/>ConfigMap, Secret, StatefulSet"]
+    end
+
+    A -->|"le cluster existe"| T
+    T -->|"le namespace et ses règles existent"| K
+    K --> run["L'application tourne"]

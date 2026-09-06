@@ -1,0 +1,37 @@
+%% Schéma — Le cycle de release cible.
+%% Source versionnée du bloc Mermaid de docs/plan-optimisation-release.md §3.
+%% Le seul acte humain restant est la décision de mise en production. Ce n'est
+%% pas une automatisation incomplète : c'est le point d'arrêt voulu.
+flowchart TB
+    subgraph DEV["Équipe Dev"]
+        direction TB
+        d1["Développement sur branche"]
+        d2["Pipeline sur chaque push :<br/>lint, test, qualité, sécurité"]
+        d3["Merge sur develop"]
+        d1 --> d2 --> d3
+    end
+
+    subgraph AUTO["Automatique"]
+        direction TB
+        a1["Construction des 2 images"]
+        a2["Scans BLOQUANTS"]
+        a3["Test de fumée k6 sur l'image"]
+        a4["Publication au registry<br/>tag = SHA"]
+        a5["Déploiement staging<br/>AUTOMATIQUE"]
+        a6["Tests post-déploiement<br/>TestInfra"]
+        a1 --> a2 --> a3 --> a4 --> a5 --> a6
+    end
+
+    subgraph PROD["Production — décision humaine, exécution outillée"]
+        direction TB
+        p1["Tag de version SemVer"]
+        p2["Promotion de la MÊME image"]
+        p3["Rollback automatique si échec"]
+        p1 --> p2 --> p3
+    end
+
+    d3 --> a1
+    a6 -->|"vert"| p1
+    a6 -. "rouge : rien ne sort" .-> d1
+    p3 --> obs["DORA + Kibana :<br/>le cycle se mesure"]
+    obs -. "boucle de retour" .-> d1

@@ -273,7 +273,7 @@ dépôt.
 arrière** s'il n'aboutit pas dans `$DEPLOY_TIMEOUT`. Son `kubectl set image` est
 désormais un **no-op** — l'étape 3 a déjà posé la bonne image — et il ne crée
 donc aucune révision supplémentaire (vérifié, §14.10). On le garde pour l'attente
-de rollout et pour le garde-fou, couverts par les 95 assertions de
+de rollout et pour le garde-fou, couverts par les 151 assertions de
 `scripts/tests/run_tests.sh`.
 
 ### Pourquoi un overlay éphémère, et pas autre chose

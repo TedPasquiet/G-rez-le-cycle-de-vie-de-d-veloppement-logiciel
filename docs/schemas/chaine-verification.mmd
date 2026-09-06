@@ -1,0 +1,24 @@
+%% Schéma — La chaîne de vérification.
+%% Source versionnée du bloc Mermaid de docs/schema-architecture.md §6.
+%% Neuf étapes, dont quatre consacrées à établir qu'un changement est livrable.
+%% Chacune est bloquante. Les analyses de sécurité sont dans le pipeline de
+%% développement : le coût de correction d'une CVE croît avec le temps écoulé
+%% depuis son introduction.
+flowchart TB
+    subgraph r1[" "]
+        direction LR
+        L["<b>lint</b> — la forme<br/>ESLint, Checkstyle<br/>ShellCheck<br/>manifestes K8s, chart Helm"]
+        T["<b>test</b> — le comportement<br/>JUnit sur PostgreSQL réel<br/>Karma<br/>scripts d'automatisation"]
+        Q["<b>quality</b> — la tenue du code<br/>SonarQube + Quality Gate<br/>SpotBugs<br/>couverture, mutation"]
+        L --> T --> Q
+    end
+    subgraph r2[" "]
+        direction LR
+        S["<b>security</b> — la surface d'attaque<br/>Dependency-Check<br/>Trivy fichiers et image"]
+        P["<b>perf</b> — la tenue en charge<br/>k6 fumée, charge, stress<br/>sur l'image construite"]
+        ok(["Artefact<br/>livrable"])
+        S --> P --> ok
+    end
+    r1 --> r2
+    style r1 fill:none,stroke:none
+    style r2 fill:none,stroke:none
