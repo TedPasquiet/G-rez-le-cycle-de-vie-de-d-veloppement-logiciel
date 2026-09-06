@@ -1,5 +1,5 @@
-import { AsyncPipe, NgFor, NgIf } from '@angular/common';
-import { Component, OnInit } from '@angular/core';
+import { NgFor, NgIf } from '@angular/common';
+import { Component, OnInit, inject } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { Person, PersonService } from '../person.service';
@@ -7,11 +7,15 @@ import { Organization, OrganizationService } from '../organization.service';
 
 @Component({
   selector: 'app-person-details',
-  standalone: true,
-  imports: [NgIf, FormsModule, AsyncPipe, NgFor, RouterLink],
+  imports: [NgIf, FormsModule, NgFor, RouterLink],
   templateUrl: './person-details.component.html',
 })
 export class PersonDetailsComponent implements OnInit {
+  private readonly route = inject(ActivatedRoute);
+  private readonly personService = inject(PersonService);
+  private readonly organizationService = inject(OrganizationService);
+  private readonly router = inject(Router);
+
   person: Person = {
     id: undefined as number | undefined,
     firstName: '',
@@ -27,13 +31,6 @@ export class PersonDetailsComponent implements OnInit {
   organizations: Organization[] = [];
   selectedOrganization: Organization | null = null;
   isNew: boolean = false;
-
-  constructor(
-    private readonly route: ActivatedRoute,
-    private readonly personService: PersonService,
-    private readonly organizationService: OrganizationService,
-    private readonly router: Router,
-  ) {}
 
   ngOnInit(): void {
     this.organizationService.fetchAll().then((orgs) => (this.organizations = orgs));
