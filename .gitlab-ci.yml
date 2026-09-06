@@ -78,6 +78,10 @@ variables:
   # Figée de longue date : d'une version de k6 à l'autre les mesures ne
   # seraient plus comparables.
   K6_IMAGE: 'grafana/k6:2.1.0'
+  # Base des jobs qui exécutent la suite du back (voir .postgres_service).
+  # Majeure figée : d'une majeure à l'autre le comportement observable change
+  # (types, collation donc ordre de tri), une suite verte sur 16 ne dit rien de 17.
+  POSTGRES_IMAGE: 'postgres:16-alpine'
 
   # --- Identité des projets SonarQube --------------------------------------
   # Source de vérité pour la CI. back/build.gradle et
@@ -301,6 +305,26 @@ lint-helm:
 # ===========================================================================
 # TEST (produisent la couverture consommée par SonarQube)
 # ===========================================================================
+#
+# Base réelle des jobs qui exécutent la suite du back : une suite verte sur
+# HSQLDB ne dit rien du moteur qu'on déploie. La bascule tient aux seules
+# SPRING_DATASOURCE_* — sans elles, le back reste sur HSQLDB.
+#
+# Deux pièges : l'hôte est l'ALIAS du service, jamais `localhost` (conteneur
+# voisin) ; les variables du job sont injectées dans le service aussi, d'où les
+# SPRING_* dérivées des POSTGRES_*.
+.postgres_service: &postgres_service
+  services:
+    - name: $POSTGRES_IMAGE
+      alias: postgres
+  variables:
+    POSTGRES_DB: 'microcrm_test'
+    POSTGRES_USER: 'microcrm'
+    POSTGRES_PASSWORD: 'microcrm'
+    SPRING_DATASOURCE_URL: 'jdbc:postgresql://postgres:5432/$POSTGRES_DB'
+    SPRING_DATASOURCE_USERNAME: '$POSTGRES_USER'
+    SPRING_DATASOURCE_PASSWORD: '$POSTGRES_PASSWORD'
+
 # Ce job teste mes propres scripts d'automatisation avant qu'ils ne servent
 # plus loin dans le pipeline. Il ne construit et ne déploie rien : les vraies
 # commandes (kubectl, docker, trivy) sont remplacées par de faux programmes,
@@ -340,12 +364,15 @@ test-back:
     paths:
       - back/build/
     expire_in: 1 day
-  <<: [*cache_gradle, *rules_test]
+  <<: [*postgres_service, *cache_gradle, *rules_test]
 
 # ===========================================================================
 # QUALITY : on envoie le code à SonarQube et on regarde la qualité.
 # Il faut avoir créé les variables SONAR_HOST_URL et SONAR_TOKEN dans GitLab.
 # ===========================================================================
+# Pas de service PostgreSQL ici, et ce n'est pas un oubli : `sonar` ne déclare
+# qu'un `mustRunAfter` sur `test`, jamais un `dependsOn` — elle lit le XML repris
+# en artefact. Idem pour spotbugs, dependency-check, coverage-gate et build-back.
 sonar-back:
   image: $GRADLE_IMAGE
   stage: quality
@@ -417,10 +444,15 @@ coverage-gate:
 # livraison sur un mutant équivalent (une mutation qui ne change réellement
 # rien, comme la suppression d'un appel à une implémentation par défaut vide).
 # Le rapport HTML est publié en artefact pour être lu à la revue.
+#
+# Même service PostgreSQL que `test-back` : sans lui, PIT mesurerait la solidité
+# de la suite sur un moteur qu'on ne déploie pas. Coût assumé, PIT rejouant la
+# suite par mutant — d'où le `timeout` explicite, qui se lit comme un signal.
 mutation-back:
   image: $GRADLE_IMAGE
   stage: quality
   needs: ['test-back']
+  timeout: 45 minutes
   script:
     - cd back
     - ./gradlew pitest
@@ -430,7 +462,7 @@ mutation-back:
       - back/build/reports/pitest/
     expire_in: 1 week
   allow_failure: true
-  <<: [*cache_gradle, *rules_test]
+  <<: [*postgres_service, *cache_gradle, *rules_test]
 
 # Ce job lance mon script Python qui demande à SonarCloud si le Quality Gate
 # est passé, une fois que l'analyse a été envoyée.

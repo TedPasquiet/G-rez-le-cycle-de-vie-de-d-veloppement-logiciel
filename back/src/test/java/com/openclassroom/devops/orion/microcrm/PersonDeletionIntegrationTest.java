@@ -5,7 +5,6 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -23,8 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * rien : sans ces tests, une régression sur la table de jointure ne serait
  * visible qu'en production, au moment d'un DELETE /persons/{id}.
  */
-@DataJpaTest
-class PersonDeletionIntegrationTest {
+class PersonDeletionIntegrationTest extends AbstractRepositoryIntegrationTest {
 
     @Autowired
     private TestEntityManager entityManager;

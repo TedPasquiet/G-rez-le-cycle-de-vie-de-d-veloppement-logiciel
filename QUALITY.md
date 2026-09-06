@@ -336,7 +336,12 @@ la commande locale et le job CI mesurent exactement la même chose. Voir
 - Les mesures dépendent de la machine : elles servent à détecter une **régression**
   entre deux exécutions comparables, pas à annoncer une capacité absolue.
 - La base est une HSQLDB en mémoire, plus rapide qu'une vraie base réseau. Les
-  chiffres sont donc optimistes en valeur absolue.
+  chiffres sont donc optimistes en valeur absolue. C'est propre à ces jobs : k6
+  attaque l'**image livrée**, démarrée en service sans variable
+  `SPRING_DATASOURCE_*`, donc sur son moteur par défaut. La suite de tests du
+  back, elle, s'exécute désormais sur un PostgreSQL réel (§7) — les deux jobs ne
+  parlent plus à la même base, et c'est voulu : ici on mesure une tendance, là on
+  vérifie un comportement.
 - Le front n'est pas testé en charge (ce serait le rôle d'un Lighthouse CI) : seul
   le back l'est, parce que c'est lui qui porte le risque de saturation.
 
@@ -408,6 +413,45 @@ ne voient ces endpoints. Les tests sont leur seule description exécutable — e
 c'est en les écrivant qu'ont été trouvés les trois HTTP 500 et les deux appels
 sans effet corrigés au passage.
 
+### Sur quel moteur de base ces tests s'exécutent
+
+**En CI : un PostgreSQL réel**, démarré comme service du job (`postgres:16-alpine`,
+version figée dans le bloc `variables:` du pipeline au même titre que les autres
+images). **En local : HSQLDB en mémoire**, sans rien à installer.
+
+Ce n'est pas une inconséquence, c'est la seule répartition qui tienne les deux
+exigences à la fois : `cd back && ./gradlew test` doit rester lançable sur un
+poste nu, et le code doit rencontrer le moteur de production avant la production.
+Le schéma de MicroCRM n'est écrit nulle part — Hibernate le déduit des entités —
+donc personne ne le relit avant qu'il n'existe. Or ce qu'un moteur tolère,
+l'autre le refuse : types rapprochés, casse des identifiants, ordre de tri sans
+`ORDER BY`, moment où une contrainte est vérifiée. Une suite verte sur HSQLDB ne
+dit rien de PostgreSQL.
+
+La bascule ne passe par aucun profil Spring ni fichier de configuration, mais par
+les trois variables standard `SPRING_DATASOURCE_URL`,
+`SPRING_DATASOURCE_USERNAME` et `SPRING_DATASOURCE_PASSWORD` : absentes, HSQLDB ;
+présentes, PostgreSQL. Un fichier `application-postgres.properties` aurait eu le
+même effet en CI, mais aurait ajouté une configuration à maintenir en double et
+un profil à ne pas oublier d'activer. Là, il n'y a rien à oublier : c'est
+l'environnement qui décide, et le même mécanisme sert au déploiement.
+[README.md](README.md) donne la commande pour reproduire l'exécution CI sur un
+poste.
+
+Deux jobs reçoivent ce service, `test-back` et `mutation-back` :
+
+| Job             | Pourquoi le service                                                                                                                                                                                                                                                                      |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test-back`     | C'est lui qui exécute la suite, et dont le rapport JaCoCo alimente tout le stage `quality`.                                                                                                                                                                                              |
+| `mutation-back` | PIT rejoue la suite **une fois par mutant** : sans le service il la rejouerait sur HSQLDB, et publierait un score de mutation vert mesuré sur un moteur qu'on ne déploie pas. Le job y perd en durée — il porte pour cela un `timeout` explicite — et y gagne de mesurer ce qu'on livre. |
+
+Les autres jobs qui touchent au back ne relancent aucun test et n'ont donc pas
+besoin de base : `sonar-back` lit les classes compilées et le XML JaCoCo repris
+en artefact (la tâche `sonar` du plugin Gradle ne déclare qu'un `mustRunAfter`
+sur `test`, jamais un `dependsOn`), `coverage-gate` lit ce même XML,
+`spotbugs-back` analyse du bytecode, `dependency-check-back` résout le
+`runtimeClasspath`, et `build-back` compile avec `-x test`.
+
 ### Les deux seuils, et pourquoi ils ne mesurent pas la même chose
 
 **Couverture (JaCoCo, `coverage-gate`)** — quelles lignes les tests traversent-ils ?
@@ -470,6 +514,13 @@ pas un motif large qui absorberait du code métier au passage.
 
 Côté GitHub, un secret `GITLAB_TOKEN` (scope `write_repository`) est nécessaire au
 workflow de miroir vers GitLab.
+
+**Rien à créer pour la base PostgreSQL des jobs de test.** Ses identifiants sont
+écrits en clair dans `.gitlab-ci.yml`, et c'est délibéré : la base naît et meurt
+avec le job, n'est joignable que depuis son réseau, et ne contient que ce que les
+tests y écrivent. En faire une variable masquée laisserait croire à un secret
+là où il n'y en a pas — et le vrai risque des secrets est qu'on cesse de
+distinguer ceux qui en sont.
 
 Sans `SONAR_TOKEN`, les jobs Sonar échouent mais le pipeline reste vert, puisqu'ils
 sont en `allow_failure: true`. Le détail des variables de déploiement est dans

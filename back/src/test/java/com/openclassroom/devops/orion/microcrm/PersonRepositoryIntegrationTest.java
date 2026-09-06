@@ -5,7 +5,6 @@ import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
 
 import jakarta.persistence.PersistenceException;
@@ -17,11 +16,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests d'intégration JPA du {@link PersonRepository} sur la base HSQLDB
- * en mémoire. Chaque test est transactionnel et annulé à la fin (@DataJpaTest).
+ * Tests d'intégration JPA du {@link PersonRepository}. Chaque test est
+ * transactionnel et annulé à la fin ({@code @DataJpaTest}).
+ *
+ * <p>Le moteur n'est plus HSQLDB par principe : il dépend de
+ * {@code SPRING_DATASOURCE_URL}. Voir {@link AbstractRepositoryIntegrationTest}.
  */
-@DataJpaTest
-class PersonRepositoryIntegrationTest {
+class PersonRepositoryIntegrationTest extends AbstractRepositoryIntegrationTest {
 
     @Autowired
     private TestEntityManager entityManager;
