@@ -55,3 +55,7 @@ gradle-app.setting
 *.hprof
 
 # End of https://www.toptal.com/developers/gitignore/api/gradle,java
+
+# Sortie de compilation d'Eclipse : duplique src/main/resources, et une copie
+# périmée passerait pour la configuration réelle.
+bin/
