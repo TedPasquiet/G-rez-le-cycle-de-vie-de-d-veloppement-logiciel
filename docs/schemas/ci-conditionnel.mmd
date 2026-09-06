@@ -1,0 +1,16 @@
+%% Schéma — Le déclenchement conditionnel par branche.
+%% Source versionnée du bloc Mermaid de docs/pipeline-ci.md §4.
+%% Seuls feature/, release/, hotfix/, develop, main et les tags déclenchent des
+%% jobs. Une branche fix/ ou ci/ ne lance rien.
+flowchart LR
+    mr(["Merge request<br/>feature/"]) --> V
+    dev(["develop"]) --> V
+    rel(["release/<br/>hotfix/"]) --> V
+    main(["main<br/>tag"]) --> V
+    V["Vérification<br/>lint, test, quality,<br/>security, infra"] --> G{"branche ?"}
+    G -->|"MR, feature/"| stop(["s'arrête là"])
+    G -->|"develop, release/,<br/>hotfix/, main, tag"| L["Livraison<br/>build, package, perf"]
+    L --> H{"branche ?"}
+    H -->|"develop"| st(["deploy-staging ✋"])
+    H -->|"main, tag"| pr(["deploy-production ✋<br/>rollback ✋"])
+    H -->|"release/, hotfix/"| rien(["aucun déploiement"])

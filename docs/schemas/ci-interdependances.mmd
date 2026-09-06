@@ -1,0 +1,17 @@
+%% Schéma — Les interdépendances réelles entre jobs.
+%% Source versionnée du bloc Mermaid de docs/pipeline-ci.md §3.
+%% Douze jobs sortent de l'ordre des étapes : six par `needs: []` qui démarrent
+%% immédiatement, six par un `needs` explicite de job à job.
+flowchart LR
+    subgraph A["needs: [] — démarrent sans attendre l'étape précédente"]
+        a1["lint-k8s"] ~~~ a2["lint-helm"] ~~~ a3["test-scripts"] ~~~ a4["terraform-validate"] ~~~ a5["ansible-lint"] ~~~ a6["terraform-plan"]
+    end
+    subgraph B["needs explicites — dépendance de job à job"]
+        tb["test-back"] --> cg["coverage-gate"]
+        tb --> sb["sonar-back"]
+        tb --> mb["mutation-back"]
+        tf["test-front"] --> sf["sonar-front"]
+        sb --> qg["quality-gate"]
+        sf --> qg
+        tval["terraform-validate"] --> tapp["terraform-apply"]
+    end
