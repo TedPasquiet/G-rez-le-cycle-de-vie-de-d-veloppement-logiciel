@@ -6,14 +6,15 @@ autres ne voient pas : un test unitaire ne détecte pas une CVE, un scan de CVE 
 détecte pas une mauvaise pratique de code, et aucun des deux ne dit si l'application
 tient la charge.
 
-| Outil                          | Question à laquelle il répond                                                  | Où il s'exécute  |
-| ------------------------------ | ------------------------------------------------------------------------------ | ---------------- |
-| **SonarQube**                  | Le code respecte-t-il les bonnes pratiques ? Quelle est la dette ?             | stage `quality`  |
-| **SpotBugs** (+ Find-Sec-Bugs) | Y a-t-il des bugs latents dans le bytecode ?                                   | stage `quality`  |
-| **OWASP Dependency-Check**     | Mes dépendances Java portent-elles des CVE connues ?                           | stage `security` |
-| **Trivy**                      | Mes images Docker et mes fichiers portent-ils des CVE / secrets / misconfigs ? | stage `security` |
-| **k6**                         | L'API répond-elle correctement, et assez vite, sous charge ?                   | stage `perf`     |
-| _Supervision applicative_      | _L'application déployée est-elle en bonne santé ?_                             | _non implémenté_ |
+| Outil                          | Question à laquelle il répond                                                  | Où il s'exécute            |
+| ------------------------------ | ------------------------------------------------------------------------------ | -------------------------- |
+| **SonarQube**                  | Le code respecte-t-il les bonnes pratiques ? Quelle est la dette ?             | stage `quality`            |
+| **SpotBugs** (+ Find-Sec-Bugs) | Y a-t-il des bugs latents dans le bytecode ?                                   | stage `quality`            |
+| **OWASP Dependency-Check**     | Mes dépendances Java portent-elles des CVE connues ?                           | stage `security`           |
+| **Trivy**                      | Mes images Docker et mes fichiers portent-ils des CVE / secrets / misconfigs ? | stage `security`           |
+| **k6**                         | L'API répond-elle correctement, et assez vite, sous charge ?                   | stage `perf`               |
+| **Stack ELK**                  | Que raconte l'application une fois déployée ?                                  | hors CI, §6                |
+| **JaCoCo + PIT**               | Les tests couvrent-ils le code, et vérifient-ils quelque chose ? (§7)          | stages `test` et `quality` |
 
 S'y ajoutent, au stage `lint`, les contrôles de forme : **Checkstyle** et **Spotless**
 côté back, **ESLint** et **Prettier** côté front, **ShellCheck** sur les scripts Bash.
@@ -23,17 +24,22 @@ local.
 Le pipeline complet compte 8 stages : `lint` → `test` → `quality` → `security` →
 `build` → `package` → `perf` → `deploy`. Voir [ARCHITECTURE.md](ARCHITECTURE.md) §4.
 
-> ⚠️ **Presque aucun de ces contrôles n'est bloquant aujourd'hui.** Les sept jobs de
-> qualité et de sécurité (`sonar-back`, `sonar-front`, `spotbugs-back`,
-> `coverage-gate`, `quality-gate`, `dependency-check-back`, `trivy-fs`) sont en
-> `allow_failure: true`, et les scans Trivy tournent en `--exit-code 0`. Ils
-> **informent** sans jamais arrêter le pipeline. C'est un choix de démarrage assumé,
-> à lever contrôle par contrôle une fois le processus de traitement des
-> vulnérabilités rodé.
+> ⚠️ **Une partie de ces contrôles ne sont pas bloquants.** Les jobs `sonar-back`,
+> `sonar-front`, `spotbugs-back`, `quality-gate`, `trivy-fs` et `mutation-back`
+> sont en `allow_failure: true`, et les scans Trivy tournent en `--exit-code 0`.
+> `dependency-check-back`, lui, est devenu bloquant. Ils **informent** sans arrêter le pipeline. C'est un
+> choix de démarrage assumé, à lever contrôle par contrôle une fois le processus de
+> traitement des vulnérabilités rodé.
 >
-> La seule exception est **`k6-smoke`** (§5) : il est bloquant, parce qu'il ne mesure
-> pas une tendance mais un fait binaire — l'image qu'on s'apprête à déployer répond,
-> ou elle ne répond pas.
+> Deux exceptions, pour la même raison : elles ne mesurent pas une tendance mais un
+> fait binaire.
+>
+> - **`k6-smoke`** (§5) : l'image qu'on s'apprête à déployer répond, ou elle ne
+>   répond pas.
+> - **`coverage-gate`** (§7) : la couverture du back est au-dessus de son seuil, ou
+>   elle est passée dessous. Le seuil étant calé sous la valeur réellement tenue et
+>   vérifié aussi en local avant le push, un échec ici désigne une régression, pas un
+>   réglage à ajuster.
 
 ---
 
@@ -330,23 +336,39 @@ la commande locale et le job CI mesurent exactement la même chose. Voir
 - Les mesures dépendent de la machine : elles servent à détecter une **régression**
   entre deux exécutions comparables, pas à annoncer une capacité absolue.
 - La base est une HSQLDB en mémoire, plus rapide qu'une vraie base réseau. Les
-  chiffres sont donc optimistes en valeur absolue.
+  chiffres sont donc optimistes en valeur absolue. C'est propre à ces jobs : k6
+  attaque l'**image livrée**, démarrée en service sans variable
+  `SPRING_DATASOURCE_*`, donc sur son moteur par défaut. La suite de tests du
+  back, elle, s'exécute désormais sur un PostgreSQL réel (§7) — les deux jobs ne
+  parlent plus à la même base, et c'est voulu : ici on mesure une tendance, là on
+  vérifie un comportement.
 - Le front n'est pas testé en charge (ce serait le rôle d'un Lighthouse CI) : seul
   le back l'est, parce que c'est lui qui porte le risque de saturation.
 
 ---
 
-## 6. Supervision de l'application déployée — **non implémenté**
+## 6. Supervision de l'application déployée — **implémenté**
 
-> Cette section décrit une **amélioration prévue**, pas un contrôle en place.
-> Rien de ce qui suit n'existe aujourd'hui dans le dépôt.
+> Cette section annonçait une amélioration prévue. Elle est faite, en deux temps,
+> et ce qui suit décrit ce qui existe réellement dans le dépôt.
 
-**Le manque.** Les quatre outils précédents agissent tous **avant** le déploiement.
-Une fois l'application en production, plus rien ne dit si elle répond, si sa base est
-joignable, ou quelle est sa consommation mémoire. C'est aussi ce qui manque à
-Kubernetes pour savoir quand router du trafic vers un pod : sans sonde, le cluster
-considère un conteneur démarré comme prêt, même si l'application est encore en train
-de charger.
+**Le manque de départ.** Les quatre outils précédents agissent tous **avant** le
+déploiement. Une fois l'application en marche, plus rien ne disait si elle répondait,
+si sa base était joignable, ni ce qu'elle racontait.
+
+**Ce qui a été fait, et où c'est décrit.**
+
+| Volet                             | État       | Détail                                                                                                                                                                                       |
+| --------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sondes de santé                   | fait       | Actuator est en dépendance, et les trois sondes (`startup`, `liveness`, `readiness`) sont posées sur les deux Deployments — [K8S.md](K8S.md) §5. Vérifiées sous kubelet en §14.3             |
+| Centralisation des logs           | fait       | Elasticsearch, Kibana et Filebeat sur le cluster local ; les logs du back sont en JSON ECS et arrivent décodés — [MONITORING.md](MONITORING.md)                                              |
+| Tableaux de bord                  | fait       | 6 panneaux — volume, latence, erreurs applicatives et HTTP, statuts, logs récents — exportés en objets sauvegardés versionnés dans `k8s/elk/dashboards/` — [MONITORING.md](MONITORING.md) §8 |
+| Métriques (CPU, mémoire, latence) | **absent** | seuls les logs sont collectés. Il n'y a ni Prometheus ni `metrics-server` sur le cluster                                                                                                     |
+| Alerting                          | **absent** | rien ne prévient : la supervision se consulte, elle ne réveille personne                                                                                                                     |
+
+Ce qui suit dans cette section décrivait l'ajout d'Actuator ; c'est fait, et le
+détail des sondes est désormais dans [K8S.md](K8S.md) §5. Conservé ici pour le
+raisonnement sur l'exposition minimale des endpoints, qui reste valable.
 
 Conséquence concrète sur le pipeline : le job `deploy-staging` s'appuie uniquement sur
 `kubectl rollout status`, qui vérifie que les pods démarrent — pas que l'application
@@ -370,23 +392,139 @@ fonctionne.
 
 ---
 
+## 7. Les tests — couverture, et force des assertions
+
+### Ce que chaque niveau vérifie
+
+| Niveau                     | Où                                                                                                                   | Ce qu'il attrape                                                                                                    |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Unitaires (back)           | `PersonTest`, `OrganizationTest`, `InitialDataFixtureTest`, `SpringDataRestCustomizationTest`                        | Logique des entités et de la configuration, sans base ni contexte Spring. Quelques millisecondes.                   |
+| Intégration JPA            | `*RepositoryIntegrationTest`, `PersonDeletionIntegrationTest`                                                        | Ce que fait réellement Hibernate : cascades, table de jointure, contraintes, hook `@PreRemove`.                     |
+| Contrat HTTP               | `PersonRestApiTest`, `PersonRestLifecycleTest`, `OrganizationRestApiTest`, `CorsPolicyTest`, `ActuatorEndpointsTest` | Les endpoints que Spring Data REST **génère** — donc ceux qu'aucune ligne du dépôt ne décrit.                       |
+| Configuration variabilisée | `CorsAllowedOriginsOverrideTest`                                                                                     | Que la surcharge par variable d'environnement est bien lue, et que le défaut de développement cesse de s'appliquer. |
+| Unitaires (front)          | `*.service.spec.ts`, `*.component.spec.ts`, `config.spec.ts`                                                         | Les requêtes réellement émises (URL, méthode, en-têtes) et l'enchaînement des appels.                               |
+| Scripts                    | `scripts/tests/run_tests.sh`                                                                                         | Les scripts d'automatisation, avec `kubectl`, `docker`, `terraform`… remplacés par des stubs.                       |
+| Charge                     | `tests/k6/`                                                                                                          | Le comportement sous charge, budget de performance à l'appui (§5).                                                  |
+
+Le niveau « contrat HTTP » mérite d'être souligné : l'API n'a **aucun contrôleur**.
+Les URL, les codes de retour et la sémantique des liens d'association viennent
+entièrement de Spring Data REST. Ni le compilateur, ni Checkstyle, ni SpotBugs
+ne voient ces endpoints. Les tests sont leur seule description exécutable — et
+c'est en les écrivant qu'ont été trouvés les trois HTTP 500 et les deux appels
+sans effet corrigés au passage.
+
+### Sur quel moteur de base ces tests s'exécutent
+
+**En CI : un PostgreSQL réel**, démarré comme service du job (`postgres:16-alpine`,
+version figée dans le bloc `variables:` du pipeline au même titre que les autres
+images). **En local : HSQLDB en mémoire**, sans rien à installer.
+
+Ce n'est pas une inconséquence, c'est la seule répartition qui tienne les deux
+exigences à la fois : `cd back && ./gradlew test` doit rester lançable sur un
+poste nu, et le code doit rencontrer le moteur de production avant la production.
+Le schéma de MicroCRM n'est écrit nulle part — Hibernate le déduit des entités —
+donc personne ne le relit avant qu'il n'existe. Or ce qu'un moteur tolère,
+l'autre le refuse : types rapprochés, casse des identifiants, ordre de tri sans
+`ORDER BY`, moment où une contrainte est vérifiée. Une suite verte sur HSQLDB ne
+dit rien de PostgreSQL.
+
+La bascule ne passe par aucun profil Spring ni fichier de configuration, mais par
+les trois variables standard `SPRING_DATASOURCE_URL`,
+`SPRING_DATASOURCE_USERNAME` et `SPRING_DATASOURCE_PASSWORD` : absentes, HSQLDB ;
+présentes, PostgreSQL. Un fichier `application-postgres.properties` aurait eu le
+même effet en CI, mais aurait ajouté une configuration à maintenir en double et
+un profil à ne pas oublier d'activer. Là, il n'y a rien à oublier : c'est
+l'environnement qui décide, et le même mécanisme sert au déploiement.
+[README.md](README.md) donne la commande pour reproduire l'exécution CI sur un
+poste.
+
+Deux jobs reçoivent ce service, `test-back` et `mutation-back` :
+
+| Job             | Pourquoi le service                                                                                                                                                                                                                                                                      |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test-back`     | C'est lui qui exécute la suite, et dont le rapport JaCoCo alimente tout le stage `quality`.                                                                                                                                                                                              |
+| `mutation-back` | PIT rejoue la suite **une fois par mutant** : sans le service il la rejouerait sur HSQLDB, et publierait un score de mutation vert mesuré sur un moteur qu'on ne déploie pas. Le job y perd en durée — il porte pour cela un `timeout` explicite — et y gagne de mesurer ce qu'on livre. |
+
+Les autres jobs qui touchent au back ne relancent aucun test et n'ont donc pas
+besoin de base : `sonar-back` lit les classes compilées et le XML JaCoCo repris
+en artefact (la tâche `sonar` du plugin Gradle ne déclare qu'un `mustRunAfter`
+sur `test`, jamais un `dependsOn`), `coverage-gate` lit ce même XML,
+`spotbugs-back` analyse du bytecode, `dependency-check-back` résout le
+`runtimeClasspath`, et `build-back` compile avec `-x test`.
+
+### Les deux seuils, et pourquoi ils ne mesurent pas la même chose
+
+**Couverture (JaCoCo, `coverage-gate`)** — quelles lignes les tests traversent-ils ?
+Seuil `COVERAGE_MIN` (90 %), appliqué en CI par `scripts/ci/check_coverage.py`, et
+**aussi en local** par `jacocoTestCoverageVerification` dans `back/build.gradle`, qui
+ajoute un seuil de branches à 90 %. Le doublon est voulu : un seuil qui ne se
+déclenche qu'en CI se découvre toujours après le push. Côté front, l'équivalent est
+le bloc `check.global` de `front/karma.conf.js`, actif avec `--code-coverage`.
+
+**Mutation (PIT, `mutation-back`)** — les tests _vérifient_-ils quelque chose ?
+C'est la question que la couverture ne sait pas poser : un test sans aucune
+assertion affiche 100 % de couverture. PIT modifie le bytecode — inverse une
+condition, remplace un retour par `null`, supprime un appel — puis relance les
+tests qui couvrent la ligne mutée. Si aucun ne devient rouge, le mutant _survit_ :
+la ligne est exécutée mais rien ne l'observe.
+
+```bash
+cd back && ./gradlew pitest          # rapport dans build/reports/pitest/
+MUTATION_MIN=90 ./gradlew pitest     # seuil surchargé, comme en CI
+```
+
+Job séparé et non bloquant, pour deux raisons : PIT relance la suite une fois par
+mutant, il est nettement plus lent que `test-back` ; et un **mutant équivalent** —
+une mutation qui ne change réellement rien — ne doit pas arrêter une livraison. Il
+en reste un, connu et documenté : la suppression de l'appel
+`RepositoryRestConfigurer.super.configureRepositoryRestConfiguration(...)`, dont
+l'implémentation par défaut est vide. Aucun test ne peut le tuer.
+
+### Où en sont les chiffres
+
+| Mesure                    | Valeur | Seuil |
+| ------------------------- | ------ | ----- |
+| Back — lignes (JaCoCo)    | 97 %   | 90 %  |
+| Back — branches (JaCoCo)  | 100 %  | 90 %  |
+| Back — mutants tués (PIT) | 96 %   | 80 %  |
+| Front — lignes            | 100 %  | 90 %  |
+| Front — branches          | 89 %   | 80 %  |
+
+Les seuils sont calés **sous** les valeurs tenues, avec assez de marge pour ne pas
+se déclencher sur une ligne de plus, et assez peu pour qu'une vraie régression se
+voie. Un seuil qu'on abaisse à la première gêne ne protège plus rien.
+
+`MicroCRMApplication` est la seule exclusion, côté couverture comme côté mutation :
+sa méthode `main` ne contient que l'amorçage Spring Boot. L'exclusion est nommée,
+pas un motif large qui absorberait du code métier au passage.
+
+---
+
 ## Récapitulatif des variables CI/CD à créer dans GitLab
 
-| Variable            | Obligatoire       | Rôle              |
-| ------------------- | ----------------- | ----------------- |
-| Variable            | Type              | Obligatoire       | Rôle                                        |
-| ------------------- | ----------------- | ----------------- | ------------------------------------------- |
-| `SONAR_HOST_URL`    | Variable          | pour Sonar        | URL du serveur SonarQube                    |
-| `SONAR_TOKEN`       | Variable (masked) | pour Sonar        | Token d'analyse                             |
-| `NVD_API_KEY`       | Variable (masked) | non               | Accélère Dependency-Check                   |
-| `KUBE_CONFIG`       | **File**          | pour déployer     | Connexion au cluster Kubernetes             |
-| `STAGING_NAMESPACE` | Variable          | pour déployer     | Namespace de staging                        |
-| `PROD_NAMESPACE`    | Variable          | pour déployer     | Namespace de production                     |
-| `CI_REGISTRY*`      | Automatiques      | —                 | Fournies par GitLab, rien à faire           |
+| Variable            | Type              | Obligatoire   | Rôle                              |
+| ------------------- | ----------------- | ------------- | --------------------------------- |
+| `SONAR_HOST_URL`    | Variable          | pour Sonar    | URL du serveur SonarQube          |
+| `SONAR_TOKEN`       | Variable (masked) | pour Sonar    | Token d'analyse                   |
+| `NVD_API_KEY`       | Variable (masked) | non           | Accélère Dependency-Check         |
+| `KUBE_CONFIG`       | **File**          | pour déployer | Connexion au cluster Kubernetes   |
+| `STAGING_NAMESPACE` | Variable          | pour déployer | Namespace de staging              |
+| `PROD_NAMESPACE`    | Variable          | pour déployer | Namespace de production           |
+| `CI_REGISTRY*`      | Automatiques      | —             | Fournies par GitLab, rien à faire |
 
 Côté GitHub, un secret `GITLAB_TOKEN` (scope `write_repository`) est nécessaire au
 workflow de miroir vers GitLab.
 
+**Rien à créer pour la base PostgreSQL des jobs de test.** Ses identifiants sont
+écrits en clair dans `.gitlab-ci.yml`, et c'est délibéré : la base naît et meurt
+avec le job, n'est joignable que depuis son réseau, et ne contient que ce que les
+tests y écrivent. En faire une variable masquée laisserait croire à un secret
+là où il n'y en a pas — et le vrai risque des secrets est qu'on cesse de
+distinguer ceux qui en sont.
+
 Sans `SONAR_TOKEN`, les jobs Sonar échouent mais le pipeline reste vert, puisqu'ils
 sont en `allow_failure: true`. Le détail des variables de déploiement est dans
 [RELEASE.md](RELEASE.md) §6.
+
+L'inventaire des valeurs encore codées en dur dans le dépôt, et le plan pour les
+externaliser, sont dans [VARIABILISATION.md](VARIABILISATION.md).

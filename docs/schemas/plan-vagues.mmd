@@ -1,0 +1,10 @@
+%% Schéma — Ordre d'exécution du plan d'optimisation.
+%% Source versionnée du bloc Mermaid de docs/plan-optimisation-release.md §8.
+%% Vagues 2 et 3 parallélisables. Vague 0 non négociable : tant qu'aucun
+%% déploiement n'a abouti, tout le reste optimise une chaîne non vérifiée.
+flowchart LR
+    V0["Vague 0<br/>Faire aboutir la chaîne<br/>A0.1 → A0.3"] --> V1["Vague 1<br/>Contrôles contraignants<br/>A1.1 → A1.5"]
+    V1 --> V2["Vague 2<br/>Parité d'environnement<br/>A2.1 → A2.5"]
+    V1 --> V3["Vague 3<br/>Automatisation + compétences<br/>A3.1 → A3.5"]
+    V2 --> V4["Vague 4<br/>Réduction du risque<br/>A4.1 → A4.4"]
+    V3 --> V4

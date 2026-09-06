@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-config
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: logging
+data:
+  # Un fichier plutôt que des variables d'environnement, alors que l'image
+  # Elasticsearch accepte les deux : les noms de réglages ES contiennent des
+  # points (`node.store.allow_mmap`), et un nom de variable d'environnement à
+  # points n'est accepté par l'API Kubernetes que depuis l'assouplissement
+  # récent de sa validation. Le fichier ne dépend d'aucune version d'API, et il
+  # laisse de la place pour justifier chaque ligne — ce qu'un `env:` ne fait pas.
+  elasticsearch.yml: |
+    cluster.name: microcrm-logs
+    network.host: 0.0.0.0
+
+    # Un seul nœud, donc pas d'élection de maître à organiser. Sans ce réglage,
+    # Elasticsearch attend indéfiniment un quorum qui ne viendra jamais et le
+    # pod n'atteint jamais l'état Ready.
+    discovery.type: single-node
+
+    # ⚠️ LE point de blocage d'Elasticsearch sur Kubernetes.
+    #
+    # Par défaut Elasticsearch ouvre ses index en mmapfs et exige
+    # vm.max_map_count >= 262144. C'est un paramètre du NOYAU DE L'HÔTE, pas du
+    # conteneur : sur un nœud qui ne l'a pas, le bootstrap check échoue et le
+    # processus s'arrête immédiatement. La parade que l'on trouve partout est un
+    # initContainer `sysctl -w vm.max_map_count=262144` en `privileged: true`.
+    #
+    # Ce serait inacceptable ici, pour deux raisons cumulées :
+    #   - le socle du projet impose runAsNonRoot et allowPrivilegeEscalation:
+    #     false à TOUS les conteneurs (K8S.md §11) ; un conteneur privilégié est
+    #     exactement ce que ce socle interdit ;
+    #   - ce cluster est partagé avec d'autres projets, et un sysctl est un
+    #     réglage global du nœud : le modifier pour la stack de logs le modifie
+    #     pour tout le monde, sans que personne d'autre ne l'ait demandé.
+    #
+    # `allow_mmap: false` bascule le stockage en NIOFS (lectures via des appels
+    # système classiques au lieu du cache de pages), ce qui supprime le besoin.
+    # Ce que ça coûte, honnêtement : les accès disque sont moins efficaces, on
+    # perd la mise en cache par le noyau des fichiers d'index, et les recherches
+    # sur de gros volumes s'en ressentent. Sur un volume de logs de démonstration
+    # — quelques dizaines de Mio — c'est indolore. Sur un cluster de production
+    # qui indexe des Gio par jour, la bonne réponse est l'inverse : régler
+    # vm.max_map_count sur les nœuds au provisionnement (Ansible, image de base),
+    # et laisser Elasticsearch en mmapfs.
+    node.store.allow_mmap: false
+
+    # ⚠️ Choix assumé, et valable UNIQUEMENT pour ce cluster local de
+    # démonstration.
+    #
+    # En 8.x la sécurité est active par défaut : au premier démarrage,
+    # Elasticsearch génère une autorité de certification, des certificats TLS et
+    # un mot de passe `elastic` aléatoire. Kibana ne peut alors s'y connecter
+    # qu'avec un jeton d'inscription ou un couple identifiants + empreinte de CA,
+    # tous deux produits À L'EXÉCUTION — donc impossibles à versionner, et à
+    # regénérer à chaque recréation du pod.
+    #
+    # La faire fonctionner correctement demande une chaîne complète : Secrets de
+    # certificats, keystore Elasticsearch, comptes de service, rotation. C'est un
+    # lot en soi, et c'est ce que fait ECK (l'opérateur Elastic) à notre place.
+    #
+    # Ici la stack n'est joignable que depuis l'intérieur du cluster (Services
+    # ClusterIP, aucun Ingress) et ne contient que des logs applicatifs de
+    # démonstration. On désactive donc la sécurité, en le disant noir sur blanc :
+    # cette configuration est INACCEPTABLE dès qu'Elasticsearch est exposé, ou
+    # dès qu'il contient autre chose que des données jetables. Toute reprise de
+    # ces manifestes hors du poste de développement doit commencer par ici.
+    xpack.security.enabled: false
+
+    # Au premier démarrage, le nœud tente de télécharger les bases GeoIP depuis
+    # Internet. Sans accès sortant, l'échec se répète toutes les trois minutes et
+    # noie les journaux du pod sous des traces qui n'ont rien à voir avec un vrai
+    # problème. Aucun de nos logs n'a besoin d'enrichissement géographique.
+    ingest.geoip.downloader.enabled: false

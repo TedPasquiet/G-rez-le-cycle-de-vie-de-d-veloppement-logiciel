@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: front
+  labels:
+    app.kubernetes.io/name: front
+    app.kubernetes.io/component: web
+spec:
+  # Le front ne sert que des fichiers statiques : aucun état, donc il peut
+  # monter en replicas sans précaution, contrairement au back.
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: front
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: front
+        app.kubernetes.io/component: web
+    spec:
+      automountServiceAccountToken: false
+      # Voir k8s/base/back-deployment.yaml pour la justification, et K8S.md §12.
+      imagePullSecrets:
+        - name: gitlab-registry
+      securityContext:
+        # L'image caddy:2-alpine tourne en root par défaut. Rien dans Caddy ne
+        # l'exige ici : on lui impose donc un UID non privilégié. 1000 n'existe
+        # pas dans /etc/passwd de l'image, ce qui est sans conséquence — Caddy
+        # n'a pas besoin de résoudre son propre utilisateur.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        # Nom contractuel, comme pour le back : deploy.sh exécute
+        # `kubectl set image deployment/front front=<image>`.
+        - name: front
+          # Placeholder, remplacé avant l'`apply` par l'overlay éphémère des
+          # jobs de déploiement — voir back-deployment.yaml.
+          image: microcrm/front:PLACEHOLDER
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          # URL de l'API telle que le NAVIGATEUR doit l'appeler. Caddy la lit au
+          # démarrage et la sert sur /config.json (front/Caddyfile) ; le bundle
+          # Angular la charge avant de démarrer (src/app/config.ts). C'est ce
+          # qui permet à une seule image de servir tous les environnements.
+          #
+          # Référence de clé explicite plutôt qu'un `envFrom` sur toute la
+          # ConfigMap : le front n'a rien à faire de MICROCRM_CORS_ALLOWED_ORIGINS,
+          # et injecter des variables dont un conteneur n'a pas l'usage rend plus
+          # difficile de savoir qui consomme quoi.
+          env:
+            - name: FRONT_API_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: microcrm-config
+                  key: FRONT_API_BASE_URL
+          # Ressources d'un serveur de fichiers statiques : Caddy est un binaire
+          # Go qui sert le bundle Angular depuis le disque. Mesuré au repos bien
+          # en dessous de 32 Mio ; la limite à 64 Mio laisse de la marge pour le
+          # cache de fichiers sans permettre une dérive.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          # Caddy n'expose pas d'endpoint de santé applicatif (son API d'admin
+          # écoute sur localhost:2019 et n'est pas joignable depuis le kubelet).
+          # On interroge donc `/`, qui renvoie index.html : c'est exactement ce
+          # que le service doit savoir faire.
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 15
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+              # NET_BIND_SERVICE est rendue, et ce n'est pas un confort : le
+              # binaire /usr/bin/caddy porte la capability de fichier
+              # `cap_net_bind_service=ep`. Quand la capability ne figure pas
+              # dans l'ensemble limitant du conteneur, le noyau refuse l'`exec`
+              # lui-même — le conteneur s'arrête sur
+              # « exec /usr/bin/caddy: operation not permitted », avant même
+              # d'ouvrir un port. Vérifié en local : le comportement est
+              # identique en root et en non-root, et sur un port haut comme sur
+              # le port 80. Passer le Caddyfile en :8080 ne résoudrait donc
+              # rien ; seul le retour de cette capability le permet.
+              add:
+                - NET_BIND_SERVICE
+          volumeMounts:
+            # Caddy écrit son autosave de configuration dans /config et ses
+            # données (stockage TLS) dans /data. Avec readOnlyRootFilesystem il
+            # démarre et sert quand même, mais log deux erreurs à chaque
+            # lancement ; ces deux volumes les évitent.
+            - name: config
+              mountPath: /config
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          emptyDir: {}
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

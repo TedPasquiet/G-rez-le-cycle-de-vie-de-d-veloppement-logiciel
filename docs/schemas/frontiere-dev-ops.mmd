@@ -1,0 +1,25 @@
+%% Schéma — La frontière Dev / Ops.
+%% Source versionnée du bloc Mermaid de docs/schema-architecture.md §7.
+%% Ce qui traverse la frontière est un fait, pas un message : une image immuable,
+%% signée, taguée par le SHA, et ses rapports d'analyse. La propriété des
+%% environnements ne change pas — c'est le moment du contrôle de sécurité qui
+%% remonte en amont, et la forme de l'échange qui s'outille.
+flowchart TB
+    subgraph D["Équipe Dev"]
+        direction LR
+        code["Code Angular<br/>+ Spring Boot"] --> ci["Pipeline : lint, test,<br/>qualité, sécurité, performance"] --> img["Images signées"]
+    end
+
+    subgraph F["Le contrat"]
+        direction LR
+        reg[("Registry privé")] --- note["Une image immuable, signée, tag = SHA,<br/>et ses rapports d'analyse"]
+    end
+
+    subgraph O["Équipe Ops"]
+        direction LR
+        infra["Terraform : namespace,<br/>quota, limites, policies"] --> deploy["Déploiement<br/>et retour arrière"] --> obs["Exploitation : logs,<br/>sondes, indicateurs"]
+    end
+
+    img --> reg
+    reg --> deploy
+    obs -.->|"retours d'exploitation"| code

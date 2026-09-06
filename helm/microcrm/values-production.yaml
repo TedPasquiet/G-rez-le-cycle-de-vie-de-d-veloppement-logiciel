@@ -1,0 +1,30 @@
+# Overlay de production. Équivalent de k8s/overlays/production/.
+# Mêmes partis pris que staging pour le namespace et l'image (K8S.md §4).
+
+environment: production
+
+back:
+  # Le back de production ne peut pas monter en replicas (HSQLDB en mémoire) :
+  # la seule marge est verticale. La limite mémoire à 1 Gio porte le tas par
+  # défaut de la JVM de ~192 à ~256 Mio, et la réservation CPU à 500 m absorbe
+  # les pics sans dépendre du surengagement du nœud.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 768Mi
+    limits:
+      cpu: '2'
+      memory: 1Gi
+
+front:
+  # Sans état : deux replicas donnent de la disponibilité pendant les mises à
+  # jour et couvrent la perte d'un nœud.
+  replicas: 2
+
+config:
+  corsAllowedOrigins: https://microcrm.example.com
+  apiBaseUrl: https://api.microcrm.example.com
+
+ingress:
+  frontHost: microcrm.example.com
+  apiHost: api.microcrm.example.com

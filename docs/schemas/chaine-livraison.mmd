@@ -1,0 +1,13 @@
+%% Schéma — Vue d'ensemble — du commit à la production.
+%% Source versionnée du bloc Mermaid de docs/schema-architecture.md §2.
+%% Un commit produit deux images vérifiées et signées, qui atteignent staging
+%% sans intervention, et la production sur décision humaine. Cette décision est le
+%% seul geste manuel conservé : l'automatisation supprime le geste répétitif, pas
+%% l'arbitrage de livrer.
+flowchart LR
+    dev(["Commit<br/>Pull Request"]) --> ci["Pipeline GitLab CI<br/>9 étapes bloquantes"]
+    ci --> reg[("Registry privé<br/>images signées<br/>tag = SHA")]
+    reg --> stg["staging<br/>déploiement<br/>automatique"]
+    stg --> prd["production<br/>promotion de la<br/>MÊME image<br/>décision humaine"]
+    prd --> obs["Cluster Kubernetes<br/>ELK + DORA"]
+    obs -.->|"boucle de retour"| dev

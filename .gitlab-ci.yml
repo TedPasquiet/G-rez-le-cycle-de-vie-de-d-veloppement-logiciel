@@ -3,6 +3,11 @@ stages:
   - test
   - quality
   - security
+  # L'infrastructure se valide AVANT qu'on ne construise quoi que ce soit :
+  # un chart, un manifeste ou un plan Terraform cassé n'a pas besoin d'attendre
+  # une compilation Gradle pour être signalé. Après `security` en revanche, pour
+  # que les scans tournent sur du code encore frais dans le cache.
+  - infra
   - build
   - package
   - perf
@@ -21,6 +26,120 @@ variables:
   REGISTRY_HOST: '$CI_REGISTRY'
   REGISTRY_USER: '$CI_REGISTRY_USER'
   REGISTRY_PASSWORD: '$CI_REGISTRY_PASSWORD'
+
+  # --- Images d'outillage --------------------------------------------------
+  # Toutes les versions sont figées. Un tag flottant (`latest`, ou pas de tag
+  # du tout) fait casser le pipeline sans qu'aucun commit ne l'explique, et
+  # rend les analyses non comparables d'une exécution à l'autre. Pour mettre à
+  # jour un outil : on change la version ici, dans un commit dédié qui dit
+  # pourquoi.
+  NODE_IMAGE: 'node:22-alpine' # même version que front/Dockerfile
+  GRADLE_IMAGE: 'gradle:8.14.5-jdk21' # même JDK que back/Dockerfile
+  PYTHON_IMAGE: 'python:3.12-slim'
+  DOCKER_IMAGE: 'docker:24.0.9'
+  DOCKER_DIND_IMAGE: 'docker:24.0.9-dind'
+  TRIVY_IMAGE: 'aquasec/trivy:0.69.3'
+  SHELLCHECK_IMAGE: 'koalaman/shellcheck-alpine:v0.11.0'
+  SONAR_SCANNER_IMAGE: 'sonarsource/sonar-scanner-cli:11.5'
+  # Le tag Cypress porte les versions de Node ET des navigateurs : c'est
+  # justement ce qu'on veut figer, un changement de version de Chrome pouvant
+  # à lui seul faire tomber un test.
+  CYPRESS_IMAGE: 'cypress/browsers:node-22.21.0-chrome-141.0.7390.107-1-ff-144.0-edge-141.0.3537.92-1'
+  # bitnami/kubectl ne publie plus de tag versionné depuis la reprise du
+  # catalogue Bitnami (2025) : seul `latest` subsiste, donc impossible à figer.
+  # alpine/kubectl offre les mêmes commandes avec de vraies versions.
+  KUBECTL_IMAGE: 'alpine/kubectl:1.34.2'
+  # Outillage du chart Helm. alpine/k8s embarque kubectl, helm ET kustomize dans
+  # la même image, et c'est ce qui décide du choix : le job lint-helm compare le
+  # rendu du chart à celui des overlays Kustomize, il lui faut donc les deux
+  # dans le même conteneur. Une image helm seule (alpine/helm) ne saurait pas
+  # construire le rendu de référence. Le tag suit la version de kubectl —
+  # 1.36.2 ici, la même que le poste de développement ; le helm embarqué est en
+  # 4.2.1, un correctif derrière le 4.2.2 du poste, ce qui est sans effet sur le
+  # rendu (vérifié : les deux produisent les mêmes objets).
+  HELM_IMAGE: 'alpine/k8s:1.36.2'
+  # Terraform. Le tag suit exactement la version du poste de développement :
+  # `terraform validate` peut accepter en 1.15 ce qu'une autre mineure refuse,
+  # et un écart entre les deux ferait échouer la CI sur du HCL validé en local.
+  #
+  # ⚠️ L'image est basée sur Alpine et n'a PAS bash, alors que
+  # scripts/ci/terraform_check.sh en est. Le job l'installe donc, comme le fait
+  # déjà .deploy_template pour alpine/kubectl. Son entrypoint est `terraform`,
+  # d'où le `entrypoint: ['']` sans lequel la première commande du script serait
+  # passée en argument à terraform.
+  TERRAFORM_IMAGE: 'hashicorp/terraform:1.15.7'
+  # Ansible n'a pas d'image officielle versionnée exploitable : le seul dépôt
+  # courant (pipelinecomponents/ansible-lint) ne publie que `edge` et des tags
+  # de commit — impossible à figer, même problème que bitnami/kubectl
+  # (VARIABILISATION.md). On installe donc les deux paquets, à version exacte,
+  # dans $PYTHON_IMAGE qui est déjà figée. Ce sont ces deux numéros qui font foi.
+  ANSIBLE_VERSION: '14.1.0'
+  ANSIBLE_LINT_VERSION: '26.8.0'
+  # Figée de longue date : d'une version de k6 à l'autre les mesures ne
+  # seraient plus comparables.
+  K6_IMAGE: 'grafana/k6:2.1.0'
+  # Base des jobs qui exécutent la suite du back (voir .postgres_service).
+  # Majeure figée : d'une majeure à l'autre le comportement observable change
+  # (types, collation donc ordre de tri), une suite verte sur 16 ne dit rien de 17.
+  POSTGRES_IMAGE: 'postgres:16-alpine'
+
+  # --- Identité des projets SonarQube --------------------------------------
+  # Source de vérité pour la CI. back/build.gradle et
+  # front/sonar-project.properties reprennent ces valeurs en repli, pour que
+  # l'analyse reste lançable en local sans la CI.
+  SONAR_ORGANIZATION: 'pasquietted'
+  SONAR_PROJECT_KEY_BACK: 'pasquietted_G-rez-le-cycle-de-vie-de-d-veloppement-logiciel'
+  SONAR_PROJECT_KEY_FRONT: 'pasquietted_G-rez-le-cycle-de-vie-de-d-veloppement-logiciel-front'
+
+  # --- Réglages du pipeline ------------------------------------------------
+  # Couverture minimale du back exigée par coverage-gate. Le seuil est calé
+  # juste sous la couverture réelle (97 %) : assez haut pour qu'une régression
+  # se voie, assez bas pour ne pas se déclencher sur une ligne de plus.
+  # Le même seuil est appliqué en local par jacocoTestCoverageVerification
+  # (back/build.gradle), pour échouer avant le push et pas après.
+  COVERAGE_MIN: '90'
+  # Proportion minimale de mutants tués par PIT (job mutation-back). Mesure la
+  # force des assertions, là où COVERAGE_MIN ne mesure que les lignes atteintes.
+  MUTATION_MIN: '80'
+  # Noms des Deployments et des conteneurs Kubernetes, qui servent aussi de
+  # noms d'images dans le registry ($CI_REGISTRY_IMAGE/<nom>).
+  APP_BACK_NAME: 'back'
+  APP_FRONT_NAME: 'front'
+  # Temps d'attente max d'un rollout avant retour arrière automatique.
+  DEPLOY_TIMEOUT: '180s'
+  # Racine des overlays Kustomize. Les manifestes décrivent la forme de
+  # l'application ; le namespace et le chemin du registry restent fournis par la
+  # CI (voir K8S.md §4).
+  K8S_OVERLAYS_DIR: 'k8s/overlays'
+  # Racine du chart Helm. Le chart double les overlays Kustomize : il répond à
+  # l'exigence du brief sans remplacer le mécanisme qui déploie réellement.
+  # C'est Kustomize qui fait foi — voir HELM.md §3.
+  HELM_CHART_DIR: 'helm/microcrm'
+  # Racine des environnements Terraform et du projet Ansible. Les scripts de
+  # scripts/ci/ les lisent depuis ces variables, jamais en dur : c'est ce qui
+  # permet de les jouer en local sur une copie sans toucher au dépôt.
+  TERRAFORM_ENVS_DIR: 'terraform/environments'
+  ANSIBLE_DIR: 'ansible'
+  # Overlay éphémère fabriqué par les jobs de déploiement : il compose l'overlay
+  # d'environnement et pose par-dessus le chemin de registry et le tag du commit,
+  # de sorte que `apply` reçoive directement la bonne image (voir K8S.md §6).
+  #
+  # Il doit vivre DANS le dépôt et être désigné par un chemin relatif : Kustomize
+  # refuse un chemin absolu dans `resources` (« new root … cannot be absolute »),
+  # donc un répertoire sous /tmp ne convient pas. Il est dans .gitignore.
+  DEPLOY_OVERLAY_DIR: '.k8s-deploy-overlay'
+  # Préfixe des images *placeholder* écrites dans k8s/base/*-deployment.yaml
+  # (`microcrm/back:PLACEHOLDER`). C'est la clé sur laquelle le transformateur
+  # `images:` de l'overlay éphémère fait sa correspondance : si le préfixe change
+  # dans les manifestes, il doit changer ici, sinon la substitution ne mord plus
+  # et le placeholder partirait tel quel vers le cluster.
+  K8S_PLACEHOLDER_IMAGE_PREFIX: 'microcrm'
+  # Nom du Secret qui porte les identifiants du registry. Il est référencé en
+  # `imagePullSecrets` par les deux Deployments : cette valeur et celle des
+  # manifestes doivent rester identiques, et scripts/tests/validate_k8s.sh
+  # échoue si elles divergent. Le Secret lui-même n'est pas versionné — il est
+  # (re)créé par les jobs de déploiement. Voir K8S.md §12.
+  REGISTRY_SECRET_NAME: 'gitlab-registry'
 
 # Petits blocs de cache que je réutilise dans plusieurs jobs pour aller plus vite.
 .cache_gradle: &cache_gradle
@@ -67,7 +186,7 @@ variables:
 # LINT
 # ===========================================================================
 lint-front:
-  image: node
+  image: $NODE_IMAGE
   stage: lint
   script:
     - cd front
@@ -76,7 +195,7 @@ lint-front:
   <<: [*cache_node, *rules_test]
 
 lint-back:
-  image: gradle:jdk21
+  image: $GRADLE_IMAGE
   stage: lint
   script:
     - cd back
@@ -86,7 +205,7 @@ lint-back:
 # ShellCheck vérifie mes scripts Bash et repère les erreurs classiques.
 shellcheck:
   image:
-    name: koalaman/shellcheck-alpine:stable
+    name: $SHELLCHECK_IMAGE
     entrypoint: ['']
   stage: lint
   script:
@@ -98,15 +217,120 @@ shellcheck:
       | xargs -0 shellcheck --external-sources
   <<: *rules_test
 
+# Validation des manifestes Kubernetes (dossier k8s/), sans cluster.
+#
+# Tout le contenu est dans scripts/tests/validate_k8s.sh, au même titre que les
+# autres scripts du dépôt : il est ainsi testable en local, relu par ShellCheck
+# et documenté dans SCRIPTS.md, plutôt que noyé dans un bloc YAML.
+#
+# Le script construit chaque overlay avec le Kustomize embarqué dans kubectl,
+# puis assère sur le rendu. Il attrape ce qui casse le plus souvent : un patch
+# qui ne trouve pas sa cible, un fichier absent de `resources`, une ConfigMap
+# référencée mais absente, une sonde visant un port non déclaré, et surtout le
+# contrat de nommage avec scripts/deploy/deploy.sh (Deployment ET conteneur
+# nommés $APP_BACK_NAME / $APP_FRONT_NAME) — qu'aucun validateur de schéma ne
+# verrait, et qu'un `namePrefix:` ajouté par réflexe casserait.
+#
+# `--autotest` rejoue les mêmes assertions sur des rendus volontairement abîmés
+# et vérifie qu'elles échouent : une assertion qui ne se déclenche jamais ne
+# prouve rien.
+#
+# La limite à connaître, pour ne pas prêter à ce job plus de pouvoir qu'il n'en
+# a : il ne valide PAS les manifestes contre le schéma de l'API Kubernetes.
+# `kubectl apply --dry-run=client` en serait capable, mais contrairement à ce
+# que son nom laisse croire il interroge le serveur — pour télécharger l'OpenAPI,
+# et même avec --validate=false pour résoudre les types (« unable to
+# recognize »). Or ce job tourne sur les branches de feature, où KUBE_CONFIG
+# (protégée) n'est pas disponible. Une vraie validation de schéma hors ligne
+# demanderait kubeconform, qui n'est pas dans l'image.
+lint-k8s:
+  image:
+    name: $KUBECTL_IMAGE
+    entrypoint: ['']
+  stage: lint
+  needs: []
+  # alpine/kubectl n'a que busybox sh, et validate_k8s.sh est écrit en sh POSIX
+  # exprès : pas d'`apk add bash` ici, donc pas de job de lint qui tombe parce
+  # qu'un miroir Alpine est indisponible.
+  script:
+    - kubectl version --client
+    - sh scripts/tests/validate_k8s.sh --autotest
+  <<: *rules_test
+
+# Validation du chart Helm, sans cluster.
+#
+# Le chart de helm/microcrm décrit la même application que les overlays
+# Kustomize. Deux descriptions de la même chose, c'est deux occasions de
+# diverger : ce job existe pour que la divergence se voie ici, et pas au
+# déploiement.
+#
+# Trois contrôles, du plus faible au plus fort :
+#
+#   1. `helm lint` — syntaxe du chart et valeurs manquantes. Joué sur les DEUX
+#      jeux de valeurs : un chart peut très bien se rendre avec les valeurs de
+#      staging et échouer avec celles de production.
+#   2. Les assertions de validate_k8s.sh, rejouées telles quelles sur le rendu
+#      du chart. Le contrat de nommage avec deploy.sh, le socle de sécurité,
+#      les tags figés et le pull secret valent pour le chart exactement comme
+#      pour les overlays.
+#   3. L'équivalence des deux rendus. C'est le contrôle qui compte : il compare
+#      objet par objet ce que produit `helm template` et ce que produit
+#      `kubectl kustomize`, et échoue à la moindre divergence. Sans lui, le
+#      chart pourrait dériver silencieusement et ne plus décrire l'application
+#      réellement déployée.
+#
+# C'est pour ce troisième point que le job tourne sur $HELM_IMAGE et non sur une
+# image helm seule : il lui faut kubectl pour construire le rendu de référence.
+#
+# Le recouvrement avec lint-k8s est assumé — les deux jouent les assertions
+# Kustomize. Chaque job reste ainsi autonome, et lint-k8s continue de passer sur
+# une image qui n'a pas helm.
+lint-helm:
+  image:
+    name: $HELM_IMAGE
+    entrypoint: ['']
+  stage: lint
+  needs: []
+  script:
+    - helm version --short
+    - kubectl version --client
+    # `helm lint` ne lit pas les fichiers de valeurs d'environnement tout seul :
+    # sans -f, il ne validerait que values.yaml, c'est-à-dire le seul jeu que
+    # personne ne déploie.
+    - helm lint "$HELM_CHART_DIR" -f "$HELM_CHART_DIR/values-staging.yaml"
+    - helm lint "$HELM_CHART_DIR" -f "$HELM_CHART_DIR/values-production.yaml"
+    - sh scripts/tests/validate_k8s.sh --autotest
+  <<: *rules_test
+
 # ===========================================================================
 # TEST (produisent la couverture consommée par SonarQube)
 # ===========================================================================
+#
+# Base réelle des jobs qui exécutent la suite du back : une suite verte sur
+# HSQLDB ne dit rien du moteur qu'on déploie. La bascule tient aux seules
+# SPRING_DATASOURCE_* — sans elles, le back reste sur HSQLDB.
+#
+# Deux pièges : l'hôte est l'ALIAS du service, jamais `localhost` (conteneur
+# voisin) ; les variables du job sont injectées dans le service aussi, d'où les
+# SPRING_* dérivées des POSTGRES_*.
+.postgres_service: &postgres_service
+  services:
+    - name: $POSTGRES_IMAGE
+      alias: postgres
+  variables:
+    POSTGRES_DB: 'microcrm_test'
+    POSTGRES_USER: 'microcrm'
+    POSTGRES_PASSWORD: 'microcrm'
+    SPRING_DATASOURCE_URL: 'jdbc:postgresql://postgres:5432/$POSTGRES_DB'
+    SPRING_DATASOURCE_USERNAME: '$POSTGRES_USER'
+    SPRING_DATASOURCE_PASSWORD: '$POSTGRES_PASSWORD'
+
 # Ce job teste mes propres scripts d'automatisation avant qu'ils ne servent
 # plus loin dans le pipeline. Il ne construit et ne déploie rien : les vraies
 # commandes (kubectl, docker, trivy) sont remplacées par de faux programmes,
 # ce qui permet de vérifier aussi les cas d'échec (déploiement raté, rollback
 test-scripts:
-  image: python:3.12-slim
+  image: $PYTHON_IMAGE
   stage: test
   needs: []
   script:
@@ -114,7 +338,7 @@ test-scripts:
   <<: *rules_test
 
 test-front:
-  image: cypress/browsers:latest
+  image: $CYPRESS_IMAGE
   stage: test
   script:
     - cd front
@@ -128,7 +352,7 @@ test-front:
   <<: [*cache_node, *rules_test]
 
 test-back:
-  image: gradle:jdk21
+  image: $GRADLE_IMAGE
   stage: test
   script:
     - cd back
@@ -140,14 +364,17 @@ test-back:
     paths:
       - back/build/
     expire_in: 1 day
-  <<: [*cache_gradle, *rules_test]
+  <<: [*postgres_service, *cache_gradle, *rules_test]
 
 # ===========================================================================
 # QUALITY : on envoie le code à SonarQube et on regarde la qualité.
 # Il faut avoir créé les variables SONAR_HOST_URL et SONAR_TOKEN dans GitLab.
 # ===========================================================================
+# Pas de service PostgreSQL ici, et ce n'est pas un oubli : `sonar` ne déclare
+# qu'un `mustRunAfter` sur `test`, jamais un `dependsOn` — elle lit le XML repris
+# en artefact. Idem pour spotbugs, dependency-check, coverage-gate et build-back.
 sonar-back:
-  image: gradle:jdk21
+  image: $GRADLE_IMAGE
   stage: quality
   needs: ['test-back']
   dependencies:
@@ -159,7 +386,7 @@ sonar-back:
   <<: [*cache_gradle, *rules_test]
 
 sonar-front:
-  image: sonarsource/sonar-scanner-cli:latest
+  image: $SONAR_SCANNER_IMAGE
   stage: quality
   needs: ['test-front']
   dependencies:
@@ -167,11 +394,13 @@ sonar-front:
   script:
     - cd front
     - sonar-scanner -Dsonar.host.url=$SONAR_HOST_URL -Dsonar.token=$SONAR_TOKEN
+      -Dsonar.projectKey=$SONAR_PROJECT_KEY_FRONT
+      -Dsonar.organization=$SONAR_ORGANIZATION
   allow_failure: true
   <<: *rules_test
 
 spotbugs-back:
-  image: gradle:jdk21
+  image: $GRADLE_IMAGE
   stage: quality
   script:
     - cd back
@@ -187,7 +416,7 @@ spotbugs-back:
 # Ce job lance mon script Python qui vérifie la couverture de tests du back.
 # Il se sert du rapport JaCoCo généré par le job test-back.
 coverage-gate:
-  image: python:3.12-slim
+  image: $PYTHON_IMAGE
   stage: quality
   needs: ['test-back']
   dependencies:
@@ -195,11 +424,47 @@ coverage-gate:
   script:
     - python3 scripts/ci/check_coverage.py
       --report back/build/reports/jacoco/test/jacocoTestReport.xml
-      --min 70
-  # Pour l'instant je mets allow_failure: true, donc ça n'arrête pas le pipeline
-  # si la couverture est trop basse. Il suffit de mettre false pour que ça bloque.
-  allow_failure: true
+      --min "$COVERAGE_MIN"
+  # Gate bloquant. Il ne l'était pas tant que la couverture flottait loin du
+  # seuil ; elle est maintenant tenue par les tests et vérifiée aussi en local,
+  # un échec ici signale donc une vraie régression, pas un réglage à ajuster.
+  allow_failure: false
   <<: *rules_test
+
+# Tests de mutation du back.
+#
+# La couverture répond à « quelles lignes les tests traversent-ils ? », pas à
+# « que vérifient-ils ? ». Un test sans assertion affiche 100 % de couverture.
+# PIT modifie le bytecode (inverse une condition, remplace un retour par null,
+# supprime un appel) et relance les tests qui couvrent la ligne : un mutant qui
+# survit désigne du code exécuté mais pas vérifié.
+#
+# Job séparé et non bloquant : PIT relance la suite une fois par mutant, il est
+# nettement plus lent que `test-back`, et son seuil ne doit pas arrêter une
+# livraison sur un mutant équivalent (une mutation qui ne change réellement
+# rien, comme la suppression d'un appel à une implémentation par défaut vide).
+# Le rapport HTML est publié en artefact pour être lu à la revue.
+#
+# Même service PostgreSQL que `test-back` : sans lui, PIT mesurerait la solidité
+# de la suite sur un moteur qu'on ne déploie pas. Coût assumé, PIT rejouant la
+# suite par mutant — d'où le `timeout` explicite, qui se lit comme un signal.
+mutation-back:
+  image: $GRADLE_IMAGE
+  stage: quality
+  needs: ['test-back']
+  # Mesuré à 1 min 46 sur le runner partagé, base PostgreSQL comprise : 45 min
+  # ne signalait plus rien. 10 min laisse de la marge tout en restant un signal.
+  timeout: 10 minutes
+  script:
+    - cd back
+    - ./gradlew pitest
+  artifacts:
+    when: always
+    paths:
+      - back/build/reports/pitest/
+    expire_in: 1 week
+  allow_failure: true
+  <<: [*postgres_service, *cache_gradle, *rules_test]
 
 # Ce job lance mon script Python qui demande à SonarCloud si le Quality Gate
 # est passé, une fois que l'analyse a été envoyée.
@@ -212,17 +477,17 @@ coverage-gate:
 # sur toutes les branches par sonar-back / sonar-front — c'est seulement la
 # *relecture* du verdict qui est bridée.
 quality-gate:
-  image: python:3.12-slim
+  image: $PYTHON_IMAGE
   stage: quality
   needs: ['sonar-back', 'sonar-front']
   script:
     - python3 scripts/ci/quality_gate.py
       --host "$SONAR_HOST_URL"
-      --project-key pasquietted_G-rez-le-cycle-de-vie-de-d-veloppement-logiciel
+      --project-key "$SONAR_PROJECT_KEY_BACK"
       --branch "$CI_COMMIT_REF_NAME"
     - python3 scripts/ci/quality_gate.py
       --host "$SONAR_HOST_URL"
-      --project-key pasquietted_G-rez-le-cycle-de-vie-de-d-veloppement-logiciel-front
+      --project-key "$SONAR_PROJECT_KEY_FRONT"
       --branch "$CI_COMMIT_REF_NAME"
   allow_failure: true
   rules:
@@ -232,7 +497,7 @@ quality-gate:
 # SECURITY (SCA + scan filesystem)
 # ===========================================================================
 dependency-check-back:
-  image: gradle:jdk21
+  image: $GRADLE_IMAGE
   stage: security
   # On garde en cache la base NVD (.gradle/dependency-check-data) pour ne pas la
   # retélécharger à chaque fois : le 1er run est long, les suivants beaucoup moins.
@@ -247,8 +512,10 @@ dependency-check-back:
       paths:
         - .gradle/dependency-check-data
       when: always
-  # Garde-fou : au-delà, c'est que le téléchargement de la base part en vrille
-  timeout: 10 minutes
+  # Mesuré à 3 min 41 une fois le cache `nvd-data` réellement constitué.
+  # 15 min laissent de la marge pour un rattrapage sans faire du délai un
+  # plafond qui ne signale plus rien.
+  timeout: 15 minutes
   script:
     - cd back
     - ./gradlew dependencyCheckAnalyze
@@ -257,12 +524,15 @@ dependency-check-back:
     paths:
       - back/build/reports/dependency-check-report.*
     expire_in: 1 week
-  allow_failure: true
+  # Bloquant : le scan trouve 0 vulnérabilité sur le runtimeClasspath, la porte
+  # se ferme donc sur du vide. Toute CVE >= CVSS 7 introduite ensuite arrête
+  # le pipeline, au lieu d'être signalée dans un job que personne ne relit.
+  allow_failure: false
   <<: *rules_test
 
 trivy-fs:
   image:
-    name: aquasec/trivy:latest
+    name: $TRIVY_IMAGE
     entrypoint: ['']
   stage: security
   # Trivy regarde le code du dépôt et cherche des dépendances vulnérables ou des
@@ -273,10 +543,129 @@ trivy-fs:
   <<: *rules_test
 
 # ===========================================================================
+# INFRA (Terraform et Ansible — l'infrastructure comme code)
+# ===========================================================================
+# Ces jobs valident ce qui PORTE l'application, là où les étapes précédentes
+# valident l'application elle-même. Le partage des responsabilités est écrit
+# dans ANSIBLE.md §2 : Ansible possède le poste et le cluster, Terraform le
+# namespace et ses garde-fous, Kustomize l'application, la CI les secrets.
+#
+# Toute la logique vit dans scripts/ci/, pas dans ces blocs YAML — même règle
+# que pour validate_k8s.sh (SCRIPTS.md) : un script est testable en local,
+# relu par ShellCheck, et doublé de faux binaires qui permettent d'éprouver ses
+# chemins d'échec dans test-scripts. Un bloc YAML n'est rien de tout cela.
+
+# Validation hors ligne des configurations Terraform : mise en forme, puis
+# `init -backend=false` et `validate` sur chaque environnement.
+#
+# `-backend=false` est ce qui rend le job jouable sur une branche de feature :
+# il télécharge les providers sans jamais toucher à l'état, donc sans avoir
+# besoin ni du backend ni d'un cluster.
+terraform-validate:
+  image:
+    name: $TERRAFORM_IMAGE
+    entrypoint: ['']
+  stage: infra
+  needs: []
+  before_script:
+    # L'image hashicorp/terraform est basée sur Alpine et n'a que busybox sh ;
+    # le script est en bash. Même remède que .deploy_template pour
+    # alpine/kubectl.
+    - apk add --no-cache bash
+  script:
+    - terraform version
+    - bash scripts/ci/terraform_check.sh --validate -d "$TERRAFORM_ENVS_DIR"
+  <<: *rules_test
+
+# Lint du projet Ansible : syntaxe du playbook, puis ansible-lint.
+#
+# Pas d'image Ansible figée disponible (voir le bloc variables), donc les deux
+# paquets sont installés à version exacte dans $PYTHON_IMAGE. `--no-cache-dir`
+# évite de garder un cache pip que rien ne réutilisera d'un job à l'autre.
+ansible-lint:
+  image: $PYTHON_IMAGE
+  stage: infra
+  needs: []
+  before_script:
+    - pip install --no-cache-dir "ansible==$ANSIBLE_VERSION" "ansible-lint==$ANSIBLE_LINT_VERSION"
+    - ansible --version | head -1
+    - ansible-lint --version | head -1
+  script:
+    - bash scripts/ci/ansible_check.sh -d "$ANSIBLE_DIR"
+  <<: *rules_test
+
+# ⚠️ `terraform plan` N'EST PAS sur les mêmes règles que `terraform-validate`,
+# et ce n'est pas un oubli. Deux raisons, toutes deux mesurées :
+#
+# 1. Le plan exige qu'un FICHIER kubeconfig existe. Vérifié : avec un
+#    `config_path` inexistant, la commande échoue sur « refers to an invalid
+#    path » avant même de planifier. Or $KUBE_CONFIG est une variable protégée,
+#    donc absente des branches de feature — le job y échouerait toujours.
+#
+# 2. Ce plan ne prouverait de toute façon presque rien. L'état est local et
+#    n'est jamais commité (TERRAFORM.md §4) : la CI repart d'un état VIDE à
+#    chaque exécution, donc le plan annonce « tout à créer » quel que soit le
+#    contenu réel du cluster. Vérifié aussi : contre un kubeconfig valide
+#    pointant sur un cluster injoignable, `plan` sort en 0 et annonce
+#    « 6 to add ». Il ne détecte aucune dérive tant que l'état n'est pas
+#    partagé — la bascule vers l'état managé GitLab est décrite en
+#    TERRAFORM.md §4, et c'est elle qui rendra ce job réellement utile.
+#
+# Il reste en manuel, sur les branches où le kubeconfig existe, parce qu'il
+# répond quand même à une question : « ce que le dépôt décrit est-il
+# planifiable ? ». Pas à « qu'est-ce qui va changer ? ».
+terraform-plan:
+  image:
+    name: $TERRAFORM_IMAGE
+    entrypoint: ['']
+  stage: infra
+  needs: []
+  variables:
+    KUBECONFIG: '$KUBE_CONFIG'
+  before_script:
+    - apk add --no-cache bash
+  script:
+    - bash scripts/ci/terraform_check.sh --plan -d "$TERRAFORM_ENVS_DIR"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+      allow_failure: true
+
+# Application réelle de l'infrastructure. Manuel, sur `main` seulement, et
+# jamais en `allow_failure` : contrairement au plan, un `apply` qui échoue
+# laisse l'infrastructure dans un état intermédiaire, et le pipeline doit le
+# dire.
+#
+# ⚠️ Sur un environnement dont le namespace a été créé à la main, cet apply
+# échoue sur « namespaces … already exists » tant que l'objet n'a pas été
+# importé. La procédure est en TERRAFORM.md §10.1 ; elle ne peut pas être
+# automatisée ici sans rendre le job destructeur sur un cluster vierge.
+terraform-apply:
+  image:
+    name: $TERRAFORM_IMAGE
+    entrypoint: ['']
+  stage: infra
+  needs: ['terraform-validate']
+  environment:
+    name: production
+  variables:
+    KUBECONFIG: '$KUBE_CONFIG'
+  before_script:
+    - apk add --no-cache bash
+  script:
+    - bash scripts/ci/terraform_check.sh --apply -d "$TERRAFORM_ENVS_DIR"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+
+# ===========================================================================
 # BUILD (compilation des artefacts)
 # ===========================================================================
 build-front:
-  image: node
+  image: $NODE_IMAGE
   stage: build
   script:
     - cd front
@@ -289,7 +678,7 @@ build-front:
   <<: [*cache_node, *rules_build]
 
 build-back:
-  image: gradle:jdk21
+  image: $GRADLE_IMAGE
   stage: build
   script:
     - cd back
@@ -305,10 +694,10 @@ build-back:
 # de GitLab (les variables $CI_REGISTRY_* sont fournies automatiquement).
 # ===========================================================================
 .package_template: &package_template
-  image: docker:24
+  image: $DOCKER_IMAGE
   stage: package
   services:
-    - docker:24-dind
+    - $DOCKER_DIND_IMAGE
   # Mon script est écrit en Bash, or l'image docker:24 (basée sur Alpine) n'a
   # que sh par défaut. Donc j'installe bash avant de lancer le script.
   before_script:
@@ -318,20 +707,20 @@ build-back:
 package-back:
   <<: *package_template
   variables:
-    IMAGE: '$CI_REGISTRY_IMAGE/back'
+    IMAGE: '$CI_REGISTRY_IMAGE/$APP_BACK_NAME'
   script:
     - bash scripts/ci/build_and_push.sh --context ./back --image "$IMAGE" --tag "$CI_COMMIT_SHORT_SHA"
     # On scanne l'image finale avec Trivy. Ici c'est juste pour info : avec
     # --exit-code 0 ça n'arrête pas le pipeline même s'il trouve des soucis.
-    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY_IMAGE image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"
 
 package-front:
   <<: *package_template
   variables:
-    IMAGE: '$CI_REGISTRY_IMAGE/front'
+    IMAGE: '$CI_REGISTRY_IMAGE/$APP_FRONT_NAME'
   script:
     - bash scripts/ci/build_and_push.sh --context ./front --image "$IMAGE" --tag "$CI_COMMIT_SHORT_SHA"
-    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY_IMAGE image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"
 
 # ===========================================================================
 # PERF : tests de performance k6 (dossier tests/k6/).
@@ -354,10 +743,9 @@ package-front:
 #   3. L'attente du démarrage est faite par le scénario k6 lui-même (fonction
 #      setup), pas par un `sleep` au jugé. C'est nécessaire : GitLab considère
 #      un service comme prêt dès que son port répond, ce qui ne dit pas que
-#      Spring Boot a fini de démarrer. À noter, back/Dockerfile déclare
-#      EXPOSE 4200 alors que l'application écoute sur 8080 : la sonde de
-#      service affiche donc un avertissement, sans conséquence ici puisque
-#      c'est l'attente de setup qui fait foi.
+#      Spring Boot a fini de démarrer. C'est donc l'attente de setup qui fait
+#      foi. (back/Dockerfile déclarait EXPOSE 4200 alors que l'application
+#      écoute sur 8080 ; c'est corrigé.)
 #
 #   4. Pour voir les logs de l'application quand un job échoue, définir la
 #      variable CI_DEBUG_SERVICES = "true" dans GitLab.
@@ -371,11 +759,11 @@ package-front:
   image:
     # Version figée : d'une version de k6 à l'autre les mesures ne seraient
     # plus comparables.
-    name: grafana/k6:2.1.0
+    name: $K6_IMAGE
     entrypoint: ['']
   stage: perf
   services:
-    - name: '$CI_REGISTRY_IMAGE/back:$CI_COMMIT_SHORT_SHA'
+    - name: '$CI_REGISTRY_IMAGE/$APP_BACK_NAME:$CI_COMMIT_SHORT_SHA'
       alias: back
   variables:
     K6_BASE_URL: 'http://back:8080'
@@ -430,22 +818,107 @@ k6-stress:
 # ===========================================================================
 .deploy_template: &deploy_template
   image:
-    name: bitnami/kubectl:latest
+    name: $KUBECTL_IMAGE
     entrypoint: ['']
   stage: deploy
   variables:
     KUBECONFIG: '$KUBE_CONFIG'
   before_script:
-    # On vérifie juste que bash est bien là (l'image bitnami/kubectl le fournit).
+    # alpine/kubectl est basée sur Alpine : elle n'a que sh, alors que mes
+    # scripts de déploiement sont en bash. On l'installe, puis on vérifie.
+    - apk add --no-cache bash
     - command -v bash
+    # Fabrique l'overlay éphémère qui porte l'image réelle de ce pipeline.
+    # Définie ici pour que deploy-staging et deploy-production l'appellent sans
+    # dupliquer le gabarit ; before_script et script partagent le même shell.
+    #
+    # Le seul outil utilisé est le Kustomize embarqué dans `kubectl` :
+    # $KUBECTL_IMAGE ne contient que le binaire kubectl, pas de kustomize
+    # autonome, donc `kustomize edit set image` n'est pas disponible. Le
+    # transformateur `images:` d'un kustomization.yaml écrit à la volée fait le
+    # même travail sans figer une image d'outillage de plus.
+    - |
+      build_deploy_overlay() {
+        local overlay_name="$1"
+        rm -rf "$DEPLOY_OVERLAY_DIR"
+        mkdir -p "$DEPLOY_OVERLAY_DIR"
+        cat > "$DEPLOY_OVERLAY_DIR/kustomization.yaml" <<EOF
+      apiVersion: kustomize.config.k8s.io/v1beta1
+      kind: Kustomization
+      resources:
+        - ../$K8S_OVERLAYS_DIR/$overlay_name
+      images:
+        - name: $K8S_PLACEHOLDER_IMAGE_PREFIX/$APP_BACK_NAME
+          newName: $CI_REGISTRY_IMAGE/$APP_BACK_NAME
+          newTag: $CI_COMMIT_SHORT_SHA
+        - name: $K8S_PLACEHOLDER_IMAGE_PREFIX/$APP_FRONT_NAME
+          newName: $CI_REGISTRY_IMAGE/$APP_FRONT_NAME
+          newTag: $CI_COMMIT_SHORT_SHA
+      EOF
+        echo "Overlay éphémère ($overlay_name) :"
+        cat "$DEPLOY_OVERLAY_DIR/kustomization.yaml"
+        # Garde-fou : si le transformateur ne mordait plus (préfixe changé dans
+        # les manifestes, par exemple), le placeholder partirait tel quel vers le
+        # cluster. Mieux vaut échouer ici que déployer une image inexistante.
+        if kubectl kustomize "$DEPLOY_OVERLAY_DIR" | grep -q 'PLACEHOLDER'; then
+          echo "ERREUR : le rendu contient encore PLACEHOLDER — la substitution d'image n'a pas mordu." >&2
+          exit 1
+        fi
+      }
 
 deploy-staging:
   <<: *deploy_template
   environment:
     name: staging
   script:
-    - bash scripts/deploy/deploy.sh -n "$STAGING_NAMESPACE" -d back -c back -i "$CI_REGISTRY_IMAGE/back:$CI_COMMIT_SHORT_SHA"
-    - bash scripts/deploy/deploy.sh -n "$STAGING_NAMESPACE" -d front -c front -i "$CI_REGISTRY_IMAGE/front:$CI_COMMIT_SHORT_SHA"
+    # 1. Le Secret d'accès au registry, que les deux Deployments référencent en
+    #    imagePullSecrets. Sans lui, un cluster vierge ne peut pas tirer les
+    #    images d'un registry privé et tous les pods restent en
+    #    ImagePullBackOff.
+    #
+    #    `create --dry-run=client -o yaml | apply -f -` plutôt que `create` seul :
+    #    `create` échouerait avec « already exists » au deuxième déploiement,
+    #    alors que cette forme est idempotente et actualise le Secret si le mot
+    #    de passe a changé.
+    #
+    #    ⚠️ La sortie de `-o yaml` contient le mot de passe encodé en base64.
+    #    Le masquage GitLab travaille sur la valeur littérale et ne reconnaîtrait
+    #    PAS cette forme encodée : le flux doit donc aller directement dans le
+    #    pipe, sans jamais passer par le log du job. Ne pas y ajouter de `tee`,
+    #    de `cat`, ni de `kubectl get secret -o yaml` de vérification.
+    - |
+      kubectl create secret docker-registry "$REGISTRY_SECRET_NAME" \
+        --docker-server="$CI_REGISTRY" \
+        --docker-username="$CI_REGISTRY_USER" \
+        --docker-password="$CI_REGISTRY_PASSWORD" \
+        -n "$STAGING_NAMESPACE" --dry-run=client -o yaml \
+        | kubectl apply -n "$STAGING_NAMESPACE" -f -
+    # 2. On fabrique l'overlay éphémère : l'overlay de staging, plus le chemin de
+    #    registry et le tag du commit posés par le transformateur `images:`.
+    #    Les manifestes du dépôt gardent leur placeholder — c'est ce qui permet à
+    #    lint-k8s de les valider sans coordonnées de registry (K8S.md §4).
+    - build_deploy_overlay staging
+    # 3. On applique. C'est ce qui rend le déploiement idempotent sur un cluster
+    #    vierge : sans cette étape, deploy.sh s'arrête sur « Deployment 'back'
+    #    introuvable » puisqu'il ne sait que modifier un Deployment existant.
+    #
+    #    L'état désiré envoyé au cluster contient désormais la VRAIE image, donc
+    #    l'annotation last-applied-configuration aussi. C'est le correctif : tant
+    #    que l'image passait par `kubectl set image` (étape 4), l'annotation
+    #    gardait `PLACEHOLDER` et chaque `apply` le reposait, insérant une
+    #    révision placeholder dans l'historique. La « révision précédente » d'un
+    #    déploiement sain était donc toujours le placeholder, ce qui rendait
+    #    rollback-production destructeur au lieu de réparateur. Voir K8S.md §6.
+    - kubectl apply -k "$DEPLOY_OVERLAY_DIR" -n "$STAGING_NAMESPACE"
+    # 4. deploy.sh attend la fin du rollout et revient automatiquement en arrière
+    #    s'il n'aboutit pas dans $DEPLOY_TIMEOUT. Son `kubectl set image` est
+    #    devenu un no-op — l'étape 3 a déjà posé la bonne image, donc il ne crée
+    #    aucune révision supplémentaire (vérifié). On le garde pour l'attente et
+    #    le garde-fou, couverts par les assertions de scripts/tests/run_tests.sh.
+    - bash scripts/deploy/deploy.sh -n "$STAGING_NAMESPACE" -d "$APP_BACK_NAME" -c "$APP_BACK_NAME"
+      -i "$CI_REGISTRY_IMAGE/$APP_BACK_NAME:$CI_COMMIT_SHORT_SHA" -t "$DEPLOY_TIMEOUT"
+    - bash scripts/deploy/deploy.sh -n "$STAGING_NAMESPACE" -d "$APP_FRONT_NAME" -c "$APP_FRONT_NAME"
+      -i "$CI_REGISTRY_IMAGE/$APP_FRONT_NAME:$CI_COMMIT_SHORT_SHA" -t "$DEPLOY_TIMEOUT"
   rules:
     - if: '$CI_COMMIT_BRANCH == "develop"'
       when: manual
@@ -456,8 +929,25 @@ deploy-production:
   environment:
     name: production
   script:
-    - bash scripts/deploy/deploy.sh -n "$PROD_NAMESPACE" -d back -c back -i "$CI_REGISTRY_IMAGE/back:$CI_COMMIT_SHORT_SHA"
-    - bash scripts/deploy/deploy.sh -n "$PROD_NAMESPACE" -d front -c front -i "$CI_REGISTRY_IMAGE/front:$CI_COMMIT_SHORT_SHA"
+    # Même ordonnancement qu'en staging : le Secret du registry, l'overlay
+    # éphémère qui porte déjà la bonne image, l'apply, puis deploy.sh pour
+    # l'attente de rollout et le retour arrière. Voir deploy-staging pour le
+    # détail — en particulier sur le fait que la sortie de `-o yaml` ne doit
+    # jamais atteindre le log, et sur la raison pour laquelle l'image ne passe
+    # plus par `kubectl set image`.
+    - |
+      kubectl create secret docker-registry "$REGISTRY_SECRET_NAME" \
+        --docker-server="$CI_REGISTRY" \
+        --docker-username="$CI_REGISTRY_USER" \
+        --docker-password="$CI_REGISTRY_PASSWORD" \
+        -n "$PROD_NAMESPACE" --dry-run=client -o yaml \
+        | kubectl apply -n "$PROD_NAMESPACE" -f -
+    - build_deploy_overlay production
+    - kubectl apply -k "$DEPLOY_OVERLAY_DIR" -n "$PROD_NAMESPACE"
+    - bash scripts/deploy/deploy.sh -n "$PROD_NAMESPACE" -d "$APP_BACK_NAME" -c "$APP_BACK_NAME"
+      -i "$CI_REGISTRY_IMAGE/$APP_BACK_NAME:$CI_COMMIT_SHORT_SHA" -t "$DEPLOY_TIMEOUT"
+    - bash scripts/deploy/deploy.sh -n "$PROD_NAMESPACE" -d "$APP_FRONT_NAME" -c "$APP_FRONT_NAME"
+      -i "$CI_REGISTRY_IMAGE/$APP_FRONT_NAME:$CI_COMMIT_SHORT_SHA" -t "$DEPLOY_TIMEOUT"
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: manual
@@ -465,13 +955,23 @@ deploy-production:
       when: manual
 
 # À lancer à la main si une mise en prod se passe mal : ça remet la version d'avant.
+#
+# `rollback.sh` est appelé sans --to-revision, donc il vise la révision
+# immédiatement précédente. Ce job ne vaut que si cette révision est saine :
+# tant que deploy-staging / deploy-production posaient l'image par
+# `kubectl set image` après un `apply` resté sur PLACEHOLDER, chaque déploiement
+# insérait DEUX révisions — le placeholder puis la vraie image — et la
+# précédente était donc toujours le placeholder. Ce job aurait cassé la
+# production au lieu de la réparer. L'overlay éphémère supprime la révision
+# placeholder ; c'est ce qui rend ce rollback fiable. Vérifié sur cluster,
+# voir K8S.md §14.10.
 rollback-production:
   <<: *deploy_template
   environment:
     name: production
   script:
-    - bash scripts/deploy/rollback.sh -n "$PROD_NAMESPACE" -d back
-    - bash scripts/deploy/rollback.sh -n "$PROD_NAMESPACE" -d front
+    - bash scripts/deploy/rollback.sh -n "$PROD_NAMESPACE" -d "$APP_BACK_NAME" -t "$DEPLOY_TIMEOUT"
+    - bash scripts/deploy/rollback.sh -n "$PROD_NAMESPACE" -d "$APP_FRONT_NAME" -t "$DEPLOY_TIMEOUT"
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: manual

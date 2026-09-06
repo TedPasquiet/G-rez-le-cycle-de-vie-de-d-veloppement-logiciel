@@ -1,0 +1,159 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: back
+  labels:
+    app.kubernetes.io/name: back
+    app.kubernetes.io/component: api
+spec:
+  # 1 replica dans la base. Ce n'est pas un choix de dimensionnement mais une
+  # contrainte : HSQLDB tourne EN MÉMOIRE dans le processus, alimentée au
+  # démarrage par InitialDataFixture. Deux pods = deux bases distinctes, et une
+  # requête sur deux qui ne voit pas ce que l'autre a écrit. Tant que la
+  # persistance n'est pas externalisée, monter ce nombre casse l'application de
+  # façon silencieuse. Voir K8S.md §8.1.
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: back
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxUnavailable 0 : on ne retire l'ancien pod qu'une fois le nouveau
+      # prêt, donc pas de coupure pendant un déploiement à 1 replica.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: back
+        app.kubernetes.io/component: api
+    spec:
+      # Rien dans l'application n'appelle l'API Kubernetes : monter un jeton de
+      # ServiceAccount dans le pod n'apporterait qu'une surface d'attaque.
+      automountServiceAccountToken: false
+      # Le registry GitLab est privé : sans identifiants, le pod reste en
+      # ImagePullBackOff. Le Secret lui-même ne peut pas être versionné (il
+      # contient un mot de passe) ; il est créé par la CI juste avant l'apply,
+      # depuis $CI_REGISTRY_USER / $CI_REGISTRY_PASSWORD. Ce nom doit rester
+      # cohérent avec $REGISTRY_SECRET_NAME du .gitlab-ci.yml — c'est
+      # scripts/tests/validate_k8s.sh qui vérifie cette cohérence. Voir K8S.md §12.
+      imagePullSecrets:
+        - name: gitlab-registry
+      securityContext:
+        # UID 1000 : c'est celui que reçoit l'utilisateur `app` créé par
+        # `adduser -D -H app` dans back/Dockerfile. Vérifié en exécutant la
+        # commande dans alpine:3.19 — `adduser` attribue le premier UID libre à
+        # partir de 1000. Valeur figée ici pour que `runAsNonRoot` puisse être
+        # contrôlé par le kubelet avant même de démarrer le conteneur.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        # ⚠️ Le nom `back` est contractuel : scripts/deploy/deploy.sh exécute
+        # `kubectl set image deployment/back back=<image>`. Le renommer casse le
+        # déploiement.
+        - name: back
+          # Placeholder. Le chemin réel dans le registry dépend du projet GitLab
+          # ($CI_REGISTRY_IMAGE) et le tag du commit déployé
+          # ($CI_COMMIT_SHORT_SHA) : deux valeurs qui n'ont pas à être commitées.
+          # C'est ce qui permet à lint-k8s de valider ces manifestes sans aucune
+          # coordonnée de registry.
+          #
+          # Cette valeur ne part JAMAIS vers un cluster : les jobs de
+          # déploiement composent un overlay éphémère qui la remplace par
+          # l'image réelle, via le transformateur `images:` de Kustomize, AVANT
+          # l'`apply`. L'état désiré envoyé au cluster — et donc l'annotation
+          # last-applied-configuration — porte la vraie image.
+          #
+          # Le préfixe `microcrm/` est la clé de correspondance de ce
+          # transformateur ($K8S_PLACEHOLDER_IMAGE_PREFIX du .gitlab-ci.yml) :
+          # le changer ici sans le changer là-bas ferait partir ce placeholder
+          # tel quel. Un garde-fou du job échoue si le rendu contient encore
+          # « PLACEHOLDER ». Voir K8S.md §6 et §14.10.
+          image: microcrm/back:PLACEHOLDER
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: microcrm-config
+          # Ressources calibrées pour une petite application Spring Boot.
+          #
+          # Mémoire : la JVM dimensionne son tas à 25 % de la limite mémoire du
+          # conteneur (MaxRAMPercentage par défaut), soit ~192 Mio de tas pour
+          # 768 Mio de limite ; le reste couvre le hors-tas (metaspace, code
+          # cache, piles de threads), qui représente couramment 150 à 250 Mio.
+          # Descendre la limite sous 512 Mio expose à des OOMKill au démarrage.
+          # Requests = 512 Mio pour que l'ordonnanceur réserve de quoi démarrer.
+          #
+          # CPU : le démarrage d'une JVM est le moment le plus gourmand du cycle
+          # de vie (chargement de classes, compilation JIT). Une limite basse
+          # allongerait mécaniquement le démarrage et ferait échouer les probes.
+          # D'où 1 CPU en limite pour un besoin de croisière bien plus faible
+          # (200 m en request).
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 768Mi
+          # Une JVM Spring Boot met plusieurs dizaines de secondes à démarrer, et
+          # ce délai varie avec la charge du nœud. Plutôt qu'un
+          # `initialDelaySeconds` long sur la liveness — qui retarderait aussi
+          # la détection des blocages *après* le démarrage, pendant toute la vie
+          # du pod — je confie l'attente du démarrage à un startupProbe. Tant
+          # qu'il n'a pas réussi, liveness et readiness sont suspendues ; dès
+          # qu'il réussit, elles prennent le relais avec des délais courts.
+          # Budget de démarrage : 30 × 5 s = 150 s avant abandon.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 30
+          # Liveness = « le processus est-il irrécupérable ? ». En cas d'échec le
+          # kubelet tue le conteneur, donc on reste tolérant : 3 échecs
+          # consécutifs.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Readiness = « peut-on lui envoyer du trafic ? ». Un échec retire
+          # seulement le pod du Service, c'est réversible : on peut être plus
+          # réactif.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            # readOnlyRootFilesystem impose de rendre /tmp inscriptible par
+            # ailleurs : la JVM y écrit hsperfdata et le Tomcat embarqué de
+            # Spring Boot y crée son répertoire de travail au démarrage. Sans ce
+            # volume, l'application ne démarre pas.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

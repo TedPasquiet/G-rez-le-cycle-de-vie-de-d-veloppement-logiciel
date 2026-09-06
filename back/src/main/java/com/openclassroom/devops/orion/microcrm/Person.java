@@ -1,6 +1,7 @@
 package com.openclassroom.devops.orion.microcrm;
 
-import java.util.Date;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 
 import org.hibernate.annotations.CreationTimestamp;
@@ -12,8 +13,6 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.ManyToMany;
-import jakarta.persistence.Temporal;
-import jakarta.persistence.TemporalType;
 import jakarta.persistence.PreRemove;
 
 @Entity
@@ -93,25 +92,32 @@ public class Person {
     return organizations;
   }
 
-  @Temporal(TemporalType.TIMESTAMP)
   @CreationTimestamp
-  private Date createdAt;
+  private Instant createdAt;
 
-  @Temporal(TemporalType.TIMESTAMP)
   @UpdateTimestamp
-  private Date updatedAt;
+  private Instant updatedAt;
 
-  public Date getCreatedAt() {
+  public Instant getCreatedAt() {
     return createdAt;
   }
 
-  public Date getUpdatedAt() {
+  public Instant getUpdatedAt() {
     return updatedAt;
   }
 
   @PreRemove
   private void remoteFromOrganization() {
-    for (Organization org : organizations) {
+    // organizations est le cote INVERSE du many-to-many : Hibernate ne
+    // l'initialise qu'en relisant l'entite depuis la base. Sur une instance
+    // supprimee dans la transaction qui vient de la creer, il vaut null, et la
+    // boucle partait en NullPointerException — HTTP 500 sur DELETE /persons/{id}.
+    if (organizations == null) {
+      return;
+    }
+    // Copie defensive : org.removePerson() ecrit dans la collection que
+    // Hibernate peut etre en train de parcourir pour propager la suppression.
+    for (Organization org : new ArrayList<>(organizations)) {
       org.removePerson(this);
     }
   }

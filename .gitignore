@@ -16,3 +16,11 @@ trivy-*-report.json
 # Caches Python (scripts d'automatisation)
 __pycache__/
 *.pyc
+
+# Réglages locaux de la stack docker-compose (modèle versionné : .env.example)
+.env
+
+# Overlay Kustomize éphémère fabriqué par les jobs de déploiement pour poser le
+# chemin de registry et le tag du commit. Doit être dans le dépôt (Kustomize
+# refuse un chemin absolu dans `resources`), mais n'a rien à y être versionné.
+/.k8s-deploy-overlay/

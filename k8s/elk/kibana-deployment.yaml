@@ -1,0 +1,169 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kibana
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/component: logging
+spec:
+  # Kibana est sans état — tout ce qu'il sauvegarde vit dans Elasticsearch — donc
+  # rien n'interdirait plusieurs replicas. On reste à 1 parce que chaque instance
+  # coûte 1,5 Gio de limite mémoire sur un nœud partagé, pour une interface que
+  # regarde une personne à la fois.
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kibana
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Même choix que le back de k8s/base : à 1 replica, maxUnavailable 0
+      # garantit qu'on n'éteint l'ancien pod qu'une fois le nouveau prêt.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kibana
+        app.kubernetes.io/component: logging
+    spec:
+      # Kibana parle à Elasticsearch, pas à l'API Kubernetes.
+      automountServiceAccountToken: false
+      securityContext:
+        # UID 1000 / GID 0 : l'image officielle crée `kibana` avec cet UID et
+        # donne la propriété de /usr/share/kibana au groupe root.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 0
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kibana
+          # Strictement la même version qu'Elasticsearch : Kibana vérifie la
+          # version du cluster au démarrage et REFUSE de se connecter en cas
+          # d'écart, avec un message explicite. C'est la raison pour laquelle les
+          # trois composants sont épinglés ensemble.
+          image: docker.elastic.co/kibana/kibana:8.19.7
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5601
+          env:
+            # Configuration par variables d'environnement plutôt que par
+            # ConfigMap, à l'inverse d'Elasticsearch : les réglages de Kibana
+            # dont on a besoin ont tous un équivalent en MAJUSCULES_SOULIGNÉES
+            # accepté par l'entrypoint, et ils tiennent en cinq lignes. Un
+            # fichier monté n'apporterait ici qu'un fichier de plus à lire.
+            - name: SERVER_NAME
+              value: kibana
+            # Sans ça Kibana n'écoute que sur la boucle locale du conteneur :
+            # le Service route le trafic, mais rien ne répond et le pod reste
+            # NotReady sans erreur visible.
+            - name: SERVER_HOST
+              value: '0.0.0.0'
+            # Nom DNS court du Service, résolu dans le namespace du pod. Écrire
+            # `elasticsearch.logging.svc` ici recoderait le namespace en dur dans
+            # le manifeste, exactement ce que K8S.md §4 interdit — et la forme
+            # courte marche quel que soit le namespace d'installation.
+            - name: ELASTICSEARCH_HOSTS
+              value: http://elasticsearch:9200
+            # Voir le bloc `resources` : le tas de V8 est fixé sous la limite du
+            # conteneur pour que le ramasse-miettes se déclenche AVANT que le
+            # cgroup ne dépasse, et non l'inverse.
+            - name: NODE_OPTIONS
+              value: '--max-old-space-size=768'
+            # Le cluster de démonstration n'a pas d'accès sortant : la télémétrie
+            # ne ferait qu'échouer en boucle dans les journaux.
+            - name: TELEMETRY_ENABLED
+              value: 'false'
+          # ⚠️ Dimensionnement — Kibana est un processus Node.js, et le piège est
+          # le même que pour une JVM : le tas géré (« old space » de V8) n'est
+          # qu'une PARTIE de ce que le processus consomme. S'y ajoutent les
+          # tampons hors tas, le code compilé, et surtout le rendu côté serveur
+          # qui alloue par rafales.
+          #
+          # Par défaut Kibana 8 se donne 1 Gio de tas ; le laisser tel quel avec
+          # une limite de conteneur du même ordre, c'est se garantir un OOMKill
+          # pendant le chargement d'une page. On abaisse donc le tas à 768 Mio et
+          # on pose la limite à 1,5 Gio, soit deux fois le tas — même règle que
+          # pour Elasticsearch, pour la même raison.
+          #
+          # 768 Mio de tas suffisent très largement pour une instance sans
+          # utilisateurs concurrents ; c'est le démarrage (optimisation des
+          # bundles, chargement des plugins) qui en demande le plus, pas l'usage.
+          #
+          # CPU : 1 CPU en limite, dimensionné pour le démarrage lui aussi — la
+          # phase de chargement des plugins est mono-thread et directement
+          # limitée par le CPU disponible. Un throttling ici allonge le démarrage
+          # et met le startupProbe en danger.
+          resources:
+            requests:
+              cpu: 200m
+              memory: 768Mi
+            limits:
+              cpu: '1'
+              memory: 1536Mi
+          # Kibana démarre en 60 à 120 s, et ne peut de toute façon pas finir
+          # tant qu'Elasticsearch n'est pas joignable : il boucle sur une attente
+          # explicite. C'est précisément ce qu'un startupProbe permet d'encaisser
+          # sans redémarrages, là où une liveness seule mettrait le pod en
+          # CrashLoopBackOff pendant qu'Elasticsearch, lui, démarre normalement.
+          # Budget : 40 × 10 s = 400 s, calé sur la somme des deux démarrages.
+          startupProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 40
+          # /api/status répond 503 tant que Kibana n'est pas « available », et
+          # 200 ensuite : c'est le même point de mesure pour les deux sondes,
+          # mais pas la même conséquence. En liveness on reste tolérant (5
+          # échecs) parce qu'une indisponibilité passagère d'Elasticsearch fait
+          # basculer Kibana en 503 — le tuer n'y changerait rien et ne ferait
+          # qu'ajouter un redémarrage au problème.
+          livenessProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          # En readiness, au contraire, 503 doit sortir le pod du Service tout de
+          # suite : c'est réversible et ça évite de servir une interface qui
+          # affichera des erreurs.
+          readinessProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            # readOnlyRootFilesystem impose de rendre inscriptibles les deux
+            # seuls chemins où Kibana écrit réellement : data/ (identifiant
+            # d'instance, cache des bundles du navigateur) et /tmp. Contrairement
+            # à Elasticsearch, ces chemins sont peu nombreux et bien délimités,
+            # donc la racine peut rester en lecture seule.
+            - name: data
+              mountPath: /usr/share/kibana/data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # emptyDir et non PVC : tout ce que Kibana persiste durablement (vues,
+        # index patterns, tableaux de bord) est stocké dans Elasticsearch, pas
+        # ici. Perdre ce répertoire au redémarrage ne coûte qu'un cache à
+        # reconstruire.
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

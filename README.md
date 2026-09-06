@@ -18,9 +18,11 @@ L'application MicroCRM est une implémentation simplifiée d'un ["CRM" (Customer
 Ce [monorepo](https://en.wikipedia.org/wiki/Monorepo) contient les 2 composantes du projet "MicroCRM":
 
 - La partie serveur (ou "backend"), en Java SpringBoot 3;
-- La partie cliente (ou "frontend"), en Angular 17.
+- La partie cliente (ou "frontend"), en Angular 20.
 
 Une intégration basique avec Gitlab CI est définie via le fichier [`.gitlab-ci.yml`](./.gitlab-ci.yml).
+La configuration du pipeline et les valeurs à externaliser sont détaillées dans
+[VARIABILISATION.md](./VARIABILISATION.md).
 
 ### Démarrer avec les sources
 
@@ -51,7 +53,7 @@ Une intégration basique avec Gitlab CI est définie via le fichier [`.gitlab-ci
 3. Démarrer le service:
 
    ```shell
-   java -jar build/libs/microcrm-0.0.1-SNAPSHOT.jar
+   java -jar build/libs/microcrm-*.jar
    ```
 
 Puis ouvrir l'URL http://localhost:8080 dans votre navigateur.
@@ -61,6 +63,7 @@ Puis ouvrir l'URL http://localhost:8080 dans votre navigateur.
 ##### Dépendances
 
 - [NPM >= 10.2.4](https://www.npmjs.com/)
+- Node.js `^20.19`, `^22.12` ou `>=24` — contrainte d'Angular 20
 
 ##### Procédure
 
@@ -108,6 +111,38 @@ cd back
 ./gradlew test
 ```
 
+Sans autre réglage, la suite s'exécute sur une base **HSQLDB en mémoire** :
+rien à installer, rien à démarrer.
+
+##### Contre PostgreSQL, comme le fait la CI
+
+Le moteur réellement déployé est PostgreSQL, et c'est sur lui que le job
+`test-back` exécute la suite. Le choix du moteur ne tient à aucun profil ni
+fichier de configuration : il tient aux trois variables standard de Spring.
+Absentes, HSQLDB ; présentes, PostgreSQL.
+
+```shell
+# Une base jetable, qui disparaît avec le conteneur
+docker run --rm -d --name microcrm-pg -p 5432:5432 \
+  -e POSTGRES_DB=microcrm_test \
+  -e POSTGRES_USER=microcrm \
+  -e POSTGRES_PASSWORD=microcrm \
+  postgres:16-alpine
+
+cd back
+SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/microcrm_test \
+SPRING_DATASOURCE_USERNAME=microcrm \
+SPRING_DATASOURCE_PASSWORD=microcrm \
+  ./gradlew test
+
+docker rm -f microcrm-pg
+```
+
+L'hôte est `localhost` ici parce que le port est publié sur la machine ; en CI
+c'est `postgres`, l'alias du service GitLab. C'est la seule différence entre les
+deux exécutions — voir [QUALITY.md](./QUALITY.md) §7 et
+[DATABASE.md](./DATABASE.md).
+
 #### Tests de performance (k6)
 
 **Dépendances**
@@ -131,48 +166,88 @@ Les scénarios sont dans `tests/k6/`, les seuils et la démarche dans
 
 ### Images Docker
 
-#### Client
+Chaque application a **son propre Dockerfile**, dans son dossier. Il n'y a pas
+de Dockerfile à la racine du dépôt, et pas d'image « tout en un ».
 
-##### Construire l'image
-
-```shell
-docker build --target front -t orion-microcrm-front:latest .
-```
-
-##### Exécuter l'image
+#### Le plus simple : la stack complète
 
 ```shell
-docker run -it --rm -p 80:80 -p 443:443 orion-microcrm-front:latest
+docker compose up --build
 ```
 
-L'application sera disponible sur https://localhost.
+Le front est servi sur http://localhost:4200, l'API sur http://localhost:8080.
+Les ports et les noms d'images se règlent sans toucher au compose, via un
+fichier `.env` — voir [`.env.example`](./.env.example).
 
-#### Serveur
-
-##### Construire l'image
+#### Image du serveur
 
 ```shell
-docker build --target back -t orion-microcrm-back:latest .
+docker build -t microcrm-back ./back
+docker run --rm -p 8080:8080 microcrm-back
 ```
 
-##### Exécuter l'image
+L'API est disponible sur http://localhost:8080.
+
+#### Image du client
 
 ```shell
-docker run -it --rm -p 8080:8080 orion-microcrm-back:latest
+docker build -t microcrm-front ./front
+docker run --rm -p 4200:80 -e FRONT_API_BASE_URL=http://localhost:8080 microcrm-front
 ```
 
-L'API sera disponible sur http://localhost:8080.
+Le front est disponible sur http://localhost:4200. La variable
+`FRONT_API_BASE_URL` est facultative : sans elle, le front vise
+`http://localhost:8080`.
 
-#### Tout en un
+### Les choix de conteneurisation, et pourquoi
 
-```shell
-docker build --target standalone -t orion-microcrm-standalone:latest .
-```
+#### Une image par application, pas une image commune
 
-##### Exécuter l'image
+Le front et le back n'ont ni le même cycle de vie, ni les mêmes dépendances, ni
+la même charge. Les fusionner obligerait à redéployer l'un pour corriger
+l'autre, et imposerait un superviseur de processus dans le conteneur — donc un
+conteneur qui ne meurt plus quand son application meurt, ce qui prive
+Kubernetes de son principal signal de panne.
 
-```shell
-docker run -it --rm -p 8080:8080 -p 80:80 -p 443:443 orion-microcrm-standalone:latest
-```
+#### Construction en deux étapes
 
-L'application sera disponible sur https://localhost et l'API sur http://localhost:8080.
+Chaque Dockerfile compile dans une image outillée (Gradle, Node) puis ne copie
+que l'artefact dans une image d'exécution minimale. Ni le JDK, ni npm, ni les
+sources ne se retrouvent dans l'image livrée. Le front pèse ainsi 85 Mo, dont
+84,9 pour Caddy lui-même : l'application n'ajoute que quelques centaines de
+kilo-octets.
+
+#### Des versions figées, jamais `latest`
+
+Les images de base sont épinglées (`gradle:8.14.5-jdk21`, `node:22-alpine`,
+`caddy:2-alpine`, `alpine:3.19`) et alignées sur les variables du
+[`.gitlab-ci.yml`](./.gitlab-ci.yml) : le code est compilé avec la version
+exacte qui a servi à le tester. Un tag flottant fait casser une construction
+sans qu'aucun commit ne l'explique, et rend deux analyses incomparables. Les
+versions restent surchargeables au build via `--build-arg`.
+
+#### Un utilisateur non privilégié dans les deux images
+
+Les deux conteneurs tournent en UID 1000, le même que celui déclaré dans les
+manifestes Kubernetes : le comportement est identique sous Docker et sous
+Kubernetes. Au déploiement s'ajoutent un système de fichiers en lecture seule et
+la suppression de toutes les capabilities.
+
+#### Un `.dockerignore` par application
+
+Les jobs de construction utilisent `--context ./back` et `--context ./front`, or
+Docker ne lit que le `.dockerignore` situé à la racine du contexte : celui du
+dépôt ne s'applique jamais à ces builds. Sans ces deux fichiers, le contexte du
+front atteint 1 195 Mo — essentiellement le cache Angular et `node_modules`, que
+l'image régénère de toute façon. Avec, il tombe à 0,6 Mo.
+
+#### La configuration entre au démarrage, pas à la construction
+
+L'URL de l'API n'est pas compilée dans le bundle : Caddy la sert dans un
+`/config.json` que l'application lit avant de démarrer. Une seule image est donc
+construite, testée, puis déployée telle quelle en staging comme en production —
+seule la variable d'environnement change. Reconstruire une image pour changer
+d'environnement reviendrait à déployer autre chose que ce qui a été testé.
+
+Le détail de ces choix est dans [ARCHITECTURE.md](./ARCHITECTURE.md) §3, et la
+démarche de configuration dans [VARIABILISATION.md](./VARIABILISATION.md).

@@ -1,120 +1,102 @@
-# Schéma — Chaîne CI/CD normalisée (MicroCRM)
+# Schéma — Chaîne CI/CD (MicroCRM)
 
 Chaque étape du cycle de développement est traduite en _stage_ GitLab CI, outillée
-et assortie d'un critère bloquant. La sécurité est déplacée au plus tôt
-(**shift-left / DevSecOps**), le déploiement est automatisé jusqu'à la validation PO.
+et assortie d'un critère explicite. La sécurité est déplacée au plus tôt
+(**shift-left / DevSecOps**) : elle s'exécute **avant** la construction des
+artefacts, pas après. Le déploiement est outillé jusqu'à la décision humaine, qui
+reste le seul geste manuel conservé.
 
 ## Workflow complet
 
 ```mermaid
-flowchart TD
-    %% ───────────── 01 · Amont produit ─────────────
-    subgraph P1["01 · AMONT PRODUIT"]
-        direction TB
-        A1["Backlog"]
-        A2["Priorisation<br/>story → branche + Merge Request"]
-        A3["Développement<br/>code + tests unitaires<br/>pre-commit · lint · format"]
-        A1 --> A2 --> A3
+flowchart LR
+    subgraph R1[" "]
+        direction LR
+        A["AMONT PRODUIT<br/>backlog · priorisation<br/>hooks pre-commit"] --> B1["lint<br/>ESLint · Checkstyle<br/>ShellCheck · K8s · Helm"]
+        B1 --> B2["test<br/>JUnit sur PostgreSQL<br/>Karma · BashUnit"]
+        B2 --> B3["quality<br/>SonarQube · SpotBugs<br/>couverture · mutation"]
+        B3 --> B4["security<br/>Dependency-Check<br/>Trivy"]
+        B4 --> B5["infra<br/>Terraform<br/>Ansible"]
     end
-
-    %% ───────────── 02 · Intégration continue ─────────────
-    subgraph P2["02 · INTÉGRATION CONTINUE — à chaque Merge Request"]
-        direction TB
-        B1["build<br/>Gradle · Angular CLI"]
-        B2["test<br/>JUnit · Jasmine/Karma<br/>couverture ≥ seuil défini"]
-        B3["quality · analyse statique<br/>SonarQube · SpotBugs"]
-        B4["dependency-scan · SCA<br/>OWASP Dependency-Check · Snyk"]
-        B5["package<br/>2 images : front + back<br/>tag = CI_COMMIT_SHA"]
-        B6["image-scan<br/>Trivy · 0 CVE HIGH/CRITICAL"]
-        QG{"Quality Gate<br/>tous les contrôles au vert ?"}
-        B1 --> B2 --> B3 --> B4 --> B5 --> B6 --> QG
+    subgraph R2[" "]
+        direction LR
+        C1["build<br/>Gradle<br/>Angular CLI"] --> C2["package<br/>2 images multi-stage<br/>tag = SHA"]
+        C2 --> C3["perf<br/>k6 sur<br/>l'image construite"]
+        C3 --> D["deploy ✋<br/>staging · production<br/>rollback"]
+        D --> E["EXPLOITATION<br/>ELK · indicateurs DORA"]
     end
+    R1 --> R2
+    B5 -.->|"✗ retour immédiat"| A
+    E -.->|"incidents, dérives"| A
 
-    %% ───────────── 03 · Déploiement continu ─────────────
-    subgraph P3["03 · DÉPLOIEMENT CONTINU — GitFlow · Docker Compose"]
-        direction TB
-        C1["deploy-staging<br/>auto sur develop<br/>healthcheck /actuator/health"]
-        C2["integration<br/>tests fonctionnels + E2E<br/>Cypress/Playwright · Newman"]
-        PO{"Validation PO<br/>job manuel"}
-        C3["deploy-prod<br/>manuel · tag de release<br/>image lockée par digest"]
-        C1 --> C2 --> PO
-    end
-
-    %% ───────────── 04 · Exploitation ─────────────
-    subgraph P4["04 · EXPLOITATION"]
-        direction TB
-        D1["monitoring & supervision<br/>Spring Boot Actuator<br/>Prometheus / Grafana"]
-    end
-
-    %% ───────────── Transitions entre phases ─────────────
-    A3 --> B1
-    QG -->|"✗ échec — feedback immédiat"| A3
-    QG -->|"✓ succès — merge sur develop"| C1
-    PO -->|"✗ refus"| A3
-    PO -->|"✓ approbation — tag release"| C3
-    C3 --> D1
-    D1 -.->|"incidents / retours prod"| A1
-
-    %% ───────────── Styles ─────────────
-    classDef ci     fill:#d8efeb,stroke:#0f766e,stroke-width:2px,color:#0b5049
-    classDef sec    fill:#fbe6cd,stroke:#b45309,stroke-width:2px,color:#7c3a06
-    classDef gate   fill:#d5ecdd,stroke:#15803d,stroke-width:2px,color:#0f5227
-    classDef deploy fill:#e2e0fb,stroke:#4f46e5,stroke-width:2px,color:#312c9e
-    classDef ops    fill:#e8ddfb,stroke:#7c3aed,stroke-width:2px,color:#54209e
-    classDef prod   fill:#f5f8f8,stroke:#5b6c69,stroke-width:1px,color:#13201e
-
-    class A1,A2,A3 prod
-    class B1,B2,B5 ci
-    class B3,B4,B6 sec
-    class QG,PO gate
-    class C1,C2,C3 deploy
-    class D1 ops
+    classDef prod fill:#f5f8f8,stroke:#5b6c69,color:#13201e
+    classDef ci fill:#d8efeb,stroke:#0f766e,color:#0b5049
+    classDef sec fill:#fbe6cd,stroke:#b45309,color:#7c3a06
+    classDef deploy fill:#e2e0fb,stroke:#4f46e5,color:#312c9e
+    classDef ops fill:#e8ddfb,stroke:#7c3aed,color:#54209e
+    class A prod
+    class B1,B2,B3,B5,C1,C2,C3 ci
+    class B4 sec
+    class D deploy
+    class E ops
+    style R1 fill:none,stroke:none
+    style R2 fill:none,stroke:none
 ```
 
 **Légende des couleurs**
 
-| Couleur    | Nature                              |
-| ---------- | ----------------------------------- |
-| Gris       | Amont produit (hors CI)             |
-| Vert d'eau | Intégration continue                |
-| Orange     | Sécurité — shift-left / DevSecOps   |
-| Vert       | Quality gate / validation bloquante |
-| Indigo     | Déploiement continu                 |
-| Violet     | Exploitation                        |
+| Couleur    | Nature                            |
+| ---------- | --------------------------------- |
+| Gris       | Amont produit (hors CI)           |
+| Vert d'eau | Vérification et livraison         |
+| Orange     | Sécurité — shift-left / DevSecOps |
+| Indigo     | Déploiement                       |
+| Violet     | Exploitation                      |
 
 ## Table de normalisation — cycle → GitLab CI
 
-| Étape du cycle                   | Stage GitLab                 | Outils                          | Critère bloquant                  |
-| -------------------------------- | ---------------------------- | ------------------------------- | --------------------------------- |
-| Développement                    | _(local)_                    | pre-commit, lint                | Format + lint OK avant push       |
-| Build                            | `build`                      | Gradle, Angular CLI             | Compilation sans erreur           |
-| Tests unitaires                  | `test`                       | JUnit, Jasmine/Karma            | Couverture ≥ seuil (ex. 80 %)     |
-| Analyse statique                 | `quality`                    | SonarQube, SpotBugs             | Quality Gate Sonar au vert        |
-| Analyse des dépendances          | `dependency-scan`            | OWASP DC, Snyk                  | 0 CVE critique / haute            |
-| Construction des images          | `package`                    | Docker/Kaniko, Registry         | Build OK, tag = commit SHA        |
-| Analyse des images               | `image-scan`                 | Trivy                           | 0 CVE HIGH/CRITICAL               |
-| Quality gate                     | `quality-gate`               | règles GitLab (`needs`)         | Tous les jobs amont au vert       |
-| Déploiement staging              | `deploy-staging` · `develop` | GitLab Env, Docker Compose      | Healthcheck `/actuator/health` OK |
-| Tests fonctionnels & intégration | `integration`                | Cypress/Playwright, Newman      | Scénarios E2E + API passants      |
-| Validation PO                    | `validate` (manual)          | job manuel GitLab               | Approbation explicite du PO       |
-| Déploiement production           | `deploy-prod` (manual · tag) | GitLab Env prod, Docker Compose | Healthcheck OK, digest locké      |
-| Monitoring & supervision         | _(post-deploy)_              | Actuator, Prometheus/Grafana    | Alerting actif, SLO surveillés    |
+Neuf stages, 30 jobs. La colonne « bloquant » dit ce qui arrête réellement le
+pipeline aujourd'hui, pas ce qui devrait l'arrêter.
+
+| Étape du cycle          | Stage       | Outils                                    | Bloquant                     |
+| ----------------------- | ----------- | ----------------------------------------- | ---------------------------- |
+| Développement           | _(local)_   | husky, lint-staged, Prettier, commitlint  | oui, avant le push           |
+| Forme du code           | `lint`      | ESLint, Checkstyle, ShellCheck, Helm, K8s | **oui**, les 5 jobs          |
+| Comportement            | `test`      | JUnit sur PostgreSQL, Karma, BashUnit     | **oui**, les 3 jobs          |
+| Tenue du code           | `quality`   | SonarQube, SpotBugs, JaCoCo, PIT          | `coverage-gate` seul         |
+| Surface d'attaque       | `security`  | OWASP Dependency-Check, Trivy             | Dependency-Check seul        |
+| Infrastructure          | `infra`     | Terraform, Ansible                        | `validate` et `lint` seuls   |
+| Compilation             | `build`     | Gradle, Angular CLI                       | **oui**                      |
+| Construction des images | `package`   | Docker multi-stage, Registry GitLab       | **oui**, tag = SHA du commit |
+| Tenue en charge         | `perf`      | k6 sur l'image construite                 | `k6-smoke` seul              |
+| Déploiement staging     | `deploy`    | Kubernetes, Kustomize, `deploy.sh`        | manuel, sur `develop`        |
+| Déploiement production  | `deploy`    | Kubernetes, promotion de la même image    | manuel, sur `main` ou tag    |
+| Retour arrière          | `deploy`    | `rollback.sh`, historique des révisions   | automatique **et** manuel    |
+| Supervision             | _(hors CI)_ | Filebeat, Elasticsearch, Kibana, DORA     | —                            |
+
+Le détail des interdépendances entre jobs est dans
+[docs/pipeline-ci.md](docs/pipeline-ci.md).
 
 ---
 
-> **État actuel du repo.** Ce schéma décrit la chaîne **cible**. Le `.gitlab-ci.yml`
-> en place en couvre aujourd'hui l'essentiel : **7 stages et 20 jobs**, de `lint` à
-> `deploy`, en passant par `quality`, `security` et `package`. Les images sont
-> construites et taguées par SHA, poussées au registry puis scannées, et le
-> déploiement Kubernetes est en place avec rollback automatique et manuel.
->
-> Écarts restants entre la cible et l'implémentation :
->
-> | Élément de la cible                                 | État                                          |
-> | --------------------------------------------------- | --------------------------------------------- |
-> | Tests E2E (Cypress/Playwright), stage `integration` | Non implémenté                                |
-> | Snyk                                                | Remplacé par Trivy + OWASP Dependency-Check   |
-> | Déploiement sur Docker Compose                      | Remplacé par **Kubernetes** (voir RELEASE.md) |
-> | `deploy-staging` automatique sur `develop`          | En `when: manual` pour l'instant              |
-> | Healthcheck `/actuator/health`                      | Actuator non installé (voir QUALITY.md §5)    |
-> | Critères bloquants                                  | Tous les gates sont en `allow_failure: true`  |
+## Ce que la chaîne ne fait pas encore
+
+Cette section est le pendant honnête de la précédente. Ce sont des écarts connus,
+pas des oublis.
+
+| Élément                                    | État                                                                                     |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| Tests E2E (Cypress/Playwright)             | **non implémenté** — aucun stage `integration`                                           |
+| `deploy-staging` automatique sur `develop` | en `when: manual` ; le passage en `on_success` est une ligne                             |
+| Trivy bloquant                             | tourne en `--exit-code 0` — 4 mauvaises configurations à traiter d'abord                 |
+| Quality Gate Sonar bloquant                | `allow_failure: true`, et ne tourne que sur `main`                                       |
+| Tests de mutation bloquants                | `allow_failure: true` — le seuil de 80 % est tenu mais non imposé                        |
+| Métriques Prometheus / Grafana             | **non implémenté** — la supervision est faite par les logs (ELK) et les indicateurs DORA |
+| Signature des images                       | **non implémenté** — les images sont taguées par SHA, pas signées                        |
+| Déploiement progressif (canary)            | **non implémenté** — `RollingUpdate` avec `maxUnavailable: 0`                            |
+
+Deux choix méritent d'être signalés plutôt que subis. **Snyk** figurait dans la
+cible initiale : il est remplacé par Trivy et OWASP Dependency-Check, qui
+couvrent le même besoin sans compte tiers. **Docker Compose** était prévu comme
+cible de déploiement : il est remplacé par Kubernetes ([RELEASE.md](RELEASE.md)),
+et ne sert plus qu'à démarrer la pile en local.

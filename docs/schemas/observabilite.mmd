@@ -1,0 +1,16 @@
+%% Schéma — L'observabilité et le pilotage.
+%% Source versionnée du bloc Mermaid de docs/schema-architecture.md §10.
+%% Les applications écrivent en JSON sur la sortie standard et ne connaissent pas
+%% la destination de leurs logs. Les quatre indicateurs DORA se contredisent
+%% utilement : c'est leur lecture conjointe qui décrit une chaîne saine, jamais
+%% l'un d'eux isolément.
+flowchart TB
+    subgraph cluster["Cluster"]
+        direction LR
+        pods["Pods back et front<br/>logs JSON sur la sortie standard"] --> fb["Filebeat<br/>DaemonSet"]
+    end
+
+    fb -->|"champs ECS"| es[("Elasticsearch")]
+    gl["Pipeline GitLab<br/>collecteur DORA"] --> es
+    es --> kib["Kibana — tableaux de bord"]
+    kib --> lect["Erreurs applicatives, latences,<br/>indicateurs de livraison"]

@@ -1,0 +1,208 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: filebeat
+  labels:
+    app.kubernetes.io/name: filebeat
+    app.kubernetes.io/component: logging
+spec:
+  # DaemonSet et non Deployment : les journaux des conteneurs sont des FICHIERS
+  # LOCAUX à chaque nœud (/var/log/containers). Un Deployment à N replicas
+  # laisserait des nœuds sans collecteur et ferait lire deux fois les mêmes
+  # fichiers à ceux qui en portent plusieurs. Un pod par nœud, c'est la seule
+  # topologie qui corresponde à la source de données.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: filebeat
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: filebeat
+        app.kubernetes.io/component: logging
+    spec:
+      serviceAccountName: filebeat
+      # Contrairement à Elasticsearch et Kibana, ici le jeton est indispensable :
+      # c'est lui qui autorise les appels d'autodiscover à l'API Kubernetes.
+      automountServiceAccountToken: true
+      # Sans cette tolérance, les nœuds de plan de contrôle marqués
+      # NoSchedule n'auraient pas de collecteur. Sur minikube le nœud unique
+      # porte les deux rôles, donc c'est ici la différence entre « ça collecte »
+      # et « aucun pod n'est planifié ».
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      # Arrêt rapide : Filebeat n'a rien à vider de long, et son registre sur
+      # disque lui permet de reprendre où il s'était arrêté. Attendre les 30 s
+      # par défaut à chaque rollout n'apporte rien.
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        # ⚠️ Le point délicat de tout ce lot : `runAsNonRoot` face à des fichiers
+        # qui appartiennent à root.
+        #
+        # Sur ce nœud (runtime docker), la chaîne à traverser pour lire un log
+        # est celle-ci, permissions relevées sur le nœud :
+        #   /var/log/containers            0755 root:root  -> lisible par tous
+        #     -> /var/log/pods             0750 root:root  -> groupe root : r-x
+        #       -> /var/lib/docker         0710 root:root  -> groupe root : --x
+        #         -> .../containers/<id>   0710 root:root  -> groupe root : --x
+        #           -> <id>-json.log       0640 root:root  -> groupe root : r--
+        #
+        # Autrement dit : un UID quelconque ne peut RIEN lire, mais le GROUPE
+        # root a exactement les droits qu'il faut, et pas un de plus. La réponse
+        # habituelle à ce problème — `runAsUser: 0` — est donc excessive : elle
+        # donne l'UID root pour obtenir un droit de lecture de groupe.
+        #
+        # L'exception est ici réduite à sa plus petite forme : UID 1000, donc
+        # NON-ROOT et `runAsNonRoot: true` satisfait, mais GID 0 pour hériter des
+        # droits du groupe. Pas de conteneur privilégié, pas de capability
+        # ajoutée (DAC_READ_SEARCH n'est pas nécessaire puisque le groupe suffit),
+        # et tous les montages hôte sont en lecture seule.
+        #
+        # ⚠️ Ce que ça donne quand même, et qu'il faut assumer : le groupe root
+        # peut lire les journaux de TOUS les conteneurs du nœud, y compris ceux
+        # des autres projets et ceux du plan de contrôle. C'est le filtre de
+        # filebeat-config.yaml, et lui seul, qui garantit qu'on ne les collecte
+        # pas — le noyau, lui, ne l'empêcherait pas.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 0
+      containers:
+        - name: filebeat
+          # Même version qu'Elasticsearch : le template d'index que Filebeat
+          # installe est versionné, et un décalage majeur produit des erreurs
+          # d'indexation difficiles à rattacher à leur cause.
+          image: docker.elastic.co/beats/filebeat:8.19.7
+          imagePullPolicy: IfNotPresent
+          args:
+            # -e : journalise sur stderr plutôt que dans un fichier.
+            - -e
+            # ⚠️ Sans ce drapeau, Filebeat REFUSE de démarrer. Il vérifie que son
+            # fichier de configuration n'est pas inscriptible par d'autres que
+            # son propriétaire ; or un fichier issu d'une ConfigMap est monté
+            # root:root en 0644, ce qui ne satisfait jamais ce contrôle depuis un
+            # UID 1000. Le contrôle protège d'une configuration modifiable par
+            # n'importe qui sur une machine partagée — hypothèse sans objet ici,
+            # où le fichier est en lecture seule et provient de l'API Kubernetes.
+            #
+            # Double tiret : le parseur de drapeaux de Filebeat 8 lit
+            # `-strict.perms` comme une suite de drapeaux courts et sort en
+            # erreur (« unknown shorthand flag: 's' »). Vérifié sur ce cluster.
+            - --strict.perms=false
+          env:
+            # Renseigne `node:` dans l'autodiscover : c'est ce qui restreint
+            # chaque pod du DaemonSet aux pods de son propre nœud. La valeur ne
+            # peut venir que de l'API descendante, elle change d'un pod à l'autre.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          envFrom:
+            # Fournit MICROCRM_NAMESPACE, déréférencé par `${...}` dans
+            # filebeat.yml. Voir elk-config.yaml pour le pourquoi de ce détour.
+            - configMapRef:
+                name: elk-config
+          # Filebeat est un collecteur en Go : pas de tas géré, pas de pic de
+          # démarrage. Sa consommation suit le nombre de fichiers suivis et le
+          # débit de lignes, et le périmètre est ici de deux conteneurs.
+          #
+          # 256 Mio de limite laissent une marge confortable au-dessus des ~80
+          # Mio observés en régime : la mémoire de Filebeat monte avec la taille
+          # de sa file d'attente interne quand Elasticsearch est indisponible —
+          # c'est ce cas-là, et non le régime nominal, que la limite doit couvrir.
+          #
+          # ⚠️ Un DaemonSet consomme ses ressources sur CHAQUE nœud : c'est le
+          # composant où un dimensionnement large se paie N fois. D'où des
+          # chiffres délibérément serrés, à l'inverse d'Elasticsearch.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: config
+              mountPath: /usr/share/filebeat/filebeat.yml
+              subPath: filebeat.yml
+              readOnly: true
+            # Le registre : quel fichier a été lu, et jusqu'à quel décalage.
+            # Sans lui, un redémarrage de Filebeat réindexe tout depuis le début
+            # et duplique les documents.
+            - name: data
+              mountPath: /usr/share/filebeat/data
+            # ⚠️ Pas le journal de Filebeat (`logging.to_files: false` l'envoie
+            # sur stdout), mais le « event log » de la 8.x : le fichier ndjson où
+            # Filebeat recopie les événements qu'Elasticsearch a REFUSÉS, avec
+            # leur cause. Il ne se désactive pas par configuration, et sur une
+            # racine en lecture seule il produit un « write error: ...
+            # read-only file system » par événement rejeté — un flot d'erreurs
+            # qui masque l'erreur d'origine au lieu de la révéler. Vérifié sur ce
+            # cluster avant d'ajouter ce volume.
+            - name: logs
+              mountPath: /usr/share/filebeat/logs
+            # Les trois montages hôte forment la chaîne de symlinks décrite
+            # au-dessus. Ils sont indissociables : monter /var/log/containers
+            # seul ne donne que des liens cassés, puisque leurs cibles sont hors
+            # du système de fichiers du conteneur.
+            #
+            # Tous en readOnly : Filebeat n'a aucune raison d'écrire sur l'hôte,
+            # et un montage inscriptible sur /var/lib/docker donnerait à ce pod
+            # la capacité d'altérer les journaux de tous les autres.
+            - name: varlogcontainers
+              mountPath: /var/log/containers
+              readOnly: true
+            - name: varlogpods
+              mountPath: /var/log/pods
+              readOnly: true
+            # ⚠️ Spécifique au runtime docker de ce cluster : les fichiers
+            # pointés par /var/log/pods vivent sous /var/lib/docker/containers.
+            # Sur un cluster containerd (le cas général aujourd'hui), les
+            # journaux sont directement dans /var/log/pods et ce montage devient
+            # inutile — mais il n'est pas nuisible, le chemin est simplement
+            # créé vide par le kubelet.
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: filebeat-config
+        # emptyDir et non hostPath pour le registre, alors que la documentation
+        # officielle de Filebeat utilise un hostPath. Raison concrète : un
+        # hostPath est créé root:root par le kubelet et `fsGroup` ne s'applique
+        # PAS aux volumes hostPath — un conteneur en UID 1000 ne pourrait pas y
+        # écrire, et Filebeat s'arrêterait sur une erreur de permission. Rendre
+        # le registre persistant demanderait donc de revenir en root, c'est-à-dire
+        # d'échanger le socle de sécurité contre un confort d'exploitation.
+        #
+        # Ce que ça coûte : à chaque recréation du pod, Filebeat repart du début
+        # des fichiers encore présents sur le nœud et REPRODUIT des documents
+        # déjà indexés. Acceptable sur une stack de démonstration ; sur une vraie
+        # stack la bonne réponse est un hostPath dont le nœud garantit les
+        # permissions (préparé par Ansible), pas un retour à l'UID 0.
+        - name: data
+          emptyDir: {}
+        # Purement un tampon de diagnostic : rien de ce qui s'y écrit n'a besoin
+        # de survivre au pod, et c'est le seul autre chemin où Filebeat écrit.
+        - name: logs
+          emptyDir: {}
+        - name: varlogcontainers
+          hostPath:
+            path: /var/log/containers
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers

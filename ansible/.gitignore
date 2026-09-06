@@ -1,0 +1,15 @@
+# Ce qu'Ansible fabrique en tournant, et qui n'a rien à être versionné.
+
+# Fichier de reprise écrit quand un hôte échoue. Il ne contient qu'une liste
+# d'hôtes, donc rien de sensible — mais il est daté de la dernière panne, et le
+# commiter donnerait à quelqu'un l'idée de le rejouer.
+*.retry
+
+# Cache de faits et répertoire de travail des collections installées
+# localement par `ansible-galaxy collection install -p`.
+.ansible/
+
+# Journaux d'exécution, dont ceux des deux passes qui prouvent l'idempotence
+# (ANSIBLE.md §7). La preuve qui compte est recopiée dans le document ; les
+# journaux bruts, eux, portent des chemins absolus propres à un poste.
+*.log

@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -6,9 +6,15 @@
     <base href="/" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" type="image/png" href="favicon.png" />
+    <!-- Bulma servi par un CDN tiers : l'attribut integrity fait refuser le
+         fichier par le navigateur s'il a été modifié côté CDN (SRI).
+         Le hash correspond à bulma 1.0.0, à recalculer si la version change :
+           curl -s <url> | openssl dgst -sha384 -binary | openssl base64 -A -->
     <link
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/bulma@1.0.0/css/bulma.min.css"
+      integrity="sha384-QjOWlMHXqmQPt5FI7WVI2jAt6qXrPsRUbeyiJGuoePVW/vShC7H6R6vGAJUJlI/I"
+      crossorigin="anonymous"
     />
   </head>
   <body>

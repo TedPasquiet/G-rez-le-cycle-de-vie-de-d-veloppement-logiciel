@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# Faux ansible-playbook, utilisé seulement par run_tests.sh.
+#
+# Il existe pour la même raison que le faux k6 : l'image de CI qui exécute les
+# tests n'a pas Ansible. Sans lui, ansible_check.sh s'arrêterait sur son
+# `require_cmd` et aucun de ses cas ne serait couvert, y compris ceux qui ne
+# concernent pas le playbook.
+#
+# ⚠️ Il refuse tout appel qui ne porte ni --syntax-check ni --check, et sort en
+# 64 dans ce cas. Un faux outil qui accepte tout laisserait passer sans bruit
+# le jour où le script exécuterait vraiment le playbook : le test resterait
+# vert alors que le vrai script, lui, modifierait le poste de qui le lance.
+# C'est le seul garde-fou possible ici, puisque le stub ne fait rien.
+#
+# Il note aussi le répertoire courant, pour la même raison que le faux
+# ansible-lint : c'est ce qui prouve le `cd` dans `ansible/`.
+#
+# Deux lignes sont écrites par appel :
+#   ansible-playbook <arguments>
+#   PWD=<répertoire courant au moment de l'appel>
+#
+# Variables qui pilotent son comportement (mises par le test) :
+#   FAKE_ANSIBLE_PLAYBOOK_LOG   Fichier où sont écrits les appels reçus.
+#   FAKE_ANSIBLE_PLAYBOOK_FAIL  Si "1" : le gabarit est refusé (sortie en 4, le
+#                               code que renvoie le vrai ansible-playbook quand
+#                               --syntax-check échoue).
+
+args="$*"
+
+if [[ -n "${FAKE_ANSIBLE_PLAYBOOK_LOG:-}" ]]; then
+  echo "ansible-playbook $args" >>"$FAKE_ANSIBLE_PLAYBOOK_LOG"
+  echo "PWD=$PWD" >>"$FAKE_ANSIBLE_PLAYBOOK_LOG"
+fi
+
+case "$args" in
+  *--syntax-check* | *--check*) ;;
+  *)
+    echo "faux ansible-playbook : appel sans --syntax-check ni --check, refusé" >&2
+    exit 64
+    ;;
+esac
+
+[[ "${FAKE_ANSIBLE_PLAYBOOK_FAIL:-0}" == "1" ]] && exit 4
+exit 0

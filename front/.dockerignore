@@ -1,0 +1,27 @@
+# Contexte de build de l'image front.
+#
+# Le job `package-front` construit avec `--context ./front` : le .dockerignore
+# de la racine ne s'applique donc PAS ici, il faut ce fichier. Sans lui, plus
+# d'un gigaoctet part vers le démon Docker à chaque construction, dont rien
+# n'entre dans l'image.
+#
+# Le Dockerfile fait `COPY . /src` puis `npm ci` et `ng build` : tout ce qui est
+# réinstallé ou régénéré dans l'image n'a aucune raison d'être envoyé.
+
+# Réinstallé par `npm ci`
+node_modules
+
+# Cache de compilation Angular — le plus gros poste à lui seul
+.angular
+
+# Régénérés par `ng build` et `ng test`
+dist
+coverage
+
+# Confort local, sans effet sur la construction
+.vscode
+.editorconfig
+
+# Le Dockerfile n'a pas besoin de se copier lui-même
+Dockerfile
+.dockerignore

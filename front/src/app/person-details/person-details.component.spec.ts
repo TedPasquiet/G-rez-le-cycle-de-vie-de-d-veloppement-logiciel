@@ -29,13 +29,11 @@ describe('PersonDetailsComponent', () => {
           provide: ActivatedRoute,
           useValue: {
             snapshot: {
-              paramMap: convertToParamMap(
-                personId === null ? {} : { personId }
-              )
-            }
-          }
-        }
-      ]
+              paramMap: convertToParamMap(personId === null ? {} : { personId }),
+            },
+          },
+        },
+      ],
     }).compileComponents();
 
     router = TestBed.inject(Router);
@@ -52,12 +50,13 @@ describe('PersonDetailsComponent', () => {
     personService = jasmine.createSpyObj<PersonService>('PersonService', [
       'fetchById',
       'save',
-      'deleteById'
+      'deleteById',
     ]);
-    organizationService = jasmine.createSpyObj<OrganizationService>(
-      'OrganizationService',
-      ['fetchAll', 'addPerson', 'removePerson']
-    );
+    organizationService = jasmine.createSpyObj<OrganizationService>('OrganizationService', [
+      'fetchAll',
+      'addPerson',
+      'removePerson',
+    ]);
 
     personService.fetchById.and.resolveTo(aPerson());
     personService.save.and.resolveTo(aPerson());
@@ -72,13 +71,13 @@ describe('PersonDetailsComponent', () => {
     expect(component).toBeTruthy();
   });
 
-  it("charge la liste des organisations disponibles dès la construction", async () => {
+  it("charge la liste des organisations disponibles dès l'initialisation", async () => {
     organizationService.fetchAll.and.resolveTo([anOrganization()]);
 
     await monterAvecRoute('new');
 
     expect(organizationService.fetchAll).toHaveBeenCalled();
-    expect(component.organizations.length).toBe(1);
+    expect(component.organizations).toHaveSize(1);
   });
 
   describe('mode création (route "new")', () => {
@@ -111,9 +110,7 @@ describe('PersonDetailsComponent', () => {
 
   describe('mode édition (route avec identifiant)', () => {
     it("charge la personne correspondant à l'identifiant de la route", async () => {
-      personService.fetchById.and.resolveTo(
-        aPerson({ id: 42, firstName: 'Jane' })
-      );
+      personService.fetchById.and.resolveTo(aPerson({ id: 42, firstName: 'Jane' }));
 
       await monterAvecRoute('42');
 
@@ -123,9 +120,7 @@ describe('PersonDetailsComponent', () => {
     });
 
     it('affiche le nom de la personne dans le titre', async () => {
-      personService.fetchById.and.resolveTo(
-        aPerson({ firstName: 'Jane', lastName: 'Roe' })
-      );
+      personService.fetchById.and.resolveTo(aPerson({ firstName: 'Jane', lastName: 'Roe' }));
 
       await monterAvecRoute('42');
 
@@ -195,6 +190,20 @@ describe('PersonDetailsComponent', () => {
   });
 
   describe('gestion des organisations rattachées', () => {
+    /**
+     * Rend une promesse dont on choisit le moment de résolution.
+     *
+     * Sans ce contrôle, un espion `resolveTo()` se résout immédiatement et
+     * l'ordre des appels devient indiscernable : le test passe aussi bien que
+     * l'écriture soit attendue ou non. C'est précisément ce qui masquait le
+     * rechargement lancé en parallèle de la requête de rattachement.
+     */
+    const promesseSuspendue = () => {
+      let resoudre!: () => void;
+      const promesse = new Promise<void>((r) => (resoudre = r));
+      return { promesse, resoudre };
+    };
+
     beforeEach(() => {
       personService.fetchById.and.resolveTo(aPerson({ id: 42 }));
     });
@@ -204,11 +213,31 @@ describe('PersonDetailsComponent', () => {
       personService.fetchById.calls.reset();
 
       component.selectedOrganization = anOrganization({ id: 10 });
-      component.addSelectedOrganization();
-      await fixture.whenStable();
+      await component.addSelectedOrganization();
 
       expect(organizationService.addPerson).toHaveBeenCalledWith(10, 42);
       // La fiche est rechargée pour refléter le nouveau rattachement.
+      expect(personService.fetchById).toHaveBeenCalledWith(42);
+    });
+
+    it("ne recharge la fiche qu'une fois le rattachement terminé", async () => {
+      const { promesse, resoudre } = promesseSuspendue();
+      organizationService.addPerson.and.returnValue(promesse);
+
+      await monterAvecRoute('42');
+      personService.fetchById.calls.reset();
+
+      component.selectedOrganization = anOrganization({ id: 10 });
+      const enCours = component.addSelectedOrganization();
+      await Promise.resolve();
+
+      expect(personService.fetchById)
+        .withContext("la fiche ne doit pas être relue pendant l'écriture")
+        .not.toHaveBeenCalled();
+
+      resoudre();
+      await enCours;
+
       expect(personService.fetchById).toHaveBeenCalledWith(42);
     });
 
@@ -216,11 +245,44 @@ describe('PersonDetailsComponent', () => {
       await monterAvecRoute('42');
       personService.fetchById.calls.reset();
 
-      component.removeOrganization(anOrganization({ id: 10 }));
-      await fixture.whenStable();
+      await component.removeOrganization(anOrganization({ id: 10 }));
 
       expect(organizationService.removePerson).toHaveBeenCalledWith(10, 42);
       expect(personService.fetchById).toHaveBeenCalledWith(42);
+    });
+
+    it('ne recharge la fiche que le détachement terminé', async () => {
+      const { promesse, resoudre } = promesseSuspendue();
+      organizationService.removePerson.and.returnValue(promesse);
+
+      await monterAvecRoute('42');
+      personService.fetchById.calls.reset();
+
+      const enCours = component.removeOrganization(anOrganization({ id: 10 }));
+      await Promise.resolve();
+
+      expect(personService.fetchById).not.toHaveBeenCalled();
+
+      resoudre();
+      await enCours;
+
+      expect(personService.fetchById).toHaveBeenCalledWith(42);
+    });
+
+    it('remplace la fiche affichée par la version rechargée', async () => {
+      // Le rechargement doit servir à quelque chose : la personne affichée
+      // après un rattachement est bien celle que le serveur vient de renvoyer,
+      // pas l'ancienne copie locale.
+      await monterAvecRoute('42');
+      personService.fetchById.and.resolveTo(
+        aPerson({ id: 42, organizations: [anOrganization({ id: 10 })] }),
+      );
+
+      component.selectedOrganization = anOrganization({ id: 10 });
+      await component.addSelectedOrganization();
+
+      expect(component.person.organizations).toHaveSize(1);
+      expect(component.isNew).toBeFalse();
     });
   });
 });

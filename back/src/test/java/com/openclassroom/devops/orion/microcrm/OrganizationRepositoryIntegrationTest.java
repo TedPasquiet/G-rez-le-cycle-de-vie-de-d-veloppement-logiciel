@@ -5,7 +5,6 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -16,8 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Tests d'intégration JPA du {@link OrganizationRepository} : persistance de
  * l'entité, cascade et table de jointure du many-to-many organisation ↔ personne.
  */
-@DataJpaTest
-class OrganizationRepositoryIntegrationTest {
+class OrganizationRepositoryIntegrationTest extends AbstractRepositoryIntegrationTest {
 
     @Autowired
     private TestEntityManager entityManager;
@@ -44,7 +42,7 @@ class OrganizationRepositoryIntegrationTest {
     }
 
     @Test
-    @DisplayName("CascadeType.ALL persiste les personnes rattachées à l'organisation")
+    @DisplayName("CascadeType.PERSIST enregistre les personnes rattachées à l'organisation")
     void savingAnOrganizationCascadesToItsPersons() {
         Organization org = new Organization();
         org.setName("Orion Incorporated");
@@ -141,7 +139,7 @@ class OrganizationRepositoryIntegrationTest {
         entityManager.clear();
 
         Organization reloaded = organizationRepository.findById(id).orElseThrow();
-        assertTrue(reloaded.getPersons() == null || reloaded.getPersons().isEmpty());
+        assertTrue(reloaded.getPersons().isEmpty());
         assertEquals(0, personRepository.count());
     }
 

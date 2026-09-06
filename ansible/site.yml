@@ -1,0 +1,40 @@
+---
+# Playbook principal : prépare le poste, puis le cluster.
+#
+# Ce qu'il fait, et surtout ce qu'il ne fait pas. Ansible possède les DEUX
+# couches sous le namespace :
+#
+#   Ansible    le poste (outillage) et le cluster (minikube, addons)
+#   Terraform  le namespace, son quota, ses limites, ses NetworkPolicy
+#   Kustomize  l'application (Deployment, Service, Ingress, ConfigMap)
+#   la CI      le Secret du registry
+#
+# Ansible s'arrête au bord du namespace et ne crée AUCUN objet Kubernetes.
+# C'est la même règle que TERRAFORM.md §3, prolongée d'un cran vers le bas :
+# deux outils qui écrivent le même objet, c'est deux sources de vérité.
+#
+# Enchaînement complet d'un environnement, depuis un poste nu :
+#
+#   1. ansible-playbook site.yml            (ici)
+#   2. terraform apply                      (terraform/environments/<env>)
+#   3. kubectl apply -k k8s/overlays/<env>  (ou la CI)
+#
+# Usage :
+#   cd ansible && ansible-playbook site.yml
+#   cd ansible && ansible-playbook site.yml --check      # sans rien modifier
+#   cd ansible && ansible-playbook site.yml --tags outillage
+
+- name: Préparer le poste et le cluster de développement MicroCRM
+  hosts: all
+  gather_facts: true
+
+  # Aucun `become`. Homebrew refuse de tourner en root, et rien d'autre ici
+  # n'en a besoin : un `become: true` posé par réflexe casserait le rôle
+  # outillage sans message utile.
+  become: false
+
+  roles:
+    - role: outillage
+      tags: [outillage]
+    - role: cluster
+      tags: [cluster]

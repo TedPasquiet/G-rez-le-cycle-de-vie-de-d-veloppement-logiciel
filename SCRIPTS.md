@@ -36,6 +36,7 @@ scripts/
 │   └── rollback.sh          # revient en arrière sur Kubernetes
 └── tests/
     ├── run_tests.sh         # teste tous les scripts ci-dessus
+    ├── validate_k8s.sh      # valide les manifestes k8s/ et le chart helm/ (sans cluster)
     ├── run_k6.sh            # lance les tests de performance k6
     ├── fixtures/            # faux rapports JaCoCo
     └── stubs/               # faux kubectl / docker / trivy / k6
@@ -74,6 +75,64 @@ scripts/ci/build_and_push.sh -c ./back -i "$CI_REGISTRY_IMAGE/back" -t "$CI_COMM
 Utilisé par les jobs `package-back` et `package-front`.
 
 ---
+
+## `ci/terraform_check.sh`
+
+Contrôle les configurations Terraform de `terraform/environments/`. Trois modes,
+qui n'ont ni le même coût ni la même valeur de preuve :
+
+| Mode                  | Ce qu'il fait                                                            | Où il tourne                                      |
+| --------------------- | ------------------------------------------------------------------------ | ------------------------------------------------- |
+| `--validate` (défaut) | `fmt -check`, puis `init -backend=false` et `validate` par environnement | job `terraform-validate`, sur toutes les branches |
+| `--plan`              | `init` puis `plan` par environnement                                     | job `terraform-plan`, manuel                      |
+| `--apply`             | `init` puis `apply -auto-approve`                                        | job `terraform-apply`, manuel sur `main`          |
+
+Les environnements sont **découverts**, jamais listés en dur : un troisième
+environnement ajouté demain est contrôlé sans toucher au script. Tous sont
+traités même après un échec, pour que deux erreurs se lisent en une exécution.
+
+⚠️ **`--apply` exige `-e <environnement>`.** Appliquer en boucle sur tous les
+environnements ferait passer la production dans le même geste que le staging,
+sans que rien ne le distingue à la lecture du pipeline. La confirmation
+interactive qu'on perd avec `-auto-approve` est remplacée par l'obligation
+d'écrire l'environnement visé.
+
+⚠️ **Ce que `--plan` ne prouve pas.** Mesuré : avec un kubeconfig valide pointant
+sur un cluster éteint, `terraform plan` sort en `0` et annonce « 6 to add ». Et
+comme l'état est local et jamais commité ([TERRAFORM.md](TERRAFORM.md) §4), la
+CI repart d'un état vide à chaque exécution. Ce mode contrôle donc que la
+configuration se résout, pas l'écart avec la réalité — le script le redit à
+l'exécution, parce qu'une sortie de job se lit sans le code sous les yeux.
+
+```bash
+scripts/ci/terraform_check.sh                       # validate, hors cluster
+scripts/ci/terraform_check.sh --plan
+scripts/ci/terraform_check.sh --apply -e production
+```
+
+Le détail des ressources est dans [TERRAFORM.md](TERRAFORM.md).
+
+## `ci/ansible_check.sh`
+
+Contrôle le projet Ansible : `--syntax-check` du playbook, puis `ansible-lint`.
+Utilisé par le job `ansible-lint`.
+
+**Sa raison d'être tient dans un `cd`.** `ansible/ansible.cfg` n'est lu que si le
+répertoire courant est `ansible/` : un `ansible-lint ansible/` lancé depuis la
+racine du dépôt l'ignore en silence, tourne sans inventaire et sans la
+configuration du projet — et sort en `0`. Le script entre donc dans le
+répertoire avant d'agir, et c'est ce que les stubs vérifient en journalisant
+leur répertoire courant.
+
+Comme pour Terraform, les échecs sont cumulés : une erreur de syntaxe n'escamote
+pas le lint.
+
+```bash
+scripts/ci/ansible_check.sh
+scripts/ci/ansible_check.sh --collections   # installe d'abord les collections figées
+```
+
+Le périmètre des rôles est dans [ANSIBLE.md](ANSIBLE.md).
 
 ## `ci/quality_gate.py`
 
@@ -177,6 +236,94 @@ Le détail des scénarios et des seuils est dans [QUALITY.md](QUALITY.md) §5.
 
 ---
 
+## `tests/validate_k8s.sh`
+
+Il valide les manifestes Kubernetes du dossier `k8s/` **sans cluster** : il
+construit chaque overlay avec le Kustomize embarqué dans `kubectl`, puis vérifie
+le rendu. C'est le pendant de `run_tests.sh` pour l'infrastructure — au lieu de
+tester les scripts, il teste ce que Kustomize produit réellement. Quand `helm`
+est disponible, il en fait autant du chart `helm/microcrm/` et compare les deux
+rendus.
+
+Ce qu'il vérifie :
+
+- chaque overlay (`staging`, `production`) se construit ;
+- les Deployments s'appellent `$APP_BACK_NAME` / `$APP_FRONT_NAME` **et portent
+  un conteneur du même nom** — c'est le contrat de `deploy.sh`, qui exécute
+  `kubectl set image deployment/back back=…`. Un `namePrefix:` casse le premier,
+  un renommage de conteneur casse le second, et aucun des deux ne fait échouer
+  `kubectl apply` ;
+- toute ConfigMap référencée par un Deployment existe dans le rendu (une
+  référence morte n'échoue pas à l'`apply` : elle bloque le pod au démarrage) ;
+- les sondes visent un port réellement déclaré par leur conteneur ;
+- chaque conteneur porte `runAsNonRoot: true` et
+  `allowPrivilegeEscalation: false` — contrôlés **au niveau conteneur**, parce
+  qu'une valeur posée là écrase celle du pod ;
+- aucune image en `latest` ni sans tag ;
+- chaque Deployment référence le Secret de tirage d'images attendu
+  (`$REGISTRY_SECRET_NAME`) : le registry est privé, et un nom qui diverge de
+  celui que crée la CI laisse tous les pods en `ImagePullBackOff` sans que
+  `kubectl apply` ne signale quoi que ce soit ;
+- aucun hôte d'Ingress en `.invalid` ne subsiste dans le rendu d'un overlay : la
+  base n'en porte que de non résolvables, donc un `.invalid` qui survit signale
+  un patch d'Ingress oublié (voir K8S.md §7) ;
+- staging et production produisent des valeurs différentes (ConfigMap, hôte
+  d'Ingress, ressources du back) : c'est la preuve que les patches d'overlay
+  mordent au lieu d'être silencieux ;
+- **le chart Helm passe exactement les mêmes contrôles** (`helm template … -f
+values-<env>.yaml`, étiquetés `helm/staging` et `helm/production`) ;
+- **et surtout : son rendu est identique à celui de l'overlay correspondant**,
+  au seul label `app.kubernetes.io/managed-by` près (`kustomize` d'un côté,
+  `helm` de l'autre). Deux descriptions de la même application, c'est deux
+  occasions de diverger ; c'est cette assertion-là qui rend la divergence
+  visible ici plutôt qu'au déploiement. En cas d'écart, le script affiche les
+  premières lignes divergentes, côté par côté, sous la forme de faits
+  (`Kustomize seul : Deployment/back …limits.memory = 1Gi`) : on voit quel champ
+  a bougé sans relancer d'outil.
+
+**Quand `helm` est absent** — c'est le cas du job `lint-k8s`, dont l'image
+`$KUBECTL_IMAGE` ne le fournit pas — la section Helm n'est ni réussie ni en
+échec : elle est marquée `ignoré`, avec sa raison, et le bilan compte les
+sections ignorées à part. La compter en succès serait un mensonge, la compter en
+échec rendrait `lint-k8s` rouge sans raison. Un `0 en échec` accompagné d'un
+`⚠️ N section(s) ignorée(s)` dit exactement ce qui a été vérifié.
+
+L'option `--autotest` rejoue toutes ces assertions sur des rendus volontairement
+abîmés (Deployment renommé, conteneur renommé, ConfigMap fantôme, sonde sur un
+port inconnu, `runAsNonRoot` retiré, image en `latest`, pull secret absent ou
+mal nommé…) et vérifie qu'elles
+**échouent** bien. Une assertion qui ne se déclenche jamais ne prouve rien.
+L'assertion d'équivalence est auto-testée **dans les deux sens** : elle doit
+tomber sur une divergence réelle, et rester silencieuse sur la seule différence
+légitime, celle de `managed-by` — une comparaison rouge en permanence finit
+désactivée, donc ne protège plus rien.
+
+Variables (avec leurs valeurs par défaut) : `K8S_OVERLAYS_DIR` (`k8s/overlays`),
+`HELM_CHART_DIR` (`helm/microcrm`), `APP_BACK_NAME` (`back`),
+`APP_FRONT_NAME` (`front`), `REGISTRY_SECRET_NAME` (`gitlab-registry`) — les
+mêmes que celles du `.gitlab-ci.yml`, pour que le contrat vérifié soit celui que
+la CI déclare.
+Il renvoie : `0` si tout passe, `1` si au moins une assertion échoue. Une
+section ignorée ne change pas le code de sortie.
+
+Il est écrit en **sh POSIX** et non en bash, contrairement aux autres scripts :
+l'image `alpine/kubectl` n'a que busybox `sh`. Les jobs de déploiement y
+installent bash (`apk add`) parce que `deploy.sh` en a réellement besoin, mais
+un job de lint n'a aucune raison de dépendre d'un miroir Alpine pour tourner.
+
+```bash
+scripts/tests/validate_k8s.sh              # les assertions seules
+scripts/tests/validate_k8s.sh --autotest   # + preuve qu'elles se déclenchent
+```
+
+Utilisé par **deux** jobs : `lint-k8s` (image `$KUBECTL_IMAGE`, sans helm, donc
+section Helm ignorée) et `lint-helm` (image `$HELM_IMAGE`, qui a helm _et_
+kubectl, donc tout est joué). Le recouvrement est assumé : chaque job reste
+autonome. Le détail des manifestes est dans [K8S.md](K8S.md), celui du chart
+dans [HELM.md](HELM.md).
+
+---
+
 ## Les tests
 
 C'est le point de vigilance « tester chaque script dans un environnement
@@ -204,12 +351,18 @@ dont un XML cassé et un rapport vide pour vérifier les cas d'erreur. Et pour
 `run_k6.sh`, le faux `k6` permet de rejouer les cas qu'on ne peut pas provoquer
 à la demande avec un vrai serveur : seuils dépassés, API injoignable.
 
-Aujourd'hui : **95 tests**, tout passe.
+Aujourd'hui : **151 tests**, tout passe. Le compte a suivi les lots successifs — 95 avant l'intégration de Terraform et d'Ansible au pipeline, 135 après, 151 depuis le collecteur DORA.
 
 ```bash
 # Lancer toute la suite (rien n'est construit ni déployé)
 scripts/tests/run_tests.sh
 ```
+
+Les manifestes Kubernetes ont leur propre suite, `validate_k8s.sh` : elle a
+besoin de `kubectl`, que l'image `$PYTHON_IMAGE` de `test-scripts` ne fournit
+pas. **60 assertions** dans le job `lint-k8s` (dont 10 d'auto-test, la section
+Helm y étant ignorée faute de `helm`), **108** dans `lint-helm`, qui joue en plus
+les contrôles du chart, l'équivalence des deux rendus et ses 2 auto-tests.
 
 Chaque test affiche `ok` ou `ÉCHEC` avec la raison, et le script sort en 1 si au
 moins un test rate.

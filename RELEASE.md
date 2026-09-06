@@ -144,3 +144,109 @@ seul dès que l'étape `package` réussit sur `develop`.
 - Un déploiement progressif (blue/green ou canary) pour limiter les risques.
 - La génération automatique du changelog à partir des messages de commit.
 - Une notification (Slack ou mail) quand un déploiement échoue.
+
+## 9. Sauvegarde et restauration
+
+### 9.1 Il n'y a rien à sauvegarder, et ce n'est pas un oubli
+
+**La base de MicroCRM vit dans la mémoire du processus.** HSQLDB est démarrée en
+mode `mem:` et alimentée à chaque démarrage par `InitialDataFixture`
+([DATABASE.md](DATABASE.md)). Il n'existe ni fichier, ni volume, ni instantané :
+un pod qui redémarre repart d'une base vide, aussitôt regarnie des mêmes données
+de démonstration.
+
+Autrement dit, **une procédure de sauvegarde n'aurait rien à copier**. Écrire un
+`CronJob` de `pg_dump` sur cette application ne serait pas une sécurité, ce
+serait un décor — et c'est le genre de décor qu'un jury repère.
+
+C'est aussi ce qui impose au back de rester à **1 replica** : deux pods
+tiendraient deux bases distinctes, et une requête sur deux ne verrait pas ce que
+l'autre a écrit, sans qu'aucune erreur ne soit levée (K8S.md §8.1).
+
+### 9.2 Ce qu'il faudrait pour qu'il y ait quelque chose à sauvegarder
+
+La bascule vers une base persistante est un chantier délimité, et il vaut mieux
+le chiffrer que le laisser en intention vague :
+
+| Étape                            | Effort | Ce qui change                                                                                                                                             |
+| -------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Remplacer HSQLDB par PostgreSQL  | S      | une dépendance, une URL JDBC, un dialecte Hibernate                                                                                                       |
+| Déployer la base                 | M      | `StatefulSet` + `PersistentVolumeClaim` + `Service`, ou une base managée                                                                                  |
+| Sortir les identifiants du dépôt | S      | un `Secret`, créé comme celui du registry (K8S.md §12)                                                                                                    |
+| Gérer le schéma                  | M      | Hibernate génère aujourd'hui les tables au démarrage ; en persistant, il faut Flyway ou Liquibase, sans quoi la première évolution d'entité casse la base |
+| Lever le plafond de replicas     | S      | le back peut enfin monter en charge                                                                                                                       |
+| Recalculer les quotas            | S      | un pod de plus à financer dans `terraform/environments/*/terraform.tfvars`                                                                                |
+
+**Le point le moins évident est le quatrième.** Tant que la base est jetable,
+`hibernate.ddl-auto` peut la recréer à chaque démarrage. Dès qu'elle persiste,
+cette commodité devient un danger : c'est le moment où un outil de migration
+cesse d'être un luxe.
+
+### 9.3 La procédure qui s'appliquerait alors
+
+Elle n'est pas mise en œuvre — la base ne persiste pas — mais elle doit être
+écrite, sans quoi la bascule du §9.2 s'accompagnerait d'improvisation :
+
+```shell
+# Sauvegarde : un CronJob quotidien dans le namespace de l'application
+kubectl -n "$NAMESPACE" exec deploy/postgres -- \
+  pg_dump -U microcrm -Fc microcrm > microcrm-$(date +%F).dump
+
+# Restauration
+kubectl -n "$NAMESPACE" exec -i deploy/postgres -- \
+  pg_restore -U microcrm -d microcrm --clean < microcrm-2026-08-18.dump
+```
+
+Trois règles vaudraient dès le premier jour : la sauvegarde part **hors du
+cluster** (un instantané qui vit sur le volume qu'il sauvegarde ne sauvegarde
+rien) ; elle est **chiffrée**, puisqu'elle contient des données personnelles ;
+et **elle est restaurée périodiquement**, faute de quoi personne ne sait si elle
+fonctionne. Une sauvegarde jamais restaurée n'est pas une sauvegarde, c'est une
+croyance.
+
+### 9.4 La vraie garantie : reconstruire l'environnement depuis le dépôt
+
+C'est ici que se joue l'intérêt de tout le travail d'infrastructure. Les
+données de MicroCRM sont jetables, mais **l'environnement, lui, se reconstruit
+intégralement à partir du seul dépôt** — et cela, c'est vérifiable.
+
+La procédure, dans l'ordre imposé par la frontière des responsabilités
+([TERRAFORM.md](TERRAFORM.md) §3) :
+
+```shell
+# 0. Détruire l'environnement — c'est le point de départ de l'exercice
+kubectl delete namespace "$NAMESPACE"
+
+# 1. Le poste et le cluster (Ansible)
+cd ansible && ansible-playbook site.yml
+
+# 2. Le namespace, son quota, ses limites, ses policies (Terraform)
+cd terraform/environments/staging && terraform apply
+
+# 3. L'application (Kustomize)
+kubectl apply -k k8s/overlays/staging -n "$NAMESPACE"
+kubectl -n "$NAMESPACE" rollout status deployment/back  --timeout=300s
+kubectl -n "$NAMESPACE" rollout status deployment/front --timeout=300s
+
+# 4. Vérifier que l'API répond et que les données de démonstration sont là
+kubectl -n "$NAMESPACE" port-forward svc/back 18081:8080 &
+curl -s http://127.0.0.1:18081/persons | head -c 200
+```
+
+⚠️ **Cette procédure n'a PAS encore été exécutée de bout en bout.** Chacune de
+ses étapes l'a été séparément — le playbook Ansible est idempotent et rejoué
+(ANSIBLE.md §7), l'application a été déployée et son rollback observé
+(K8S.md §14), Terraform a créé et peuplé le namespace `logging` (MONITORING.md
+§6) — mais l'enchaînement complet, à partir d'une destruction réelle, reste à
+jouer. Tant qu'il ne l'a pas été, la reconstruction est une conviction
+raisonnable, pas une preuve.
+
+Deux points de vigilance connus pour le jour où elle sera jouée :
+
+- **Le namespace doit être absent**, sinon `terraform apply` s'arrête sur
+  `already exists` et demande un `terraform import` préalable (TERRAFORM.md
+  §10.1). Après un `kubectl delete namespace`, il l'est.
+- **Les images doivent être disponibles pour le cluster.** En local elles y sont
+  chargées par `minikube image load` (K8S.md §14.1) ; depuis la CI elles
+  viennent du registry, et le `Secret` qui l'ouvre est recréé par le job de
+  déploiement.

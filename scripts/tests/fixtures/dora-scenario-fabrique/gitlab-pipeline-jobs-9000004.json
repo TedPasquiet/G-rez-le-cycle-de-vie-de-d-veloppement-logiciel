@@ -1,0 +1,68 @@
+[
+  {
+    "id": 910004,
+    "status": "success",
+    "stage": "deploy",
+    "name": "deploy-production",
+    "ref": "main",
+    "tag": false,
+    "coverage": null,
+    "allow_failure": false,
+    "created_at": "2026-06-10T09:05:00.000Z",
+    "started_at": "2026-06-10T09:55:00.000Z",
+    "finished_at": "2026-06-10T10:00:00.000Z",
+    "duration": 60.0,
+    "queued_duration": 1.0,
+    "failure_reason": null,
+    "commit": {
+      "id": "dddddddddddddddddddddddddddddddddddddddd",
+      "short_id": "dddddddd",
+      "title": "fixture fabriquee",
+      "committed_date": "2026-06-09T10:00:00.000Z",
+      "created_at": "2026-06-09T10:00:00.000Z",
+      "author_name": "fixture",
+      "author_email": "fixture@example.invalid"
+    },
+    "pipeline": {
+      "id": 9000004,
+      "project_id": 99999999,
+      "sha": "dddddddddddddddddddddddddddddddddddddddd",
+      "ref": "main",
+      "status": "success"
+    },
+    "web_url": "https://example.invalid/-/jobs/910004"
+  },
+  {
+    "id": 910005,
+    "status": "success",
+    "stage": "deploy",
+    "name": "rollback-production",
+    "ref": "main",
+    "tag": false,
+    "coverage": null,
+    "allow_failure": false,
+    "created_at": "2026-06-10T10:50:00.000Z",
+    "started_at": "2026-06-10T10:55:00.000Z",
+    "finished_at": "2026-06-10T11:00:00.000Z",
+    "duration": 60.0,
+    "queued_duration": 1.0,
+    "failure_reason": null,
+    "commit": {
+      "id": "dddddddddddddddddddddddddddddddddddddddd",
+      "short_id": "dddddddd",
+      "title": "fixture fabriquee",
+      "committed_date": "2026-06-09T10:00:00.000Z",
+      "created_at": "2026-06-09T10:00:00.000Z",
+      "author_name": "fixture",
+      "author_email": "fixture@example.invalid"
+    },
+    "pipeline": {
+      "id": 9000004,
+      "project_id": 99999999,
+      "sha": "dddddddddddddddddddddddddddddddddddddddd",
+      "ref": "main",
+      "status": "success"
+    },
+    "web_url": "https://example.invalid/-/jobs/910005"
+  }
+]

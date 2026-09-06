@@ -1,11 +1,9 @@
 import { TestBed } from '@angular/core/testing';
-import {
-  HttpClientTestingModule,
-  HttpTestingController,
-} from '@angular/common/http/testing';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { HttpErrorResponse, provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
 
 import { PersonService } from './person.service';
-import { API_BASE_URL } from './config';
+import { apiBaseUrl } from './config';
 import { aPerson, anOrganization, embedded, tick } from './test-helpers';
 
 describe('PersonService', () => {
@@ -14,7 +12,8 @@ describe('PersonService', () => {
 
   beforeEach(() => {
     TestBed.configureTestingModule({
-      imports: [HttpClientTestingModule]
+      imports: [],
+      providers: [provideHttpClient(withInterceptorsFromDi()), provideHttpClientTesting()],
     });
     service = TestBed.inject(PersonService);
     httpMock = TestBed.inject(HttpTestingController);
@@ -34,12 +33,12 @@ describe('PersonService', () => {
       const promise = service.fetchAll();
 
       await tick();
-      const req = httpMock.expectOne(`${API_BASE_URL}/persons`);
+      const req = httpMock.expectOne(`${apiBaseUrl()}/persons`);
       expect(req.request.method).toBe('GET');
       req.flush(embedded('persons', [aPerson(), aPerson({ id: 2 })]));
 
       const persons = await promise;
-      expect(persons.length).toBe(2);
+      expect(persons).toHaveSize(2);
       expect(persons[0].firstName).toBe('John');
     });
 
@@ -47,22 +46,30 @@ describe('PersonService', () => {
       const promise = service.fetchAll();
 
       await tick();
-      httpMock
-        .expectOne(`${API_BASE_URL}/persons`)
-        .flush(embedded('persons', []));
+      httpMock.expectOne(`${apiBaseUrl()}/persons`).flush(embedded('persons', []));
 
       expect(await promise).toEqual([]);
     });
 
-    it('rejette la promesse si le serveur répond en erreur', async () => {
+    it('rejette la promesse en propageant le statut HTTP du serveur', async () => {
       const promise = service.fetchAll();
 
       await tick();
       httpMock
-        .expectOne(`${API_BASE_URL}/persons`)
+        .expectOne(`${apiBaseUrl()}/persons`)
         .flush('boom', { status: 500, statusText: 'Server Error' });
 
-      await expectAsync(promise).toBeRejected();
+      // On capture l'erreur au lieu de se contenter d'un rejet : le service ne
+      // transforme pas l'erreur HTTP, l'appelant doit donc recevoir le statut.
+      let caught: HttpErrorResponse | undefined;
+      try {
+        await promise;
+      } catch (error) {
+        caught = error as HttpErrorResponse;
+      }
+
+      expect(caught).toBeInstanceOf(HttpErrorResponse);
+      expect(caught?.status).toBe(500);
     });
   });
 
@@ -71,19 +78,17 @@ describe('PersonService', () => {
       const promise = service.fetchById(1);
 
       await tick();
-      const personReq = httpMock.expectOne(`${API_BASE_URL}/persons/1`);
+      const personReq = httpMock.expectOne(`${apiBaseUrl()}/persons/1`);
       expect(personReq.request.method).toBe('GET');
       personReq.flush(aPerson());
 
       await tick();
-      const orgsReq = httpMock.expectOne(
-        `${API_BASE_URL}/persons/1/organizations`
-      );
+      const orgsReq = httpMock.expectOne(`${apiBaseUrl()}/persons/1/organizations`);
       orgsReq.flush(embedded('organizations', [anOrganization()]));
 
       const person = await promise;
       expect(person.id).toBe(1);
-      expect(person.organizations.length).toBe(1);
+      expect(person.organizations).toHaveSize(1);
       expect(person.organizations[0].name).toBe('Orion Inc.');
     });
   });
@@ -93,7 +98,7 @@ describe('PersonService', () => {
       const promise = service.fetchPersonOrganizations(42);
 
       await tick();
-      const req = httpMock.expectOne(`${API_BASE_URL}/persons/42/organizations`);
+      const req = httpMock.expectOne(`${apiBaseUrl()}/persons/42/organizations`);
       expect(req.request.method).toBe('GET');
       req.flush(embedded('organizations', [anOrganization({ id: 99 })]));
 
@@ -107,7 +112,7 @@ describe('PersonService', () => {
       const promise = service.deleteById(7);
 
       await tick();
-      const req = httpMock.expectOne(`${API_BASE_URL}/persons/7`);
+      const req = httpMock.expectOne(`${apiBaseUrl()}/persons/7`);
       expect(req.request.method).toBe('DELETE');
       req.flush(null);
 
@@ -120,7 +125,7 @@ describe('PersonService', () => {
       const promise = service.save(aPerson({ id: undefined }));
 
       await tick();
-      const req = httpMock.expectOne(`${API_BASE_URL}/persons`);
+      const req = httpMock.expectOne(`${apiBaseUrl()}/persons`);
       expect(req.request.method).toBe('POST');
       // Seuls les champs modifiables sont envoyés : ni id, ni horodatages.
       expect(req.request.body).toEqual({
@@ -128,13 +133,13 @@ describe('PersonService', () => {
         lastName: 'Doe',
         bio: 'Bio de John',
         phone: '+33600000000',
-        email: 'jdoe@example.com'
+        email: 'jdoe@example.com',
       });
       req.flush(aPerson({ id: 123 }));
 
       await tick();
       httpMock
-        .expectOne(`${API_BASE_URL}/persons/123/organizations`)
+        .expectOne(`${apiBaseUrl()}/persons/123/organizations`)
         .flush(embedded('organizations', []));
 
       const saved = await promise;
@@ -142,23 +147,23 @@ describe('PersonService', () => {
       expect(saved.organizations).toEqual([]);
     });
 
-    it("met à jour la personne en PUT quand elle a déjà un identifiant", async () => {
+    it('met à jour la personne en PUT quand elle a déjà un identifiant', async () => {
       const promise = service.save(aPerson({ id: 5, firstName: 'Jane' }));
 
       await tick();
-      const req = httpMock.expectOne(`${API_BASE_URL}/persons/5`);
+      const req = httpMock.expectOne(`${apiBaseUrl()}/persons/5`);
       expect(req.request.method).toBe('PUT');
       expect(req.request.body.firstName).toBe('Jane');
       req.flush(aPerson({ id: 5, firstName: 'Jane' }));
 
       await tick();
       httpMock
-        .expectOne(`${API_BASE_URL}/persons/5/organizations`)
+        .expectOne(`${apiBaseUrl()}/persons/5/organizations`)
         .flush(embedded('organizations', [anOrganization()]));
 
       const saved = await promise;
       expect(saved.firstName).toBe('Jane');
-      expect(saved.organizations.length).toBe(1);
+      expect(saved.organizations).toHaveSize(1);
     });
   });
 });

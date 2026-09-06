@@ -1,13 +1,30 @@
+# Stack applicative locale.
+#
+# Les noms d'images et les ports publiés ont des valeurs par défaut utilisables
+# telles quelles. Pour en changer sans toucher à ce fichier, créer un `.env` à
+# côté (voir .env.example) — Docker Compose le lit automatiquement.
 services:
   back:
-    build: 
+    build:
       context: ./back
-    image: back-p6
+    image: ${BACK_IMAGE:-back-p6}
     ports:
-      - "8080:8080"
+      - '${BACK_PORT:-8080}:8080'
+    environment:
+      # Origines autorisées à appeler l'API. Doit inclure l'URL du front.
+      MICROCRM_CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:4200}
   front:
-    build: 
+    build:
       context: ./front
-    image: front-p6
+    image: ${FRONT_IMAGE:-front-p6}
     ports:
-      - "4200:80"
+      - '${FRONT_PORT:-4200}:80'
+    environment:
+      # URL de l'API telle que le NAVIGATEUR doit l'appeler — donc une adresse
+      # de la machine hôte, pas le nom de service `back` du réseau Compose, qui
+      # ne serait pas résoluble depuis le navigateur.
+      #
+      # Elle est lue au démarrage du conteneur par Caddy, qui la sert sur
+      # /config.json ; le bundle Angular la charge avant de démarrer. C'est ce
+      # qui permet d'utiliser la même image qu'en staging et en production.
+      FRONT_API_BASE_URL: ${FRONT_API_BASE_URL:-http://localhost:${BACK_PORT:-8080}}

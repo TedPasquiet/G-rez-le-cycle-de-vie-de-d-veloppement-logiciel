@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+#
+# Faux terraform, utilisé seulement par run_tests.sh.
+#
+# Même principe que le faux kubectl : il note ce qu'on lui demande dans un
+# fichier et renvoie le code de sortie réclamé, sans jamais lire un fichier
+# .tf, télécharger un provider ni contacter un cluster. C'est ce qui permet de
+# tester scripts/ci/terraform_check.sh de bout en bout — y compris ses chemins
+# d'échec — dans une image qui n'a pas le binaire terraform, et sans minikube.
+#
+# Les variables d'échec portent un CODE DE SORTIE, pas un booléen, et c'est
+# volontaire : `terraform fmt -check` sort en 3 quand un fichier est mal
+# formaté, pas en 1. Un stub qui ne saurait produire que 1 laisserait passer un
+# script qui teste `= 1` au lieu de `!= 0`, c'est-à-dire exactement le défaut
+# qu'on cherche à empêcher. Toute valeur non nulle est donc reprise telle
+# quelle comme code de sortie ; « 1 » reste le cas courant.
+#
+# Variables qui pilotent son comportement (mises par le test) :
+#   FAKE_TERRAFORM_LOG    Fichier où sont écrites les commandes reçues.
+#   FAKE_TF_FMT_FAIL      Non nul : `fmt` sort avec ce code (ex. 3, le vrai).
+#   FAKE_TF_INIT_FAIL     Non nul : `init` sort avec ce code.
+#   FAKE_TF_VALIDATE_FAIL Non nul : `validate` sort avec ce code.
+#   FAKE_TF_PLAN_FAIL     Non nul : `plan` sort avec ce code.
+#   FAKE_TF_APPLY_FAIL    Non nul : `apply` sort avec ce code. C'est le seul
+#                         mode qui écrit réellement dans un cluster, donc celui
+#                         dont le chemin d'échec mérite le plus d'être éprouvé.
+#   FAKE_TF_FAIL_DIR      Si renseignée, les échecs ci-dessus ne s'appliquent
+#                         qu'aux appels dont le `-chdir=` contient cette
+#                         chaîne. C'est ce qui permet de vérifier qu'un
+#                         environnement en échec n'empêche pas le suivant
+#                         d'être traité, et que le bilan sort quand même en 1.
+
+args="$*"
+
+if [[ -n "${FAKE_TERRAFORM_LOG:-}" ]]; then
+  echo "terraform $args" >>"$FAKE_TERRAFORM_LOG"
+fi
+
+# Les options globales (-chdir=…, -help, -version) précèdent la sous-commande :
+# on les traverse pour retrouver le verbe réel, sinon `-chdir=…` serait pris
+# pour la sous-commande et aucun échec ne se déclencherait jamais.
+chdir=''
+sous_commande=''
+for arg in "$@"; do
+  case "$arg" in
+    -chdir=*) chdir="${arg#-chdir=}" ;;
+    -*) ;;
+    *) sous_commande="$arg"; break ;;
+  esac
+done
+
+# Un échec ciblé sur un répertoire ne concerne pas les autres environnements.
+concerne=1
+if [[ -n "${FAKE_TF_FAIL_DIR:-}" && "$chdir" != *"${FAKE_TF_FAIL_DIR}"* ]]; then
+  concerne=0
+fi
+
+# sortie_si_demande <valeur de la variable>
+# Sort avec le code demandé quand il est non nul et que l'appel est concerné.
+sortie_si_demande() {
+  local code="${1:-0}"
+  [[ "$concerne" -eq 1 ]] || return 0
+  [[ "$code" =~ ^[0-9]+$ ]] || return 0
+  [[ "$code" -ne 0 ]] || return 0
+  exit "$code"
+}
+
+case "$sous_commande" in
+  fmt)
+    sortie_si_demande "${FAKE_TF_FMT_FAIL:-0}"
+    ;;
+  init)
+    sortie_si_demande "${FAKE_TF_INIT_FAIL:-0}"
+    ;;
+  validate)
+    sortie_si_demande "${FAKE_TF_VALIDATE_FAIL:-0}"
+    ;;
+  plan)
+    # Ligne recopiée de la vraie sortie observée sur staging. Elle sert de
+    # rappel : ce « 6 to add » est produit ici par un stub qui n'a rien lu, et
+    # le vrai terraform l'affiche aussi bien face à un cluster éteint. Un test
+    # qui s'en contenterait ne prouverait rien de plus que ce faux binaire.
+    echo 'Plan: 6 to add, 0 to change, 0 to destroy.'
+    sortie_si_demande "${FAKE_TF_PLAN_FAIL:-0}"
+    ;;
+  apply)
+    sortie_si_demande "${FAKE_TF_APPLY_FAIL:-0}"
+    ;;
+esac
+
+exit 0

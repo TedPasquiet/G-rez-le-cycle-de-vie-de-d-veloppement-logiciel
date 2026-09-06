@@ -1,0 +1,47 @@
+---
+# Valeurs par défaut du rôle `outillage`.
+#
+# La frontière avec group_vars/all.yml n'est pas arbitraire : ce fichier ne
+# porte QUE ce dont le rôle a besoin pour faire son travail sur un poste macOS
+# (où trouver `brew`, comment interroger un outil sur sa version). La CIBLE du
+# projet — quelles formules, quelles versions minimales — reste dans
+# group_vars/all.yml, parce qu'elle se relit et se discute sans ouvrir le rôle.
+
+# Interrupteur d'installation. À `false`, le rôle vérifie tout et n'installe
+# rien : c'est le mode pour auditer un poste avant d'y toucher, ou pour tourner
+# sur une machine qu'on n'a pas le droit de modifier.
+#
+# Les VÉRIFICATIONS, elles, ne sont volontairement pas désactivables : un rôle
+# qui n'installe plus rien et ne vérifie plus rien se termine en succès sur un
+# poste vide, ce qui est le pire des deux mondes.
+outillage_installer: true
+
+# Préfixe Homebrew. /opt/homebrew sur Apple Silicon, /usr/local sur Intel. La
+# valeur sert à deux choses : indiquer au module où chercher `brew`, et placer
+# son `bin` en tête du PATH des relevés de version.
+outillage_prefixe_homebrew: /opt/homebrew
+
+# ⚠️ Chaque outil annonce sa version dans sa propre syntaxe, et il n'existe
+# aucune option commune aux cinq. Deux cas justifient à eux seuls cette table :
+#
+#   - `kubectl version` SANS `--client` interroge l'API du cluster : hors
+#     cluster, la commande attend son délai d'expiration puis échoue. La
+#     vérification d'outillage échouerait alors pour une raison qui n'a rien à
+#     voir avec l'outillage ;
+#   - `helm version` sans `--short` renvoie une structure Go qui contient aussi
+#     la version du compilateur, donc deux numéros là où on en cherche un.
+#
+# Les commandes absentes de cette table retombent sur `--version`.
+outillage_options_version:
+  kubectl: version --client
+  helm: version --short
+  terraform: version
+  minikube: version
+outillage_options_version_defaut: --version
+
+# Motif de lecture d'un numéro de version, appliqué à la PREMIÈRE ligne de
+# sortie et jamais à la sortie entière : `minikube version` fait suivre d'un
+# hash de commit, et `ansible-lint --version` des versions d'ansible-core et de
+# ses dépendances. Un motif lâché sur tout le texte relèverait la version de la
+# mauvaise chose, sans rien signaler.
+outillage_motif_version: '[0-9]+\.[0-9]+(\.[0-9]+)?'

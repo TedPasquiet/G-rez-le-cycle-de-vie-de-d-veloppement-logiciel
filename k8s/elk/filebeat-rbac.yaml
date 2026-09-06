@@ -1,0 +1,103 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: filebeat
+  labels:
+    app.kubernetes.io/name: filebeat
+    app.kubernetes.io/component: logging
+# Filebeat est le SEUL composant de ce lot à qui l'on monte un jeton : son
+# autodiscover interroge l'API pour savoir quels pods tournent sur son nœud et
+# dans quel namespace. Elasticsearch et Kibana n'en ont pas besoin et n'en ont
+# donc pas.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: filebeat
+  labels:
+    app.kubernetes.io/name: filebeat
+    app.kubernetes.io/component: logging
+# Pourquoi un ClusterRole et pas un Role, alors qu'on ne collecte QU'UN
+# namespace : `nodes` est une ressource cluster-scoped, et le provider
+# autodiscover en a besoin pour ne surveiller que les pods de son propre nœud
+# (`node: ${NODE_NAME}`). Un Role, par construction, ne peut pas porter de droit
+# sur une ressource cluster-scoped. La restriction au namespace de MicroCRM est
+# donc appliquée par la CONFIGURATION de Filebeat (voir filebeat-config.yaml) et
+# non par RBAC — c'est une limite à connaître : ces droits permettraient de lire
+# les métadonnées des pods des autres projets, même si Filebeat ne le fait pas.
+#
+# Ce qu'ils ne permettent PAS, en revanche, et c'est l'essentiel : aucun verbe
+# d'écriture, et aucun accès aux `secrets` ni aux `configmaps`. Les métadonnées
+# de pods ne contiennent pas de données applicatives.
+rules:
+  - apiGroups: ['']
+    # pods : la source des métadonnées d'enrichissement (nom, labels,
+    # conteneur). namespaces et nodes : lus par le provider pour résoudre les
+    # labels du namespace et se restreindre à son nœud.
+    resources:
+      - pods
+      - namespaces
+      - nodes
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups: ['apps']
+    # Sans ces deux-là, `kubernetes.deployment.name` est absent des documents :
+    # Filebeat remonte du pod au ReplicaSet puis au Deployment pour l'obtenir.
+    # Un log étiqueté `back-fb5c8fcd9-phsv4` et rien d'autre est difficilement
+    # exploitable — le nom du pod change à chaque déploiement.
+    resources:
+      - replicasets
+      - daemonsets
+      - deployments
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups: ['batch']
+    # Même logique que ci-dessus pour les pods créés par un Job. Aucun Job dans
+    # MicroCRM aujourd'hui, mais son absence se manifeste par un avertissement
+    # répété au démarrage de chaque Filebeat, pas par une erreur claire.
+    resources:
+      - jobs
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: filebeat
+  labels:
+    app.kubernetes.io/name: filebeat
+    app.kubernetes.io/component: logging
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: filebeat
+subjects:
+  - kind: ServiceAccount
+    name: filebeat
+    # ⚠️ Seul endroit de ce lot où un namespace est écrit en dur, et c'est
+    # inévitable — pas un oubli.
+    #
+    # Un ClusterRoleBinding est cluster-scoped : il n'a pas de namespace propre,
+    # et le `-n logging` de la ligne de commande ne s'applique qu'aux ressources
+    # namespacées. Ce champ-ci n'est pas le namespace de l'objet, c'est une
+    # RÉFÉRENCE à un ServiceAccount, et une référence doit désigner sa cible sans
+    # ambiguïté : l'API rejette l'objet si elle est vide
+    # (« subjects[0].namespace: Required value »).
+    #
+    # Les deux autres façons de le remplir sont pires : `namespace:` dans le
+    # kustomization.yaml figerait le namespace pour TOUTES les ressources et
+    # romprait la règle de K8S.md §4 ; un `replacements` de Kustomize tirant la
+    # valeur d'une ConfigMap la garderait dans le dépôt de toute façon, en
+    # ajoutant un mécanisme indirect pour un seul champ.
+    #
+    # Conséquence à retenir : déployer cette stack ailleurs que dans `logging`
+    # demande de changer cette ligne, sans quoi le binding désigne un
+    # ServiceAccount inexistant — l'`apply` réussit, et Filebeat échoue en
+    # « forbidden » sur chaque appel à l'API.
+    namespace: logging

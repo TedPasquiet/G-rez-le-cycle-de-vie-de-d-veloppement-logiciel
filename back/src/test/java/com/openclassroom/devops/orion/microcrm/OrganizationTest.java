@@ -19,10 +19,38 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class OrganizationTest {
 
     @Test
-    @DisplayName("addPerson initialise la collection quand elle est nulle")
-    void addPersonInitialisesNullCollection() {
+    @DisplayName("Une organisation neuve a une collection vide, jamais nulle")
+    void aNewOrganizationHasAnEmptyCollection() {
+        // Contrat exigé par Spring Data REST : POST /organizations/{id}/persons
+        // ajoute directement dans cette collection, sans passer par addPerson.
+        // Une valeur nulle y produirait une NullPointerException (HTTP 500).
         Organization org = new Organization();
-        assertNull(org.getPersons(), "la collection n'est pas initialisée à la construction");
+
+        assertNotNull(org.getPersons());
+        assertTrue(org.getPersons().isEmpty());
+    }
+
+    @Test
+    @DisplayName("addPerson ajoute à la collection existante")
+    void addPersonAppendsToTheCollection() {
+        Organization org = new Organization();
+
+        Person jdoe = new Person("John", "Doe", "jdoe@example.net");
+        List<Person> persons = org.addPerson(jdoe);
+
+        assertNotNull(persons);
+        assertEquals(1, persons.size());
+        assertSame(jdoe, persons.get(0));
+    }
+
+    @Test
+    @DisplayName("addPerson réinitialise la collection si setPersons(null) l'a effacée")
+    void addPersonRecoversFromANullCollection() {
+        // setPersons est public : rien n'empêche un appelant d'y passer null.
+        // Le garde-fou de addPerson reste donc utile après l'initialisation
+        // du champ à la construction.
+        Organization org = new Organization();
+        org.setPersons(null);
 
         Person jdoe = new Person("John", "Doe", "jdoe@example.net");
         List<Person> persons = org.addPerson(jdoe);
@@ -79,6 +107,7 @@ class OrganizationTest {
     @DisplayName("removePerson sur une collection nulle l'initialise sans lever d'erreur")
     void removePersonOnNullCollectionIsSafe() {
         Organization org = new Organization();
+        org.setPersons(null);
 
         List<Person> persons = org.removePerson(new Person("John", "Doe", "jdoe@example.net"));
 
