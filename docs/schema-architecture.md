@@ -109,7 +109,7 @@ flowchart TB
 
 | Brique | Technologie                     | Port   | Rôle                                 |
 | ------ | ------------------------------- | ------ | ------------------------------------ |
-| Front  | Angular 17, servi par Caddy     | `80`   | Sert l'interface au navigateur       |
+| Front  | Angular 20, servi par Caddy     | `80`   | Sert l'interface au navigateur       |
 | Back   | Spring Boot 3, Tomcat intégré   | `8080` | Expose l'API REST (Spring Data REST) |
 | Base   | PostgreSQL, `StatefulSet` + PVC | `5432` | Stockage persistant                  |
 
@@ -460,7 +460,7 @@ l'information qu'ils portent atteint celles et ceux qui écrivent le code.
 
 | Domaine          | Technologie                                 | Pourquoi celle-ci                                                                               |
 | ---------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Front            | Angular 17 / TypeScript                     | Compétence forte de l'équipe Dev                                                                |
+| Front            | Angular 20 / TypeScript                     | Compétence forte de l'équipe Dev                                                                |
 | Back             | Spring Boot 3 / Java 21                     | Socle du projet, encadré par l'outillage d'analyse du §6                                        |
 | Build            | Gradle, NPM                                 | Encapsulés dans les Dockerfiles et la CI : le build est reproductible sans configuration locale |
 | Tests            | JUnit, Karma, k6, TestInfra, BashUnit       | Chaque niveau testé par l'outil que l'équipe qui le lit maîtrise                                |

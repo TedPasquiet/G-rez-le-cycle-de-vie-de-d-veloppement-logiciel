@@ -1,0 +1,12 @@
+%% Schéma — Le squelette du pipeline : neuf étapes, deux régimes.
+%% Source versionnée du bloc Mermaid de docs/pipeline-ci.md §2.
+%% Les étapes s'exécutent strictement dans l'ordre : c'est le régime par défaut
+%% de GitLab, et il gouverne 18 des 30 jobs.
+flowchart LR
+    subgraph V["Vérification — toutes branches + MR"]
+        l["lint<br/>5 jobs"] --> t["test<br/>3 jobs"] --> q["quality<br/>6 jobs"] --> s["security<br/>2 jobs"] --> i["infra<br/>4 jobs"]
+    end
+    subgraph C["Livraison — develop, release/, hotfix/, main, tag"]
+        b["build<br/>2 jobs"] --> p["package<br/>2 jobs"] --> f["perf<br/>3 jobs"] --> d["deploy<br/>3 jobs"]
+    end
+    V --> C
