@@ -1,0 +1,36 @@
+%% Schéma — La chaîne CI/CD de bout en bout, du backlog à l'exploitation.
+%% Source versionnée du bloc Mermaid de schema.md.
+%% La sécurité s'exécute AVANT la construction des artefacts : c'est le
+%% shift-left, et c'est ce que la disposition doit rendre lisible.
+flowchart LR
+    subgraph R1[" "]
+        direction LR
+        A["AMONT PRODUIT<br/>backlog · priorisation<br/>hooks pre-commit"] --> B1["lint<br/>ESLint · Checkstyle<br/>ShellCheck · K8s · Helm"]
+        B1 --> B2["test<br/>JUnit sur PostgreSQL<br/>Karma · BashUnit"]
+        B2 --> B3["quality<br/>SonarQube · SpotBugs<br/>couverture · mutation"]
+        B3 --> B4["security<br/>Dependency-Check<br/>Trivy"]
+        B4 --> B5["infra<br/>Terraform<br/>Ansible"]
+    end
+    subgraph R2[" "]
+        direction LR
+        C1["build<br/>Gradle<br/>Angular CLI"] --> C2["package<br/>2 images multi-stage<br/>tag = SHA"]
+        C2 --> C3["perf<br/>k6 sur<br/>l'image construite"]
+        C3 --> D["deploy ✋<br/>staging · production<br/>rollback"]
+        D --> E["EXPLOITATION<br/>ELK · indicateurs DORA"]
+    end
+    R1 --> R2
+    B5 -.->|"✗ retour immédiat"| A
+    E -.->|"incidents, dérives"| A
+
+    classDef prod fill:#f5f8f8,stroke:#5b6c69,color:#13201e
+    classDef ci fill:#d8efeb,stroke:#0f766e,color:#0b5049
+    classDef sec fill:#fbe6cd,stroke:#b45309,color:#7c3a06
+    classDef deploy fill:#e2e0fb,stroke:#4f46e5,color:#312c9e
+    classDef ops fill:#e8ddfb,stroke:#7c3aed,color:#54209e
+    class A prod
+    class B1,B2,B3,B5,C1,C2,C3 ci
+    class B4 sec
+    class D deploy
+    class E ops
+    style R1 fill:none,stroke:none
+    style R2 fill:none,stroke:none

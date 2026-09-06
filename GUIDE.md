@@ -27,7 +27,7 @@ que fait la CI — (`*RepositoryIntegrationTest`), et l'API HTTP de bout en bout
 (`PersonRestApiTest`). Couverture actuelle : **97,40 % des lignes** et **100 %
 des branches**, au-dessus du seuil bloquant de 95 % / 90 %.
 
-**Fichiers** : `back/src/test/java/…/` (16 classes), `back/build.gradle` (tâche `test`, `jacocoTestReport`)
+**Fichiers** : `back/src/test/java/…/` (16 classes), `back/build.gradle` (tâche `test`, `jacocoTestReport`), `back/gradle.properties` (2 Go de tas, sans quoi l'analyse des dépendances manque de mémoire)
 **Job CI** : `test-back`
 
 ## 3. Les tests du front
@@ -106,8 +106,8 @@ des vulnérabilités connues. Trivy scanne le dépôt à la recherche de dépend
 vulnérables, de secrets oubliés et de mauvaises configurations, et scanne aussi
 les images avant leur envoi au registry. Les conteneurs déployés tournent en
 utilisateur non privilégié, système de fichiers en lecture seule et sans aucune
-capability. Les deux jobs de scan sont en `allow_failure: true` : ils
-renseignent, ils ne bloquent pas.
+capability. `dependency-check-back` est **bloquant** depuis qu'il aboutit et
+ne trouve aucune vulnérabilité ; `trivy-fs` renseigne encore sans bloquer.
 
 **Fichiers** : `back/config/dependency-check/suppressions.xml`, `.trivyignore`, `scripts/ci/build_and_push.sh`, `k8s/base/*-deployment.yaml`
 **Jobs CI** : `dependency-check-back`, `trivy-fs` · **Détail** : [AUDIT.md](AUDIT.md)

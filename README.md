@@ -18,7 +18,7 @@ L'application MicroCRM est une implémentation simplifiée d'un ["CRM" (Customer
 Ce [monorepo](https://en.wikipedia.org/wiki/Monorepo) contient les 2 composantes du projet "MicroCRM":
 
 - La partie serveur (ou "backend"), en Java SpringBoot 3;
-- La partie cliente (ou "frontend"), en Angular 17.
+- La partie cliente (ou "frontend"), en Angular 20.
 
 Une intégration basique avec Gitlab CI est définie via le fichier [`.gitlab-ci.yml`](./.gitlab-ci.yml).
 La configuration du pipeline et les valeurs à externaliser sont détaillées dans
@@ -63,6 +63,7 @@ Puis ouvrir l'URL http://localhost:8080 dans votre navigateur.
 ##### Dépendances
 
 - [NPM >= 10.2.4](https://www.npmjs.com/)
+- Node.js `^20.19`, `^22.12` ou `>=24` — contrainte d'Angular 20
 
 ##### Procédure
 

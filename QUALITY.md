@@ -24,10 +24,10 @@ local.
 Le pipeline complet compte 8 stages : `lint` → `test` → `quality` → `security` →
 `build` → `package` → `perf` → `deploy`. Voir [ARCHITECTURE.md](ARCHITECTURE.md) §4.
 
-> ⚠️ **La plupart de ces contrôles ne sont pas bloquants.** Les jobs `sonar-back`,
-> `sonar-front`, `spotbugs-back`, `quality-gate`, `dependency-check-back`,
-> `trivy-fs` et `mutation-back` sont en `allow_failure: true`, et les scans Trivy
-> tournent en `--exit-code 0`. Ils **informent** sans arrêter le pipeline. C'est un
+> ⚠️ **Une partie de ces contrôles ne sont pas bloquants.** Les jobs `sonar-back`,
+> `sonar-front`, `spotbugs-back`, `quality-gate`, `trivy-fs` et `mutation-back`
+> sont en `allow_failure: true`, et les scans Trivy tournent en `--exit-code 0`.
+> `dependency-check-back`, lui, est devenu bloquant. Ils **informent** sans arrêter le pipeline. C'est un
 > choix de démarrage assumé, à lever contrôle par contrôle une fois le processus de
 > traitement des vulnérabilités rodé.
 >

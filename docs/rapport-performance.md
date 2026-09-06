@@ -213,13 +213,13 @@ tient la charge.
 | Checkstyle, Spotless, ESLint, Prettier, ShellCheck | La forme est-elle tenue ?                            | `lint`     | oui             |
 | SonarQube                                          | Bonnes pratiques, dette, couverture agrégée          | `quality`  | non             |
 | SpotBugs + Find-Sec-Bugs                           | Bugs latents dans le bytecode (~140 motifs sécurité) | `quality`  | non             |
-| OWASP Dependency-Check                             | CVE des dépendances Java (base NVD)                  | `security` | non             |
+| OWASP Dependency-Check                             | CVE des dépendances Java (base NVD)                  | `security` | **oui**         |
 | Trivy                                              | CVE d'images, secrets, misconfigurations             | `security` | non             |
 | k6                                                 | L'API répond-elle, et assez vite ?                   | `perf`     | **oui** (smoke) |
 
-⚠️ **Presque aucun de ces contrôles n'est bloquant.** Les sept jobs de qualité et
-de sécurité sont en `allow_failure: true`, et les scans Trivy tournent en
-`--exit-code 0` : ils informent sans jamais arrêter le pipeline. C'est un choix
+⚠️ **Une partie de ces contrôles n'est pas bloquante.** Six jobs de qualité et de
+sécurité restent en `allow_failure: true`, et les scans Trivy tournent en
+`--exit-code 0` : ils informent sans arrêter le pipeline. C'est un choix
 de démarrage assumé, à lever contrôle par contrôle une fois le processus de
 traitement des vulnérabilités rodé — pas un état à présenter comme final. La
 seule exception est `k6-smoke`, bloquant parce qu'il ne mesure pas une tendance

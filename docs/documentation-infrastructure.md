@@ -27,7 +27,7 @@ consultation d'individus rattachés à des organisations. Le dépôt est un
 
 | Brique | Technologie                               | Port   | Rôle                                 |
 | ------ | ----------------------------------------- | ------ | ------------------------------------ |
-| Front  | Angular 17 (statique) servi par **Caddy** | `80`   | Sert l'interface au navigateur       |
+| Front  | Angular 20 (statique) servi par **Caddy** | `80`   | Sert l'interface au navigateur       |
 | Back   | **Spring Boot 3** (Tomcat intégré)        | `8080` | Expose l'API REST (Spring Data REST) |
 | Base   | **HSQLDB en mémoire**                     | —      | Stockage, recréé à chaque démarrage  |
 
