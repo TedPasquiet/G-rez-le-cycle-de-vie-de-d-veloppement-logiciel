@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { Organization } from './organization.service';
 import { HttpClient } from '@angular/common/http';
@@ -6,7 +6,7 @@ import { apiBaseUrl } from './config';
 
 @Injectable({ providedIn: 'root' })
 export class PersonService {
-  constructor(private readonly client: HttpClient) {}
+  private readonly client = inject(HttpClient);
 
   async fetchById(id: number) {
     const response = await this.client.get(`${apiBaseUrl()}/persons/${id}`);

@@ -1,5 +1,5 @@
-import { AsyncPipe, DatePipe, NgFor, NgIf } from '@angular/common';
-import { Component, OnInit } from '@angular/core';
+import { DatePipe, NgFor, NgIf } from '@angular/common';
+import { Component, OnInit, inject } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { Person, PersonService } from '../person.service';
@@ -7,11 +7,15 @@ import { Organization, OrganizationService } from '../organization.service';
 
 @Component({
   selector: 'app-organization-details',
-  standalone: true,
-  imports: [NgIf, FormsModule, AsyncPipe, NgFor, RouterLink, DatePipe],
+  imports: [NgIf, FormsModule, NgFor, RouterLink, DatePipe],
   templateUrl: './organization-details.component.html',
 })
 export class OrganizationDetailsComponent implements OnInit {
+  private readonly route = inject(ActivatedRoute);
+  private readonly personService = inject(PersonService);
+  private readonly organizationService = inject(OrganizationService);
+  private readonly router = inject(Router);
+
   org: Organization = {
     id: undefined as number | undefined,
     name: '',
@@ -21,13 +25,6 @@ export class OrganizationDetailsComponent implements OnInit {
   };
 
   isNew: boolean = false;
-
-  constructor(
-    private readonly route: ActivatedRoute,
-    private readonly personService: PersonService,
-    private readonly organizationService: OrganizationService,
-    private readonly router: Router,
-  ) {}
 
   ngOnInit(): void {
     const routeParams = this.route.snapshot.paramMap;
