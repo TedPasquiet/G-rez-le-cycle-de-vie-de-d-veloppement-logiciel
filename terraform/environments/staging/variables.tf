@@ -18,7 +18,16 @@ variable "namespace" {
 }
 
 variable "kubeconfig_path" {
-  description = "Chemin du kubeconfig. Laisser le défaut sur un poste de développement."
+  description = <<-EOT
+    Chemin du kubeconfig. Laisser le défaut sur un poste de développement.
+
+    En CI, ce défaut ne peut PAS convenir : l'image d'outillage tourne en root,
+    `~` s'y résout en `/root`, et aucun kubeconfig n'existe à cet endroit —
+    `plan` échoue alors sur « 'config_path' refers to an invalid path » avant
+    même de planifier. Les jobs exportent donc `TF_VAR_kubeconfig_path` vers le
+    kubeconfig que l'agent GitLab pour Kubernetes fabrique pour le job
+    ($KUBECONFIG). Voir TERRAFORM.md §4.1.
+  EOT
   type        = string
   default     = "~/.kube/config"
 }
@@ -31,6 +40,10 @@ variable "kube_context" {
     Terraform applique sur le contexte courant, c'est-à-dire sur ce que le
     dernier `kubectl config use-context` a laissé. Nommer la cible fait échouer
     l'exécution plutôt que de la laisser toucher le mauvais cluster.
+
+    En CI, le contexte n'est pas `minikube` : l'agent GitLab en fabrique un,
+    nommé `<chemin du projet>:<nom de l'agent>`. Les jobs le composent dans
+    `TF_VAR_kube_context` à partir de $CI_PROJECT_PATH et $KUBE_AGENT_NAME.
   EOT
   type        = string
   default     = "minikube"

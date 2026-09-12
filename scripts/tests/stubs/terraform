@@ -21,6 +21,9 @@
 #   FAKE_TF_INIT_FAIL     Non nul : `init` sort avec ce code.
 #   FAKE_TF_VALIDATE_FAIL Non nul : `validate` sort avec ce code.
 #   FAKE_TF_PLAN_FAIL     Non nul : `plan` sort avec ce code.
+#   FAKE_TF_SHOW_FAIL     Non nul : `show` sort avec ce code. Sert à vérifier
+#                         qu'un résumé de plan non produit n'échoue PAS le
+#                         contrôle : le plan, lui, a réussi.
 #   FAKE_TF_APPLY_FAIL    Non nul : `apply` sort avec ce code. C'est le seul
 #                         mode qui écrit réellement dans un cluster, donc celui
 #                         dont le chemin d'échec mérite le plus d'être éprouvé.
@@ -32,8 +35,14 @@
 
 args="$*"
 
+# L'adresse de l'état est journalisée À CÔTÉ des arguments, et c'est
+# indispensable : elle n'arrive pas par la ligne de commande mais par
+# l'environnement (TF_HTTP_ADDRESS, composée par le script pour chaque
+# environnement). C'est pourtant elle qui décide DANS QUEL état on écrit. Sans
+# elle dans le journal, aucun test ne pourrait prouver que staging et production
+# ont bien chacun le leur — le bug le plus coûteux que ce script puisse avoir.
 if [[ -n "${FAKE_TERRAFORM_LOG:-}" ]]; then
-  echo "terraform $args" >>"$FAKE_TERRAFORM_LOG"
+  echo "terraform $args [TF_HTTP_ADDRESS=${TF_HTTP_ADDRESS:-}]" >>"$FAKE_TERRAFORM_LOG"
 fi
 
 # Les options globales (-chdir=…, -help, -version) précèdent la sous-commande :
@@ -82,6 +91,14 @@ case "$sous_commande" in
     # qui s'en contenterait ne prouverait rien de plus que ce faux binaire.
     echo 'Plan: 6 to add, 0 to change, 0 to destroy.'
     sortie_si_demande "${FAKE_TF_PLAN_FAIL:-0}"
+    ;;
+  show)
+    # `show -json <plan>` : sortie minimale mais VALIDE, pour que le calcul du
+    # résumé (le tube vers jq, dans resume_plan) soit réellement éprouvé plutôt
+    # que contourné. Une création, une modification, un no-op — de quoi vérifier
+    # que le comptage ne confond pas les trois.
+    echo '{"resource_changes":[{"change":{"actions":["create"]}},{"change":{"actions":["update"]}},{"change":{"actions":["no-op"]}}]}'
+    sortie_si_demande "${FAKE_TF_SHOW_FAIL:-0}"
     ;;
   apply)
     sortie_si_demande "${FAKE_TF_APPLY_FAIL:-0}"
