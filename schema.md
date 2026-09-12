@@ -55,7 +55,7 @@ flowchart LR
 
 ## Table de normalisation — cycle → GitLab CI
 
-Neuf stages, 30 jobs. La colonne « bloquant » dit ce qui arrête réellement le
+Neuf stages, 32 jobs. La colonne « bloquant » dit ce qui arrête réellement le
 pipeline aujourd'hui, pas ce qui devrait l'arrêter.
 
 | Étape du cycle          | Stage       | Outils                                    | Bloquant                     |

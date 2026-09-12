@@ -68,7 +68,7 @@ flowchart TB
     dev(["git push / merge"]) --> gh["GitHub<br/>dépôt de travail, Pull Requests"]
     gh -->|"GitHub Actions : mirror-to-gitlab.yaml"| gl["GitLab<br/>miroir en lecture seule"]
     gl --> pipe
-    subgraph pipe["Pipeline GitLab CI : 9 étapes, 30 jobs"]
+    subgraph pipe["Pipeline GitLab CI : 9 étapes, 32 jobs"]
         direction LR
         s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
     end
@@ -118,17 +118,17 @@ revient à perdre le travail au push suivant.
 
 ### 2.2 Les neuf étapes
 
-| Étape      | Jobs                                                                          | Rôle                                                |
-| ---------- | ----------------------------------------------------------------------------- | --------------------------------------------------- |
-| `lint`     | `lint-front`, `lint-back`, `shellcheck`, `lint-k8s`, `lint-helm`              | Forme du code, des scripts, des manifestes          |
-| `test`     | `test-scripts`, `test-front`, `test-back`                                     | Scripts d'automatisation, Karma, JUnit              |
-| `quality`  | `sonar-back`, `sonar-front`, `spotbugs-back`, `coverage-gate`, `quality-gate` | Analyse statique, bugs, seuil de couverture         |
-| `security` | `dependency-check-back`, `trivy-fs`                                           | CVE des dépendances, secrets, misconfigurations     |
-| `infra`    | `terraform-validate`, `ansible-lint`, `terraform-plan`, `terraform-apply`     | L'infrastructure se valide **avant** la compilation |
-| `build`    | `build-front`, `build-back`                                                   | Compilation des artefacts                           |
-| `package`  | `package-back`, `package-front`                                               | Images Docker taguées par SHA + scan Trivy          |
-| `perf`     | `k6-smoke`, `k6-load`, `k6-stress`                                            | Tests de performance sur l'image construite         |
-| `deploy`   | `deploy-staging`, `deploy-production`, `rollback-production`                  | Déploiement Kubernetes et retour arrière            |
+| Étape      | Jobs                                                                               | Rôle                                                |
+| ---------- | ---------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `lint`     | `lint-front`, `lint-back`, `shellcheck`, `lint-k8s`, `lint-helm`                   | Forme du code, des scripts, des manifestes          |
+| `test`     | `test-scripts`, `test-front`, `test-back`                                          | Scripts d'automatisation, Karma, JUnit              |
+| `quality`  | `sonar-back`, `sonar-front`, `spotbugs-back`, `coverage-gate`, `quality-gate`      | Analyse statique, bugs, seuil de couverture         |
+| `security` | `dependency-check-back`, `trivy-fs`                                                | CVE des dépendances, secrets, misconfigurations     |
+| `infra`    | `terraform-validate`, `ansible-lint`, `terraform-plan`, 3× `terraform-apply-<env>` | L'infrastructure se valide **avant** la compilation |
+| `build`    | `build-front`, `build-back`                                                        | Compilation des artefacts                           |
+| `package`  | `package-back`, `package-front`                                                    | Images Docker taguées par SHA + scan Trivy          |
+| `perf`     | `k6-smoke`, `k6-load`, `k6-stress`                                                 | Tests de performance sur l'image construite         |
+| `deploy`   | `deploy-staging`, `deploy-production`, `rollback-production`                       | Déploiement Kubernetes et retour arrière            |
 
 L'ordre n'est pas cosmétique. `infra` passe **avant** `build` parce qu'un chart,
 un manifeste ou un plan Terraform cassé n'a pas besoin d'attendre une
@@ -412,16 +412,35 @@ commentaire dans chaque `terraform.tfvars`, et il a été **confronté à une ch
 réelle sur le namespace `logging`** : les valeurs observées pendant un rollout
 correspondaient au mégaoctet près à celles calculées.
 
-**L'état vit en backend `local`, un fichier par environnement, jamais commité.**
-Conséquence directe de l'option locale : il n'existe ni bucket, ni base, ni
-compte cloud pour l'héberger. Ce que cela coûte, et qu'il faut savoir défendre :
-**pas de verrou** — deux `apply` simultanés corrompraient l'état — et un état
-qui vit sur un seul poste, dont la perte oblige à réimporter les ressources.
-Les états sont **séparés par environnement**, ce qui empêche une erreur de
-répertoire d'emporter la production. Le chemin de migration est écrit et ne
-demande même pas de cloud : GitLab héberge gratuitement des états via un backend
-`http`, et la bascule ne touche qu'un bloc suivi d'un
-`terraform init -migrate-state`.
+**L'état vit dans l'état managé GitLab (backend `http`), un état par
+environnement, verrouillé.** Il a commencé en backend `local`, ce que l'option
+locale rendait naturel — aucun bucket, aucune base, aucun compte cloud pour
+l'héberger. Deux défauts ont imposé la bascule dès l'ouverture du dépôt à
+plusieurs personnes : **aucun verrou**, donc deux `apply` simultanés qui
+corrompent l'état, et surtout un plan de CI **muet sur la dérive** — l'état
+n'étant jamais commité, la CI repartait d'un état vide et annonçait « tout à
+créer » quel que soit le contenu du cluster. GitLab héberge ces états
+gratuitement, sur le même service que le dépôt, et la bascule n'a touché qu'un
+bloc `backend` suivi d'un `terraform init -migrate-state`.
+
+Les états restent **séparés par environnement**, ce qui empêche une erreur de
+répertoire d'emporter la production : l'adresse est composée à partir du nom de
+l'environnement, jamais écrite en dur. Ce que cela coûte : l'état dépend
+maintenant du projet GitLab, et aucune sauvegarde n'est organisée hors de lui.
+
+L'accès au cluster depuis la CI ne passe pas par un kubeconfig stocké en
+variable — il n'aurait servi à rien, le cluster n'ayant aucune adresse joignable
+depuis Internet — mais par l'**agent GitLab pour Kubernetes**, qui ouvre une
+connexion sortante depuis le cluster. Son ServiceAccount est lié à un
+`ClusterRole` restreint aux quatre types d'objets que Terraform manipule, et non
+au `cluster-admin` que propose le chart Helm par défaut. Voir `TERRAFORM.md`
+§4.1.
+
+Enfin, ce qui est appliqué est le plan **relu** : `terraform-plan` publie son
+plan binaire en artefact, et les jobs d'apply appliquent ce fichier au lieu d'en
+recalculer un au moment du clic — Terraform refusant de lui-même un plan devenu
+obsolète. Le résumé du même plan alimente le widget des merge requests, ce qui
+rend l'écart lisible sans ouvrir les journaux du job (`TERRAFORM.md` §4.2).
 
 **Ce qui a été vérifié** : `validate` et `plan` sortent en `0` sur les
 environnements, contre le vrai cluster (6 ressources à créer par environnement
@@ -823,19 +842,19 @@ aussi.
 
 ### 9.2 Ce qui bougerait chez un fournisseur
 
-| Brique                                     | Aujourd'hui (local)                        | AWS                                              | Azure                            |
-| ------------------------------------------ | ------------------------------------------ | ------------------------------------------------ | -------------------------------- |
-| Le cluster                                 | minikube, 1 nœud, créé par Ansible         | EKS                                              | AKS                              |
-| `Namespace`, `ResourceQuota`, `LimitRange` | provider `hashicorp/kubernetes`            | **inchangés** — autre `kube_context`             | **inchangés**                    |
-| `Deployment`, `Service`, `ConfigMap`       | Kustomize, overlays par environnement      | **inchangés**                                    | **inchangés**                    |
-| `Ingress`                                  | ingress-nginx (addon minikube)             | ingress-nginx derrière un NLB, ou ALB Controller | ingress-nginx, ou AGIC           |
-| Exposition publique, DNS, TLS              | aucune — `port-forward` et en-tête `Host:` | Route 53 + certificat ACM                        | Azure DNS + Key Vault            |
-| Registry d'images                          | registry GitLab ; `minikube image load`    | ECR                                              | ACR                              |
-| `Secret` du registry                       | recréé par la CI                           | **disparaît** — identité IRSA                    | **disparaît** — identité managée |
-| État Terraform                             | backend `local`, **sans verrou**           | S3 + verrouillage                                | Azure Storage + lease            |
-| Stockage persistant (PVC ELK)              | provisionneur `standard` de minikube       | EBS via CSI, snapshots                           | Azure Disk via CSI, snapshots    |
-| Stack de logs                              | ELK dans le namespace `logging`            | OpenSearch, ou CloudWatch Logs                   | Log Analytics, ou Elastic Cloud  |
-| Indicateurs DORA                           | `collect_dora.py` contre l'API GitLab      | **inchangé** — la source est GitLab              | **inchangé**                     |
+| Brique                                     | Aujourd'hui (local)                        | AWS                                              | Azure                              |
+| ------------------------------------------ | ------------------------------------------ | ------------------------------------------------ | ---------------------------------- |
+| Le cluster                                 | minikube, 1 nœud, créé par Ansible         | EKS                                              | AKS                                |
+| `Namespace`, `ResourceQuota`, `LimitRange` | provider `hashicorp/kubernetes`            | **inchangés** — autre `kube_context`             | **inchangés**                      |
+| `Deployment`, `Service`, `ConfigMap`       | Kustomize, overlays par environnement      | **inchangés**                                    | **inchangés**                      |
+| `Ingress`                                  | ingress-nginx (addon minikube)             | ingress-nginx derrière un NLB, ou ALB Controller | ingress-nginx, ou AGIC             |
+| Exposition publique, DNS, TLS              | aucune — `port-forward` et en-tête `Host:` | Route 53 + certificat ACM                        | Azure DNS + Key Vault              |
+| Registry d'images                          | registry GitLab ; `minikube image load`    | ECR                                              | ACR                                |
+| `Secret` du registry                       | recréé par la CI                           | **disparaît** — identité IRSA                    | **disparaît** — identité managée   |
+| État Terraform                             | backend `http` GitLab, **verrouillé**      | S3 + verrouillage, ou inchangé                   | Azure Storage + lease, ou inchangé |
+| Stockage persistant (PVC ELK)              | provisionneur `standard` de minikube       | EBS via CSI, snapshots                           | Azure Disk via CSI, snapshots      |
+| Stack de logs                              | ELK dans le namespace `logging`            | OpenSearch, ou CloudWatch Logs                   | Log Analytics, ou Elastic Cloud    |
+| Indicateurs DORA                           | `collect_dora.py` contre l'API GitLab      | **inchangé** — la source est GitLab              | **inchangé**                       |
 
 **Ce que la table montre vraiment, c'est où passe la frontière du portable.** Les
 lignes « inchangées » sont le cœur du projet, et ce n'est pas un hasard : c'est

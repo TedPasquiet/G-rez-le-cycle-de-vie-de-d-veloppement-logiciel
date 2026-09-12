@@ -1,0 +1,58 @@
+# Agent GitLab pour Kubernetes — « microcrm »
+#
+# Le nom de l'agent est celui de ce répertoire : .gitlab/agents/<nom>/. Il est
+# repris par $KUBE_AGENT_NAME dans le .gitlab-ci.yml, qui compose le nom du
+# contexte kubectl que GitLab fabrique pour les jobs :
+# `<chemin du projet>:<nom de l'agent>`. Renommer ce répertoire suffit donc à
+# casser les jobs Terraform — les deux doivent changer ensemble.
+#
+# CE QUE CET AGENT RÉSOUT, et pourquoi il remplace une variable KUBE_CONFIG.
+#
+# Le cluster du projet est un minikube, sur un poste, derrière une box : il n'a
+# aucune adresse joignable depuis Internet, donc aucun runner partagé GitLab ne
+# pouvait l'atteindre. Un kubeconfig rangé dans une variable de projet n'y
+# changeait rien : le fichier arrivait bien dans le job, l'adresse qu'il
+# contenait restait injoignable.
+#
+# L'agent inverse le sens de la connexion. Il tourne DANS le cluster et ouvre
+# une connexion sortante vers GitLab (KAS) ; les jobs passent par ce tunnel.
+# Trois conséquences qui comptent :
+#
+#   - aucun port à ouvrir, aucune API Kubernetes à exposer ;
+#   - aucun kubeconfig à stocker en variable, donc rien à faire tourner le jour
+#     où quelqu'un quitte l'équipe ;
+#   - l'accès ne dépend plus d'une variable *protégée*, donc il fonctionne sur
+#     les branches de fonctionnalité et dans les pipelines de merge request —
+#     c'est ce qui permet à `terraform-plan` d'être automatique et bloquant.
+#
+# INSTALLATION (une fois, sur le cluster ; voir TERRAFORM.md §4.1)
+#   0. ⚠️ CE FICHIER DOIT ÊTRE SUR LA BRANCHE PAR DÉFAUT (`main`). GitLab lit la
+#      configuration des agents sur la branche par défaut du projet, et nulle
+#      part ailleurs : commité sur `develop` seulement, l'agent n'apparaît pas
+#      dans la liste, et son `ci_access` ne s'applique pas.
+#   1. GitLab > Operate > Kubernetes clusters > Connect a cluster, choisir
+#      « microcrm » — l'agent apparaît parce que CE fichier est sur `main`.
+#   2. Copier le jeton d'enregistrement affiché, puis jouer le `helm upgrade
+#      --install` proposé, contre le contexte `minikube`, en y ajoutant
+#      `--set rbac.useExistingRole=gitlab-agent-microcrm` : sans cette option,
+#      le chart donne `cluster-admin` à l'agent. Voir rbac.yaml, à côté.
+#   3. L'agent doit s'afficher « connected ». À partir de là, tout job de ce
+#      projet reçoit un $KUBECONFIG.
+
+# Projets dont les jobs de CI/CD peuvent emprunter le tunnel.
+#
+# Le projet de configuration de l'agent — celui-ci — a accès par défaut. Il est
+# écrit quand même : une autorisation qui se lit dans le dépôt vaut mieux qu'une
+# autorisation qu'il faut savoir implicite. Le jour où le dépôt est déplacé ou
+# forké, cette ligne est aussi l'endroit où le chemin se corrige.
+ci_access:
+  projects:
+    - id: pasquietted/G-rez-le-cycle-de-vie-de-d-veloppement-logiciel
+
+# ⚠️ Ce que ce fichier NE règle PAS : les droits de l'agent DANS le cluster.
+# Ce fichier dit QUI peut emprunter le tunnel ; les droits disent CE QU'ON PEUT
+# EN FAIRE. Ils viennent du ServiceAccount créé par le chart Helm, lié à
+# `cluster-admin` par défaut — c'est-à-dire « tout », pour des jobs qui ne font
+# que du namespace, du quota et de la NetworkPolicy. Le rôle restreint qui
+# remplace ce lien est dans `rbac.yaml`, à côté de ce fichier, avec la commande
+# d'installation et de quoi vérifier le résultat.
