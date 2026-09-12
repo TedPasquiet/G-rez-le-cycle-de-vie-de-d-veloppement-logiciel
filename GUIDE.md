@@ -75,7 +75,7 @@ faute de `kubeconform` dans l'image.
 
 ## 6. Le pipeline CI/CD
 
-30 jobs répartis en 9 étapes : `lint`, `test`, `quality`, `security`, `infra`,
+32 jobs répartis en 9 étapes : `lint`, `test`, `quality`, `security`, `infra`,
 `build`, `package`, `perf`, `deploy`. Deux jeux de règles pilotent l'ensemble : les jobs
 de contrôle tournent sur toute branche `feature/*`, `release/*`, `hotfix/*`,
 `develop`, `main` et les tags ; les jobs qui produisent ou déploient un artefact

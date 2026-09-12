@@ -120,6 +120,22 @@ variables:
   # permet de les jouer en local sur une copie sans toucher au dépôt.
   TERRAFORM_ENVS_DIR: 'terraform/environments'
   ANSIBLE_DIR: 'ansible'
+  # Nom de l'agent GitLab pour Kubernetes, tel qu'il est déclaré par le
+  # répertoire .gitlab/agents/<nom>/. C'est lui qui donne aux jobs un accès au
+  # cluster SANS qu'aucun kubeconfig ne soit stocké en variable : l'agent, qui
+  # tourne dans le cluster, ouvre une connexion SORTANTE vers GitLab, et les
+  # jobs passent par ce tunnel. C'est ce qui rend joignable un cluster qui n'a
+  # aucune adresse publique — un minikube derrière une box, par exemple.
+  #
+  # Le contexte kubectl que l'agent fabrique porte un nom imposé :
+  # `<chemin du projet>:<nom de l'agent>`. Les jobs Terraform le recomposent à
+  # partir de cette variable, ils ne l'écrivent pas en dur.
+  KUBE_AGENT_NAME: 'microcrm'
+  # Racine des états Terraform hébergés par GitLab (un état par environnement,
+  # avec verrou). L'identifiant numérique du projet n'est écrit NULLE PART : il
+  # arrive par $CI_PROJECT_ID, ce qui laisse le dépôt forkable et déplaçable.
+  # scripts/ci/terraform_check.sh y ajoute `/<environnement>`.
+  TF_STATE_BASE_URL: '$CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state'
   # Overlay éphémère fabriqué par les jobs de déploiement : il compose l'overlay
   # d'environnement et pose par-dessus le chemin de registry et le tag du commit,
   # de sorte que `apply` reçoive directement la bonne image (voir K8S.md §6).
@@ -594,72 +610,189 @@ ansible-lint:
     - bash scripts/ci/ansible_check.sh -d "$ANSIBLE_DIR"
   <<: *rules_test
 
-# ⚠️ `terraform plan` N'EST PAS sur les mêmes règles que `terraform-validate`,
-# et ce n'est pas un oubli. Deux raisons, toutes deux mesurées :
+# ---------------------------------------------------------------------------
+# Gabarit des jobs Terraform qui touchent l'ÉTAT et le CLUSTER
+# ---------------------------------------------------------------------------
+# `terraform-validate` n'a besoin de rien : `-backend=false`, aucun cluster.
+# `plan` et `apply`, eux, ont besoin des deux, et c'est ce gabarit qui les leur
+# donne. Il a été écrit après un échec qui valait la peine d'être compris :
+# lancé tel quel, `plan` tombait sur
 #
-# 1. Le plan exige qu'un FICHIER kubeconfig existe. Vérifié : avec un
-#    `config_path` inexistant, la commande échoue sur « refers to an invalid
-#    path » avant même de planifier. Or $KUBE_CONFIG est une variable protégée,
-#    donc absente des branches de feature — le job y échouerait toujours.
+#     'config_path' refers to an invalid path: "/root/.kube/config"
 #
-# 2. Ce plan ne prouverait de toute façon presque rien. L'état est local et
-#    n'est jamais commité (TERRAFORM.md §4) : la CI repart d'un état VIDE à
-#    chaque exécution, donc le plan annonce « tout à créer » quel que soit le
-#    contenu réel du cluster. Vérifié aussi : contre un kubeconfig valide
-#    pointant sur un cluster injoignable, `plan` sort en 0 et annonce
-#    « 6 to add ». Il ne détecte aucune dérive tant que l'état n'est pas
-#    partagé — la bascule vers l'état managé GitLab est décrite en
-#    TERRAFORM.md §4, et c'est elle qui rendra ce job réellement utile.
-#
-# Il reste en manuel, sur les branches où le kubeconfig existe, parce qu'il
-# répond quand même à une question : « ce que le dépôt décrit est-il
-# planifiable ? ». Pas à « qu'est-ce qui va changer ? ».
-terraform-plan:
+# sur les trois environnements. Trois causes empilées, chacune suffisante :
+# l'image tourne en root et `~/.kube/config` s'y résout en `/root/.kube/config`,
+# qui n'existe pas ; le `KUBECONFIG: $KUBE_CONFIG` que portait le job n'était de
+# toute façon jamais lu par Terraform, dont le `config_path` est explicite dans
+# providers.tf ; et le contexte visé, `minikube`, n'existe dans aucun kubeconfig
+# de CI. Les exports ci-dessous répondent aux trois.
+.terraform_infra: &terraform_infra
   image:
     name: $TERRAFORM_IMAGE
     entrypoint: ['']
   stage: infra
-  needs: []
   variables:
-    KUBECONFIG: '$KUBE_CONFIG'
+    # Identifiants du backend `http` qui héberge l'état. Le jeton de job est
+    # émis pour CE job, expire avec lui et ne donne accès qu'à ce projet : rien
+    # à créer à la main, rien à faire tourner, rien à révoquer. L'adresse, elle,
+    # est composée par environnement dans le script à partir de
+    # $TF_STATE_BASE_URL — voir TERRAFORM.md §4.
+    TF_HTTP_USERNAME: 'gitlab-ci-token'
+    TF_HTTP_PASSWORD: '$CI_JOB_TOKEN'
   before_script:
-    - apk add --no-cache bash
+    # L'image hashicorp/terraform est basée sur Alpine et n'a que busybox sh ;
+    # le script est en bash. Même remède que .deploy_template.
+    #
+    # `jq` sert au résumé du plan qui alimente le widget des merge requests. Il
+    # est facultatif — sans lui le script prévient et continue — mais l'ajouter
+    # coûte un paquet Alpine, et un widget muet se remarque beaucoup moins
+    # qu'un job rouge.
+    - apk add --no-cache bash jq
+    # $KUBECONFIG est posé par GitLab À L'EXÉCUTION, pour les jobs des projets
+    # que l'agent autorise (.gitlab/agents/$KUBE_AGENT_NAME/config.yaml, clé
+    # `ci_access`). Il ne peut donc pas être lu depuis un bloc `variables:`, qui
+    # est résolu avant le démarrage du job — d'où ces `export` en before_script,
+    # qui partagent le shell du `script:`.
+    #
+    # Le contrôle explicite vaut mieux que l'erreur de Terraform : sans lui,
+    # l'absence d'agent se présenterait comme un problème de chemin de
+    # kubeconfig, et se chercherait dans le HCL au lieu de la configuration de
+    # l'agent.
+    - |
+      if [ -z "${KUBECONFIG:-}" ]; then
+        echo "ERREUR : ce job n'a reçu aucun kubeconfig de l'agent Kubernetes." >&2
+        echo "  Attendu : l'agent '$KUBE_AGENT_NAME' autorise ce projet et son pod est connecté." >&2
+        echo "  À vérifier : .gitlab/agents/$KUBE_AGENT_NAME/config.yaml (clé ci_access)," >&2
+        echo "  puis Operate > Kubernetes clusters, qui doit afficher l'agent « connected »." >&2
+        exit 1
+      fi
+    # Les deux coordonnées que providers.tf attend. Les défauts des variables
+    # Terraform sont ceux d'un POSTE (`~/.kube/config`, contexte `minikube`) :
+    # laissés tels quels ici, ils produisent l'échec décrit en tête de bloc.
+    - export TF_VAR_kubeconfig_path="$KUBECONFIG"
+    - export TF_VAR_kube_context="$CI_PROJECT_PATH:$KUBE_AGENT_NAME"
+    - terraform version
+    # Guillemets simples autour de TOUTE l'entrée : sans eux, le « : » du
+    # message ferait lire cette ligne comme un dictionnaire YAML et GitLab
+    # refuserait le job (« script config should be a string »).
+    - 'echo "Contexte Kubernetes visé : $TF_VAR_kube_context"'
+
+# `terraform plan` sur tous les environnements découverts.
+#
+# AUTOMATIQUE et BLOQUANT, alors qu'il était `manual` + `allow_failure: true`
+# jusqu'ici. Ce qui a changé n'est pas l'avis qu'on porte sur le job, ce sont
+# les deux raisons qui le rendaient inutilisable :
+#
+# 1. Il n'existait aucun chemin entre un runner partagé et le cluster. L'agent
+#    Kubernetes en fournit un, sortant, sans exposer d'API ni stocker de
+#    kubeconfig en variable — donc disponible sur TOUTES les branches, y compris
+#    les branches de fonctionnalité où les variables protégées ne le sont pas.
+# 2. L'état étant local et jamais commité, le plan repartait d'un état vide et
+#    annonçait « tout à créer » quoi qu'il arrive. Avec l'état managé GitLab, il
+#    lit l'état réel : « 0 to add, 0 to change » devient une information, et une
+#    modification faite à la main dans le cluster apparaît ici en dérive.
+#
+# C'est ce qui justifie de le rendre bloquant : un plan en échec veut maintenant
+# dire quelque chose. `-lock=false` est posé par le script (jamais sur l'apply) :
+# un plan ne persiste aucun état, et prendre le verrou ferait s'attendre les uns
+# les autres tous les pipelines de MR.
+terraform-plan:
+  <<: *terraform_infra
+  needs: []
   script:
     - bash scripts/ci/terraform_check.sh --plan -d "$TERRAFORM_ENVS_DIR"
+  artifacts:
+    # `plan.cache` est le plan binaire : c'est LUI que les jobs d'apply
+    # appliquent, au lieu d'en recalculer un autre. `plan.json` est le résumé à
+    # trois entiers qui alimente le widget des merge requests.
+    #
+    # ⚠️ `access: developer` n'est pas décoratif : un plan binaire embarque les
+    # valeurs lues dans l'état, donc la même sensibilité que l'état lui-même
+    # (voir terraform/.gitignore). Laissé en accès public, il serait
+    # téléchargeable par quiconque peut voir le projet. Le JSON COMPLET du plan,
+    # lui, n'est jamais écrit sur le disque — il ne fait que passer dans un tube
+    # vers jq.
+    access: 'developer'
+    # Plus long que le pipeline, parce que l'apply est MANUEL et peut être
+    # cliqué le lendemain. Pas beaucoup plus, parce qu'un plan vieux d'une
+    # semaine sera de toute façon refusé comme obsolète par Terraform dès que
+    # l'état aura bougé.
+    expire_in: '1 week'
+    paths:
+      - '$TERRAFORM_ENVS_DIR/*/plan.cache'
+      - '$TERRAFORM_ENVS_DIR/*/plan.json'
+    reports:
+      # Le motif reste un glob, comme le reste du lot : les environnements sont
+      # découverts, jamais listés en dur, sinon un quatrième environnement
+      # perdrait son widget sans que rien ne le dise.
+      terraform: '$TERRAFORM_ENVS_DIR/*/plan.json'
   rules:
+    - if: '$CI_MERGE_REQUEST_ID'
     - if: '$CI_COMMIT_BRANCH == "develop"'
-      when: manual
-      allow_failure: true
     - if: '$CI_COMMIT_BRANCH == "main"'
-      when: manual
-      allow_failure: true
 
-# Application réelle de l'infrastructure. Manuel, sur `main` seulement, et
-# jamais en `allow_failure` : contrairement au plan, un `apply` qui échoue
-# laisse l'infrastructure dans un état intermédiaire, et le pipeline doit le
-# dire.
+# Application réelle de l'infrastructure — UN JOB PAR ENVIRONNEMENT.
+#
+# Ce n'était pas le cas, et le job unique qui existait ici ne pouvait que
+# échouer : il appelait `--apply` sans `-e`, ce que le script refuse
+# délibérément (« appliquer sur tous les environnements à la fois n'est pas une
+# opération qu'on lance sans la nommer »). Personne ne l'avait vu parce qu'il
+# est manuel et n'avait jamais été cliqué. Trois jobs nommés valent mieux qu'un
+# job générique : dans la liste du pipeline, on lit quel environnement on
+# s'apprête à modifier.
+#
+# Manuels, sur `main` seulement, et jamais en `allow_failure` : contrairement au
+# plan, un `apply` interrompu laisse l'infrastructure dans un état intermédiaire,
+# et le pipeline doit le dire.
+#
+# `--require-plan` est la pièce qui rend ces jobs honnêtes. Ils appliquent le
+# `plan.cache` produit par `terraform-plan` du MÊME pipeline (récupéré par
+# `needs:`), donc exactement le plan qui a été relu — et pas un plan recalculé
+# au moment du clic, qui pourrait différer sans que personne ne le voie. Si
+# l'artefact manque (expiré, job relancé seul), le drapeau fait échouer l'apply
+# au lieu de replanifier en silence. Et si l'état a bougé entre-temps, c'est
+# Terraform qui refuse le plan : « Saved plan is stale ».
+#
+# `resource_group` sérialise les exécutions d'un même environnement côté GitLab,
+# en plus du verrou d'état côté backend. Les deux ne font pas le même travail :
+# le verrou fait échouer ou attendre le second `apply`, le resource_group
+# l'empêche de démarrer.
 #
 # ⚠️ Sur un environnement dont le namespace a été créé à la main, cet apply
 # échoue sur « namespaces … already exists » tant que l'objet n'a pas été
 # importé. La procédure est en TERRAFORM.md §10.1 ; elle ne peut pas être
 # automatisée ici sans rendre le job destructeur sur un cluster vierge.
-terraform-apply:
-  image:
-    name: $TERRAFORM_IMAGE
-    entrypoint: ['']
-  stage: infra
-  needs: ['terraform-validate']
-  environment:
-    name: production
-  variables:
-    KUBECONFIG: '$KUBE_CONFIG'
-  before_script:
-    - apk add --no-cache bash
-  script:
-    - bash scripts/ci/terraform_check.sh --apply -d "$TERRAFORM_ENVS_DIR"
+.terraform_apply_rules: &terraform_apply_rules
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: manual
+
+terraform-apply-staging:
+  <<: [*terraform_infra, *terraform_apply_rules]
+  needs: ['terraform-validate', 'terraform-plan']
+  environment:
+    name: staging
+  resource_group: terraform-staging
+  script:
+    - bash scripts/ci/terraform_check.sh --apply -e staging --require-plan -d "$TERRAFORM_ENVS_DIR"
+
+terraform-apply-logging:
+  <<: [*terraform_infra, *terraform_apply_rules]
+  needs: ['terraform-validate', 'terraform-plan']
+  environment:
+    name: logging
+  resource_group: terraform-logging
+  script:
+    - bash scripts/ci/terraform_check.sh --apply -e logging --require-plan -d "$TERRAFORM_ENVS_DIR"
+
+terraform-apply-production:
+  <<: [*terraform_infra, *terraform_apply_rules]
+  needs: ['terraform-validate', 'terraform-plan']
+  environment:
+    name: production
+  resource_group: terraform-production
+  script:
+    - bash scripts/ci/terraform_check.sh --apply -e production --require-plan -d "$TERRAFORM_ENVS_DIR"
 
 # ===========================================================================
 # BUILD (compilation des artefacts)
