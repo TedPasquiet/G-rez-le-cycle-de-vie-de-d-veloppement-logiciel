@@ -25,24 +25,32 @@
 #   2. Installer (ou réinstaller) l'agent en lui désignant CE rôle au lieu de
 #      cluster-admin :
 #
+#      helm repo add gitlab https://charts.gitlab.io && helm repo update
 #      helm upgrade --install microcrm gitlab/gitlab-agent \
-#        --namespace gitlab-agent --create-namespace \
+#        --namespace gitlab-agent-microcrm --create-namespace \
 #        --set config.token=<jeton affiché par GitLab> \
-#        --set config.kasAddress=wss://kas.gitlab.com \
+#        --set config.kasAddress=grpcs://kas.gitlab.com \
 #        --set rbac.useExistingRole=gitlab-agent-microcrm
+#
+#      Reprendre la commande que GitLab affiche (elle porte le jeton et le bon
+#      kasAddress — `grpcs://` depuis la version 2.31 du chart, `wss://` avant)
+#      et n'y ajouter QUE la dernière ligne. C'est elle qui remplace
+#      cluster-admin ; sans elle, tout ce fichier est décoratif.
 #
 #   3. Vérifier, en se mettant à la place de l'agent — c'est le seul contrôle
 #      qui vaille, un rôle trop étroit ne se voit qu'au premier apply :
 #
-#      SA=system:serviceaccount:gitlab-agent:microcrm-gitlab-agent
+#      SA=system:serviceaccount:gitlab-agent-microcrm:microcrm-gitlab-agent
 #      kubectl auth can-i create namespaces        --as="$SA"   # yes
 #      kubectl auth can-i create resourcequotas    --as="$SA"   # yes
 #      kubectl auth can-i create networkpolicies   --as="$SA"   # yes
 #      kubectl auth can-i create deployments       --as="$SA"   # no  ← le but
 #      kubectl auth can-i get secrets -A           --as="$SA"   # no  ← le but
 #
-#      (le nom exact du ServiceAccount dépend du nom de la release Helm :
-#      `kubectl -n gitlab-agent get sa` le donne.)
+#      (namespace et ServiceAccount dépendent de la commande d'installation que
+#      GitLab affiche : ici `--namespace gitlab-agent-microcrm` et une release
+#      nommée `microcrm`, d'où le ServiceAccount `microcrm-gitlab-agent`.
+#      `kubectl -n <namespace> get sa` donne le nom exact.)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -92,3 +100,56 @@ rules:
 #     qui grossit.
 #   - les modules GitOps et `user_access` de l'agent. Ils ne sont pas activés
 #     dans config.yaml ; les activer demanderait d'autres droits.
+---
+# Le bail d'élection de leader — MESURÉ, pas anticipé.
+#
+# Avec `rbac.useExistingRole`, le chart REMPLACE la liaison vers cluster-admin,
+# il n'ajoute rien : tout ce que cluster-admin couvrait par accident doit être
+# redonné explicitement. Et l'agent a un besoin propre, qui n'a rien à voir avec
+# Terraform — il tourne en deux réplicas depuis la version 1.17 du chart et
+# s'élit un leader au moyen d'un Lease. Sans ce droit, ses journaux répètent :
+#
+#   leases.coordination.k8s.io "agent-<id>-lock" is forbidden:
+#     User "system:serviceaccount:…:microcrm-gitlab-agent" cannot get resource
+#     "leases" in API group "coordination.k8s.io"
+#
+# C'est un `Role`, pas un `ClusterRole` : le bail vit dans le namespace de
+# l'agent, il n'y a aucune raison d'autoriser les baux du cluster entier.
+# `delete` n'y figure pas — libérer un bail est une mise à jour, pas une
+# suppression.
+#
+# ⚠️ Le namespace et le sujet ci-dessous sont ceux de la commande
+# d'installation. Les changer dans le `helm upgrade` oblige à les changer ici.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitlab-agent-microcrm-leaderelection
+  namespace: gitlab-agent-microcrm
+rules:
+  - apiGroups: ['coordination.k8s.io']
+    resources: ['leases']
+    verbs: ['get', 'list', 'watch', 'create', 'update', 'patch']
+
+  # L'élection de leader consigne son résultat dans un Event (« … became
+  # leader »). Sans ce droit, tout FONCTIONNE — le leader est bien élu — mais
+  # l'agent émet une ligne `ERROR` à chaque bascule : « Server rejected event
+  # (will not retry!) ». Une erreur bénigne et récurrente est ce qui apprend à
+  # ne plus lire les erreurs ; deux verbes la font disparaître, dans le seul
+  # namespace de l'agent.
+  - apiGroups: ['']
+    resources: ['events']
+    verbs: ['create', 'patch']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitlab-agent-microcrm-leaderelection
+  namespace: gitlab-agent-microcrm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gitlab-agent-microcrm-leaderelection
+subjects:
+  - kind: ServiceAccount
+    name: microcrm-gitlab-agent
+    namespace: gitlab-agent-microcrm
