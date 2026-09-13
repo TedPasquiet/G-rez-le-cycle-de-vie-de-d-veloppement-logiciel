@@ -15,11 +15,15 @@ terraform {
     }
   }
 
-  # État local et séparé de celui de staging. La séparation est la seule chose
-  # qui empêche une erreur de répertoire de détruire l'autre environnement : un
-  # état unique aurait fait de `terraform destroy` en staging une commande
-  # capable d'emporter la production.
-  backend "local" {
-    path = "terraform.tfstate"
+  # État managé GitLab, verrouillé, et surtout SÉPARÉ de celui de staging :
+  # l'adresse est composée à partir du nom de l'environnement, donc chaque
+  # environnement a son propre état côté GitLab. Cette séparation est la seule
+  # chose qui empêche une erreur de répertoire de détruire l'autre
+  # environnement : avec un état unique, un `terraform destroy` lancé dans
+  # staging aurait pu emporter la production.
+  backend "http" {
+    lock_method    = "POST"
+    unlock_method  = "DELETE"
+    retry_wait_min = 5
   }
 }

@@ -15,15 +15,15 @@ dépendent les uns des autres, et ce que permettraient `include`, `extends` et
 | dont commentaires    | **421 (43 %)**           |
 | dont lignes vides    | 44 (4 %)                 |
 | **YAML réel**        | **515 (53 %)**           |
-| Jobs                 | 30, répartis en 9 étapes |
-| Ancres YAML définies | 8                        |
+| Jobs                 | 32, répartis en 9 étapes |
+| Ancres YAML définies | 10                       |
 | `extends:`           | **0**                    |
 | `include:`           | **0**                    |
 | `trigger:`           | **0**                    |
 
-**Le fichier est long, mais pas pour la raison qu'on croit.** 515 lignes de YAML
-pour 30 jobs font 17 lignes par job — c'est ordinaire. Ce qui gonfle le fichier,
-c'est sa documentation : 43 % de commentaires, qui expliquent des pièges réels
+**Le fichier est long, mais pas pour la raison qu'on croit.** 540 lignes de YAML
+pour 32 jobs font 17 lignes par job — c'est ordinaire. Ce qui gonfle le fichier,
+c'est sa documentation : 45 % de commentaires, qui expliquent des pièges réels
 (l'alias d'un service, l'ordre INSERT/DELETE d'Hibernate, la raison d'une image
 figée). Les découper ne les fera pas disparaître ; les supprimer ferait perdre
 ce que le projet a de plus difficile à reconstituer.
@@ -49,13 +49,13 @@ flowchart LR
 
 Les étapes s'exécutent **strictement dans l'ordre** : aucune ne démarre avant
 que la précédente ne soit entièrement terminée. C'est le régime par défaut de
-GitLab, et il gouverne 18 des 30 jobs.
+GitLab, et il gouverne 18 des 32 jobs.
 
 ---
 
 ## 3. Les interdépendances réelles
 
-Douze jobs sortent de l'ordre des étapes, dans les deux sens.
+Quatorze jobs sortent de l'ordre des étapes, dans les deux sens.
 
 ```mermaid
 flowchart LR
@@ -69,7 +69,12 @@ flowchart LR
         tf["test-front"] --> sf["sonar-front"]
         sb --> qg["quality-gate"]
         sf --> qg
-        tval["terraform-validate"] --> tapp["terraform-apply"]
+        tval["terraform-validate"] --> tas["terraform-apply-staging"]
+        tval --> tal["terraform-apply-logging"]
+        tval --> tap["terraform-apply-production"]
+        tpl["terraform-plan"] --> tas
+        tpl --> tal
+        tpl --> tap
     end
 ```
 
@@ -77,8 +82,10 @@ flowchart LR
 démarrent dès le début du pipeline. Ce sont ceux qui n'ont besoin ni de
 compilation ni d'artefact — validation de manifestes, de chart, de scripts.
 
-**À droite**, six jobs déclarent une dépendance précise plutôt que d'attendre
-toute l'étape. `coverage-gate` n'a besoin que du rapport JaCoCo de `test-back` ;
+**À droite**, huit jobs déclarent une dépendance précise plutôt que d'attendre
+toute l'étape. Les trois `terraform-apply-<env>` attendent nommément
+`terraform-validate` **et** `terraform-plan` : on n'applique pas une
+infrastructure dont le plan vient d'échouer. `coverage-gate` n'a besoin que du rapport JaCoCo de `test-back` ;
 il n'a aucune raison d'attendre `test-front`.
 
 Les dix-huit autres jobs n'expriment rien et subissent l'ordre des étapes.
@@ -102,10 +109,11 @@ flowchart LR
     H -->|"release/, hotfix/"| rien(["aucun déploiement"])
 ```
 
-Deux familles de règles couvrent 26 jobs (`rules_test` et `rules_build`).
-Quatre jobs portent des règles écrites en propre : `quality-gate` (seulement
-`main`, le plan gratuit de SonarCloud ne livrant pas le verdict des autres
-branches), `terraform-plan`, `terraform-apply` et `k6-stress`.
+Deux familles de règles couvrent 23 jobs (`rules_test` et `rules_build`). Neuf
+jobs portent des règles écrites en propre : `quality-gate` (seulement `main`, le
+plan gratuit de SonarCloud ne livrant pas le verdict des autres branches),
+`terraform-plan` (merge requests, `develop`, `main` — bloquant), les trois
+`terraform-apply-<env>` et `k6-stress`, plus les trois jobs de déploiement.
 
 ⚠️ **Seuls `feature/`, `release/`, `hotfix/`, `develop`, `main` et les tags
 déclenchent quoi que ce soit.** Une branche nommée `fix/…` ou `ci/…` ne lance
@@ -146,10 +154,10 @@ déjà été épuisé une fois, c'est l'économie la plus directe.
 
 ### 6.1 Le piège à connaître avant tout découpage
 
-**Les ancres YAML ne franchissent pas les frontières de fichier.** Les huit
+**Les ancres YAML ne franchissent pas les frontières de fichier.** Les dix
 ancres du projet (`&cache_gradle`, `&rules_test`, `&postgres_service`…) sont
 résolues à la lecture d'un seul document YAML. Découper le fichier avec
-`include:` sans rien changer d'autre casserait les 30 jobs d'un coup.
+`include:` sans rien changer d'autre casserait les 32 jobs d'un coup.
 
 Cela impose l'ordre des travaux : **convertir les ancres en `extends:` d'abord,
 découper ensuite.** L'inverse ne fonctionne pas.

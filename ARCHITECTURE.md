@@ -136,24 +136,24 @@ de port, qui oblige à conserver `NET_BIND_SERVICE` dans le conteneur même avec
 
 ## 4. Pipeline CI/CD (GitLab)
 
-Le pipeline compte **9 stages et 30 jobs**, exécutés dans cet ordre :
+Le pipeline compte **9 stages et 32 jobs**, exécutés dans cet ordre :
 
 ```mermaid
 flowchart LR
     commit([git push]) --> lint --> test --> quality --> security --> infra --> build --> package --> perf --> deploy
 ```
 
-| Stage      | Jobs                                                                                           | Rôle                                                  |
-| ---------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `lint`     | `lint-front`, `lint-back`, `shellcheck`, `lint-k8s`, `lint-helm`                               | ESLint, Checkstyle, Bash, manifestes et chart         |
-| `test`     | `test-scripts`, `test-front`, `test-back`                                                      | Tests des scripts d'automatisation, Karma, JUnit      |
-| `quality`  | `sonar-back`, `sonar-front`, `spotbugs-back`, `coverage-gate`, `mutation-back`, `quality-gate` | Analyse Sonar, bugs, seuil de couverture, mutation    |
-| `security` | `dependency-check-back`, `trivy-fs`                                                            | CVE des dépendances, secrets, misconfigurations       |
-| `infra`    | `terraform-validate`, `ansible-lint`, `terraform-plan`, `terraform-apply`                      | L'infrastructure se valide **avant** qu'on ne compile |
-| `build`    | `build-front`, `build-back`                                                                    | Compilation des artefacts                             |
-| `package`  | `package-back`, `package-front`                                                                | Images Docker taguées par SHA + scan Trivy            |
-| `perf`     | `k6-smoke`, `k6-load`, `k6-stress`                                                             | Tests de performance k6 sur l'image construite        |
-| `deploy`   | `deploy-staging`, `deploy-production`, `rollback-production`                                   | Déploiement Kubernetes et retour arrière              |
+| Stage      | Jobs                                                                                                   | Rôle                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| `lint`     | `lint-front`, `lint-back`, `shellcheck`, `lint-k8s`, `lint-helm`                                       | ESLint, Checkstyle, Bash, manifestes et chart         |
+| `test`     | `test-scripts`, `test-front`, `test-back`                                                              | Tests des scripts d'automatisation, Karma, JUnit      |
+| `quality`  | `sonar-back`, `sonar-front`, `spotbugs-back`, `coverage-gate`, `mutation-back`, `quality-gate`         | Analyse Sonar, bugs, seuil de couverture, mutation    |
+| `security` | `dependency-check-back`, `trivy-fs`                                                                    | CVE des dépendances, secrets, misconfigurations       |
+| `infra`    | `terraform-validate`, `ansible-lint`, `terraform-plan`, `terraform-apply-{staging,logging,production}` | L'infrastructure se valide **avant** qu'on ne compile |
+| `build`    | `build-front`, `build-back`                                                                            | Compilation des artefacts                             |
+| `package`  | `package-back`, `package-front`                                                                        | Images Docker taguées par SHA + scan Trivy            |
+| `perf`     | `k6-smoke`, `k6-load`, `k6-stress`                                                                     | Tests de performance k6 sur l'image construite        |
+| `deploy`   | `deploy-staging`, `deploy-production`, `rollback-production`                                           | Déploiement Kubernetes et retour arrière              |
 
 Le détail du déclenchement par branche et de la procédure de release est dans
 [RELEASE.md](RELEASE.md) ; celui des scripts appelés par ces jobs dans
@@ -187,7 +187,7 @@ deux sont reliés par un workflow GitHub Actions,
 flowchart LR
     dev([git push]) --> gh[GitHub<br/>dépôt de travail, Pull Requests]
     gh -->|GitHub Actions<br/>miroir automatique| gl[GitLab<br/>miroir + exécution du pipeline]
-    gl --> ci[".gitlab-ci.yml<br/>9 stages, 30 jobs"]
+    gl --> ci[".gitlab-ci.yml<br/>9 stages, 32 jobs"]
 ```
 
 À chaque push sur n'importe quelle branche ou tag, le workflow recopie toutes les
@@ -279,7 +279,7 @@ flowchart TB
     gh -->|"GitHub Actions : mirror-to-gitlab.yaml<br/>push --prune de toutes les refs"| gl["GitLab<br/>miroir en lecture seule"]
     gl --> pipe
 
-    subgraph pipe["Pipeline GitLab CI : 9 étapes, 30 jobs"]
+    subgraph pipe["Pipeline GitLab CI : 9 étapes, 32 jobs"]
         direction LR
         s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
     end
@@ -542,20 +542,20 @@ Cette table est ce qui distingue un choix d'une méconnaissance. Elle décrit, p
 chaque brique réellement présente dans le dépôt, ce qui la remplacerait chez les
 deux fournisseurs que le brief propose.
 
-| Brique du projet                           | Aujourd'hui (local)                                                         | AWS                                                            | Azure                                                    |
-| ------------------------------------------ | --------------------------------------------------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------- |
-| Le cluster                                 | minikube, 1 nœud, driver `docker`, créé par Ansible                         | EKS                                                            | AKS                                                      |
-| `Namespace`, `ResourceQuota`, `LimitRange` | objets Kubernetes créés par Terraform, provider `hashicorp/kubernetes`      | **inchangés** — même provider, autre `kube_context`            | **inchangés**                                            |
-| `Deployment`, `Service`, `ConfigMap`       | Kustomize, overlays par environnement                                       | **inchangés**                                                  | **inchangés**                                            |
-| `Ingress`                                  | ingress-nginx (addon minikube), hôtes résolus sur le poste                  | ingress-nginx derrière un NLB, ou AWS Load Balancer Controller | ingress-nginx, ou Application Gateway Ingress Controller |
-| Exposition publique, DNS, TLS              | aucune — `kubectl port-forward` et en-tête `Host:`                          | Route 53 + certificat ACM                                      | Azure DNS + certificat dans Key Vault                    |
-| Registry d'images                          | registry GitLab pour la CI ; `minikube image load` en local (D3)            | ECR                                                            | ACR                                                      |
-| `Secret` du registry                       | recréé par la CI à chaque déploiement (`imagePullSecrets`)                  | **disparaît** — identité de pod IRSA, tirage ECR sans secret   | **disparaît** — identité managée, tirage ACR sans secret |
-| État Terraform                             | backend `local`, un fichier par environnement, non commité, **sans verrou** | S3 + verrouillage                                              | Azure Storage (blob) + lease                             |
-| Stockage persistant (PVC d'Elasticsearch)  | provisionneur `standard` de minikube, sur le disque du poste                | EBS via le pilote CSI, snapshots                               | Azure Disk via CSI, snapshots                            |
-| Stack de logs                              | Elasticsearch, Kibana et Filebeat dans le namespace `logging`               | OpenSearch Service, ou CloudWatch Logs                         | Log Analytics / Azure Monitor, ou Elastic Cloud          |
-| Indicateurs DORA                           | `collect_dora.py` contre l'API GitLab, index `microcrm-dora`                | **inchangé** — la source est GitLab, pas le cloud              | **inchangé**                                             |
-| Le poste de travail                        | rôles Ansible `outillage` et `cluster`                                      | le rôle `cluster` devient sans objet ; `outillage` demeure     | idem                                                     |
+| Brique du projet                           | Aujourd'hui (local)                                                       | AWS                                                            | Azure                                                    |
+| ------------------------------------------ | ------------------------------------------------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------- |
+| Le cluster                                 | minikube, 1 nœud, driver `docker`, créé par Ansible                       | EKS                                                            | AKS                                                      |
+| `Namespace`, `ResourceQuota`, `LimitRange` | objets Kubernetes créés par Terraform, provider `hashicorp/kubernetes`    | **inchangés** — même provider, autre `kube_context`            | **inchangés**                                            |
+| `Deployment`, `Service`, `ConfigMap`       | Kustomize, overlays par environnement                                     | **inchangés**                                                  | **inchangés**                                            |
+| `Ingress`                                  | ingress-nginx (addon minikube), hôtes résolus sur le poste                | ingress-nginx derrière un NLB, ou AWS Load Balancer Controller | ingress-nginx, ou Application Gateway Ingress Controller |
+| Exposition publique, DNS, TLS              | aucune — `kubectl port-forward` et en-tête `Host:`                        | Route 53 + certificat ACM                                      | Azure DNS + certificat dans Key Vault                    |
+| Registry d'images                          | registry GitLab pour la CI ; `minikube image load` en local (D3)          | ECR                                                            | ACR                                                      |
+| `Secret` du registry                       | recréé par la CI à chaque déploiement (`imagePullSecrets`)                | **disparaît** — identité de pod IRSA, tirage ECR sans secret   | **disparaît** — identité managée, tirage ACR sans secret |
+| État Terraform                             | backend `http` — état managé GitLab, un par environnement, **verrouillé** | S3 + verrouillage, ou l'état managé GitLab tel quel            | Azure Storage (blob) + lease, ou l'état managé GitLab    |
+| Stockage persistant (PVC d'Elasticsearch)  | provisionneur `standard` de minikube, sur le disque du poste              | EBS via le pilote CSI, snapshots                               | Azure Disk via CSI, snapshots                            |
+| Stack de logs                              | Elasticsearch, Kibana et Filebeat dans le namespace `logging`             | OpenSearch Service, ou CloudWatch Logs                         | Log Analytics / Azure Monitor, ou Elastic Cloud          |
+| Indicateurs DORA                           | `collect_dora.py` contre l'API GitLab, index `microcrm-dora`              | **inchangé** — la source est GitLab, pas le cloud              | **inchangé**                                             |
+| Le poste de travail                        | rôles Ansible `outillage` et `cluster`                                    | le rôle `cluster` devient sans objet ; `outillage` demeure     | idem                                                     |
 
 **Ce que la table montre vraiment, c'est où passe la frontière du portable.**
 Les lignes marquées « inchangées » sont le cœur du projet : les manifestes, les

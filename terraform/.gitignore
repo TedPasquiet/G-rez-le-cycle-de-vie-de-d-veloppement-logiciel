@@ -5,6 +5,13 @@
 # ont lu, y compris les attributs marqués `sensitive` dans le HCL — le masquage
 # ne vaut que pour l'affichage, pas pour le fichier. Le commiter reviendrait à
 # publier des identifiants de cluster. Voir TERRAFORM.md §4.
+#
+# Depuis la bascule sur l'état managé GitLab (TERRAFORM.md §4), aucun de ces
+# fichiers ne devrait plus apparaître : l'état ne touche plus le disque. Les
+# règles restent, et ce n'est pas de la superstition — un état local subsiste sur
+# les postes qui ont appliqué avant la migration, `terraform state pull` en
+# produit un à la demande, et c'est exactement dans ces deux cas qu'un `git add`
+# distrait publierait l'état.
 terraform.tfstate
 terraform.tfstate.*
 *.tfstate
@@ -17,8 +24,16 @@ terraform.tfstate.*
 
 # Sortie de `terraform plan -out`. Un plan binaire embarque les valeurs lues
 # dans l'état, donc les mêmes secrets que ci-dessus.
+#
+# `plan.cache` et `plan.json` sont ceux que scripts/ci/terraform_check.sh écrit
+# dans chaque environnement en mode --plan : le plan binaire que l'apply rejoue,
+# et son résumé à trois entiers pour le widget des merge requests. Le second est
+# inoffensif, le premier ne l'est pas du tout — et les ignorer tous les deux
+# évite d'avoir à se rappeler lequel est lequel un soir de commit rapide.
 *.tfplan
 plan.out
+plan.cache
+plan.json
 
 # Journal d'un crash du binaire : contient la configuration complète.
 crash.log

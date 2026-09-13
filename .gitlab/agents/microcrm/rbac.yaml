@@ -1,0 +1,94 @@
+# Droits de l'agent DANS le cluster — le complément indispensable de config.yaml
+#
+# `config.yaml` dit QUI peut emprunter le tunnel (les jobs de ce projet). Ce
+# fichier dit CE QUE le tunnel permet de faire. Les deux sont nécessaires, et
+# c'est le second qu'on oublie : par défaut, le chart Helm de l'agent monte un
+# ServiceAccount lié à **cluster-admin** — la documentation GitLab l'écrit
+# elle-même (« For simplicity, the default Helm chart configuration sets up a
+# service account for the agent with cluster-admin rights »).
+#
+# Ce que ça voudrait dire ici : n'importe quel job de CI de ce projet, sur
+# n'importe quelle branche, pourrait tout faire sur le cluster. Or les jobs qui
+# passent par l'agent ne font qu'une chose — `terraform plan` et
+# `terraform apply` sur quatre types d'objets.
+#
+# POURQUOI CE RÔLE N'EST PAS GÉRÉ PAR TERRAFORM, alors qu'il gère déjà du RBAC
+# ailleurs : c'est une dépendance d'amorçage. Terraform passe par l'agent, donc
+# par ce rôle ; lui faire créer le rôle qui l'autorise supposerait qu'il ait
+# déjà les droits qu'on cherche à lui accorder. Et l'état Terraform porterait
+# alors les clés de ses propres permissions — un `terraform destroy` malheureux
+# retirerait à l'agent le droit de se reconstruire. Ce fichier s'applique donc
+# une fois, à la main, à l'installation, comme le chart lui-même.
+#
+# INSTALLATION
+#   1. kubectl apply -f .gitlab/agents/microcrm/rbac.yaml
+#   2. Installer (ou réinstaller) l'agent en lui désignant CE rôle au lieu de
+#      cluster-admin :
+#
+#      helm upgrade --install microcrm gitlab/gitlab-agent \
+#        --namespace gitlab-agent --create-namespace \
+#        --set config.token=<jeton affiché par GitLab> \
+#        --set config.kasAddress=wss://kas.gitlab.com \
+#        --set rbac.useExistingRole=gitlab-agent-microcrm
+#
+#   3. Vérifier, en se mettant à la place de l'agent — c'est le seul contrôle
+#      qui vaille, un rôle trop étroit ne se voit qu'au premier apply :
+#
+#      SA=system:serviceaccount:gitlab-agent:microcrm-gitlab-agent
+#      kubectl auth can-i create namespaces        --as="$SA"   # yes
+#      kubectl auth can-i create resourcequotas    --as="$SA"   # yes
+#      kubectl auth can-i create networkpolicies   --as="$SA"   # yes
+#      kubectl auth can-i create deployments       --as="$SA"   # no  ← le but
+#      kubectl auth can-i get secrets -A           --as="$SA"   # no  ← le but
+#
+#      (le nom exact du ServiceAccount dépend du nom de la release Helm :
+#      `kubectl -n gitlab-agent get sa` le donne.)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gitlab-agent-microcrm
+  labels:
+    app.kubernetes.io/name: gitlab-agent
+    app.kubernetes.io/part-of: microcrm
+  annotations:
+    # Un rôle sans provenance est un rôle que personne n'ose modifier.
+    microcrm.io/source: .gitlab/agents/microcrm/rbac.yaml
+    microcrm.io/doc: TERRAFORM.md §4.1
+rules:
+  # --- Ce que terraform/modules/namespace crée -----------------------------
+  # `delete` est inclus, et ce n'est pas anodin : supprimer un namespace
+  # emporte tout ce qu'il contient. Il est là parce que Terraform en a besoin
+  # pour `destroy` et pour remplacer un objet qu'il ne peut pas modifier en
+  # place. Le garde-fou n'est donc pas ici — il est dans le fait que seuls les
+  # jobs `terraform-apply-<env>` sont manuels et limités à `main`.
+  - apiGroups: ['']
+    resources: ['namespaces']
+    verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete']
+  - apiGroups: ['']
+    resources: ['resourcequotas', 'limitranges']
+    verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete']
+
+  # --- Ce que terraform/modules/network-policy crée ------------------------
+  - apiGroups: ['networking.k8s.io']
+    resources: ['networkpolicies']
+    verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete']
+
+  # --- Découverte de l'API -------------------------------------------------
+  # Le provider Kubernetes interroge les versions et les ressources
+  # disponibles avant toute chose. Ces chemins sont normalement déjà ouverts à
+  # tout compte authentifié (ClusterRole `system:discovery`), mais un cluster
+  # peut l'avoir resserré — et l'échec se présenterait alors comme une erreur
+  # de provider incompréhensible, pas comme un refus de droits.
+  - nonResourceURLs: ['/version', '/api', '/api/*', '/apis', '/apis/*', '/openapi/v2']
+    verbs: ['get']
+# ⚠️ CE QUE CE RÔLE NE COUVRE PAS, volontairement :
+#
+#   - les objets applicatifs (Deployment, Service, Ingress, ConfigMap, Secret).
+#     Ils sont déployés par `kubectl apply -k` dans les jobs de déploiement, qui
+#     passent encore par la variable $KUBE_CONFIG et NON par l'agent. Le jour où
+#     ces jobs basculeront sur le tunnel — ce qui serait une bonne chose, pour la
+#     même raison qu'ici — ce rôle devra s'élargir, ou mieux : recevoir un second
+#     rôle, lié à un second agent. Un agent par périmètre vaut mieux qu'un rôle
+#     qui grossit.
+#   - les modules GitOps et `user_access` de l'agent. Ils ne sont pas activés
+#     dans config.yaml ; les activer demanderait d'autres droits.

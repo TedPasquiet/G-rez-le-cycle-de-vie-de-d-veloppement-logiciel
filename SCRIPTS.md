@@ -81,11 +81,22 @@ Utilisé par les jobs `package-back` et `package-front`.
 Contrôle les configurations Terraform de `terraform/environments/`. Trois modes,
 qui n'ont ni le même coût ni la même valeur de preuve :
 
-| Mode                  | Ce qu'il fait                                                            | Où il tourne                                      |
-| --------------------- | ------------------------------------------------------------------------ | ------------------------------------------------- |
-| `--validate` (défaut) | `fmt -check`, puis `init -backend=false` et `validate` par environnement | job `terraform-validate`, sur toutes les branches |
-| `--plan`              | `init` puis `plan` par environnement                                     | job `terraform-plan`, manuel                      |
-| `--apply`             | `init` puis `apply -auto-approve`                                        | job `terraform-apply`, manuel sur `main`          |
+| Mode                  | Ce qu'il fait                                                            | Où il tourne                                            |
+| --------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------- |
+| `--validate` (défaut) | `fmt -check`, puis `init -backend=false` et `validate` par environnement | job `terraform-validate`, sur toutes les branches       |
+| `--plan`              | `init`, `plan -lock=false -out=plan.cache`, puis le résumé `plan.json`   | job `terraform-plan` : MR, `develop`, `main` — bloquant |
+| `--apply`             | `init` puis `apply plan.cache` (à défaut : `apply -auto-approve`)        | jobs `terraform-apply-<env>`, manuels sur `main`        |
+
+⚠️ **`--plan` et `--apply` exigent `$TF_STATE_BASE_URL`** (et les identifiants
+`TF_HTTP_USERNAME` / `TF_HTTP_PASSWORD`) : ils lisent l'état partagé. Le script
+compose `TF_HTTP_ADDRESS` **par environnement**, dans la boucle — un état
+distinct et verrouillé pour chacun, voir [TERRAFORM.md](TERRAFORM.md) §4. Sans
+cette adresse, il refuse de commencer en nommant la variable, plutôt que de
+laisser `init` échouer sur un message de backend.
+
+`--validate`, lui, n'exige RIEN : `-backend=false`, aucun état, aucun cluster.
+C'est ce qui le rend jouable sur n'importe quel runner et sur toutes les
+branches — un test de `run_tests.sh` interdit de le lui faire perdre.
 
 Les environnements sont **découverts**, jamais listés en dur : un troisième
 environnement ajouté demain est contrôlé sans toucher au script. Tous sont
@@ -97,12 +108,33 @@ sans que rien ne le distingue à la lecture du pipeline. La confirmation
 interactive qu'on perd avec `-auto-approve` est remplacée par l'obligation
 d'écrire l'environnement visé.
 
-⚠️ **Ce que `--plan` ne prouve pas.** Mesuré : avec un kubeconfig valide pointant
-sur un cluster éteint, `terraform plan` sort en `0` et annonce « 6 to add ». Et
-comme l'état est local et jamais commité ([TERRAFORM.md](TERRAFORM.md) §4), la
-CI repart d'un état vide à chaque exécution. Ce mode contrôle donc que la
-configuration se résout, pas l'écart avec la réalité — le script le redit à
+⚠️ **Ce que `--plan` prouve, depuis qu'il lit l'état partagé.** Il compare le
+dépôt à ce qui existe réellement : une modification faite à la main dans le
+cluster apparaît en dérive, et un « 0 to add, 0 to change » est une information.
+Ça n'a pas toujours été le cas, et l'ancienne limite valait d'être mesurée : avec
+un état local jamais commité, la CI repartait d'un état vide et annonçait « tout
+à créer » quoi qu'il arrive ; avec un kubeconfig valide pointant sur un cluster
+éteint, `plan` sortait même en `0` — il n'y avait rien à rafraîchir.
+
+Ce qu'il ne prouve toujours pas : que l'`apply` passera. Un `Deployment` ne
+consomme aucun quota, seuls ses pods en consomment. Le script le redit à
 l'exécution, parce qu'une sortie de job se lit sans le code sous les yeux.
+
+⚠️ **`--require-plan` : appliquer le plan relu, ou rien.** `--plan` enregistre
+son plan dans `<env>/plan.cache` (publié en artefact par la CI) et `--apply`
+applique **ce fichier** plutôt que d'en recalculer un autre — sans quoi ce qui
+part en production n'est pas formellement ce qui a été approuvé en merge
+request. Avec `--require-plan`, que passent les jobs de CI, l'absence de plan
+enregistré est un **échec** : un artefact expiré ou un job relancé seul ne doit
+pas dégrader la garantie en silence. Sans le drapeau, c'est le mode d'un poste —
+Terraform replanifie, avec un avertissement. Et si l'état a bougé entre les
+deux, c'est Terraform qui refuse : « Saved plan is stale ».
+
+Le second fichier, `<env>/plan.json`, ne contient que trois entiers
+(create/update/delete) et alimente le widget Terraform des merge requests. Il
+demande `jq`, qui reste **facultatif** : absent, le script prévient et continue —
+un widget muet ne justifie pas de faire échouer un plan qui a réussi. Le JSON
+complet du plan, lui, n'est jamais écrit sur le disque.
 
 ```bash
 scripts/ci/terraform_check.sh                       # validate, hors cluster

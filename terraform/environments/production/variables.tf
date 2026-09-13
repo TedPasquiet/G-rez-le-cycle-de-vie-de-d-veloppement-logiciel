@@ -14,7 +14,11 @@ variable "namespace" {
 }
 
 variable "kubeconfig_path" {
-  description = "Chemin du kubeconfig."
+  description = <<-EOT
+    Chemin du kubeconfig. Le défaut ne vaut que pour un poste ; en CI, les jobs
+    exportent `TF_VAR_kubeconfig_path` vers le kubeconfig de l'agent GitLab.
+    Justifications dans terraform/environments/staging/variables.tf.
+  EOT
   type        = string
   default     = "~/.kube/config"
 }

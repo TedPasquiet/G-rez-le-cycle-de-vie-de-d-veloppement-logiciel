@@ -504,18 +504,94 @@ verifie_code 1 "un init en échec n'enchaîne pas sur validate" \
   bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --validate -d "$envs"
 verifie_contient 'Validation non jouée' "le script dit pourquoi il n'a pas validé"
 
+# --------------------------------------------------------------------------
+# L'état partagé (TERRAFORM.md §4)
+# --------------------------------------------------------------------------
+# Depuis la bascule sur l'état managé GitLab, `--plan` et `--apply` lisent un
+# état distant : sans son adresse, `terraform init` échouerait sur un message de
+# backend que personne ne rattache à une variable manquante. Le script doit donc
+# refuser AVANT, en nommant la variable.
+etat='https://gitlab.example/api/v4/projects/42/terraform/state'
+
+# Le test qui protège le mode le plus utile : `--validate` ne doit RIEN exiger.
+# C'est ce qui le rend jouable sur n'importe quel runner, sur toutes les
+# branches, sans accès ni identifiants. Lui imposer l'adresse de l'état par
+# mégarde le rendrait inutilisable là où il sert le plus.
+journal="$(nouveau_journal terraform)"
+verifie_code 0 "--validate ne demande aucune adresse d'état" \
+  env FAKE_TERRAFORM_LOG="$journal" TF_STATE_BASE_URL='' \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --validate -d "$envs"
+
+verifie_code 1 '--plan sans adresse est refusé' \
+  env TF_STATE_BASE_URL='' \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --plan -d "$envs"
+verifie_contient 'TF_STATE_BASE_URL' 'le refus nomme la variable qui manque'
+verifie_contient 'CI_PROJECT_ID' 'et donne la valeur à employer en CI'
+
+verifie_code 1 '--apply sans adresse est refusé' \
+  env TF_STATE_BASE_URL='' \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --apply -e production -d "$envs"
+
 journal="$(nouveau_journal terraform)"
 verifie_code 0 'mode --plan : init avec backend, puis plan' \
-  env FAKE_TERRAFORM_LOG="$journal" \
+  env FAKE_TERRAFORM_LOG="$journal" TF_STATE_BASE_URL="$etat" \
   bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --plan -d "$envs"
 verifie_fichier_contient "$journal" 'plan -input=false' 'le plan ne demande aucune saisie'
-verifie_contient "ne dit donc RIEN de l'écart réel" \
+verifie_fichier_contient "$journal" '-out=plan.cache' \
+  "le plan est ENREGISTRÉ, c'est lui que l'apply rejouera"
+verifie_contient 'cluster JOIGNABLE' "le mode --plan dit ce qu'il exige"
+verifie_contient "ne dit toujours pas si l'apply passera" \
   "le mode --plan avertit sur ce qu'il ne prouve pas"
+
+# ⚠️ LE test de cette série. Un seul état pour les trois environnements, et
+# `terraform destroy` lancé dans staging pourrait emporter la production. La
+# séparation ne se voit pas dans les arguments de la commande : elle est dans
+# TF_HTTP_ADDRESS, que le faux terraform journalise pour cette raison précise.
+verifie_fichier_contient "$journal" "TF_HTTP_ADDRESS=$etat/staging" \
+  'staging lit et écrit dans SON état'
+verifie_fichier_contient "$journal" "TF_HTTP_ADDRESS=$etat/production" \
+  'production a le sien, distinct'
+
+# Le verrou : jamais pris par un plan (les pipelines de merge request se
+# suivraient à la queue), toujours par un apply (c'est tout l'intérêt de l'état
+# partagé). Les deux assertions comptent autant l'une que l'autre.
+verifie_fichier_contient "$journal" '-lock=false' \
+  "un plan ne prend pas le verrou d'état"
+
+# Le résumé qui alimente le widget des merge requests. jq n'est pas garanti
+# présent (l'image du job test-scripts est une python:slim), donc l'assertion
+# est conditionnelle — mais le chemin sans jq est vérifié lui aussi, plus bas.
+if command -v jq >/dev/null 2>&1; then
+  verifie_fichier_contient "$envs/staging/plan.json" '"create": 1' \
+    'le résumé compte les créations'
+  verifie_fichier_contient "$envs/staging/plan.json" '"delete": 0' \
+    "et ne compte pas un no-op comme une suppression"
+  verifie_contient 'Résumé du plan' 'le résumé est aussi affiché dans le journal du job'
+else
+  verifie_contient 'jq absent' "sans jq, le script le dit au lieu de produire un résumé faux"
+fi
+
+# ⚠️ Un résumé est un confort de lecture, pas une preuve : s'il échoue alors que
+# le plan a réussi, le contrôle doit rester vert. L'inverse ferait échouer des
+# pipelines pour un widget.
+journal="$(nouveau_journal terraform)"
+verifie_code 0 "un résumé de plan non produit n'échoue pas le contrôle" \
+  env FAKE_TERRAFORM_LOG="$journal" TF_STATE_BASE_URL="$etat" FAKE_TF_SHOW_FAIL=1 \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --plan -d "$envs"
+verifie_contient 'restera muet' "l'absence de résumé est signalée, pas passée sous silence"
+
+journal="$(nouveau_journal terraform)"
+verifie_code 0 "sans identifiants, le script prévient du 401 à venir" \
+  env FAKE_TERRAFORM_LOG="$journal" TF_STATE_BASE_URL="$etat" \
+  TF_HTTP_USERNAME='' TF_HTTP_PASSWORD='' \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --plan -d "$envs"
+verifie_contient '401' "l'absence d'identifiants est annoncée, pas devinée après coup"
 
 # ⚠️ Le garde-fou qui compte : `--apply` écrit dans un vrai cluster. Sans -e, il
 # s'appliquerait à TOUS les environnements, donc à la production, dans le même
 # geste que le staging.
 verifie_code 1 '--apply sans -e est refusé' \
+  env TF_STATE_BASE_URL="$etat" \
   bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --apply -d "$envs"
 verifie_contient 'sans la nommer' "le refus explique pourquoi l'environnement doit être nommé"
 
@@ -523,18 +599,54 @@ verifie_code 1 '-e sur un environnement inexistant est refusé' \
   bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --validate -e recette -d "$envs"
 verifie_contient 'Disponibles' 'le message liste les environnements existants'
 
+# --------------------------------------------------------------------------
+# Le plan relu (`--require-plan`)
+# --------------------------------------------------------------------------
+# Ce que ces trois tests encodent : un `apply` qui replanifie n'applique PAS ce
+# qui a été relu en merge request. En CI, ce glissement doit être un échec ; sur
+# un poste, un simple avertissement.
+verifie_code 1 '--require-plan est refusé ailleurs que sur --apply' \
+  env TF_STATE_BASE_URL="$etat" \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --plan --require-plan -d "$envs"
+verifie_contient 'ne vaut qu' "le refus dit à quoi le drapeau sert"
+
+journal="$(nouveau_journal terraform)"
+rm -f "$envs/production/plan.cache"
+verifie_code 1 "--require-plan sans plan enregistré : rien n'est appliqué" \
+  env FAKE_TERRAFORM_LOG="$journal" TF_STATE_BASE_URL="$etat" \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --apply -e production --require-plan -d "$envs"
+verifie_contient "RIEN n'a été appliqué" "l'échec dit que rien n'a été touché"
+verifie_fichier_contient_pas "$journal" 'apply' "aucun apply n'a été lancé"
+
+journal="$(nouveau_journal terraform)"
+: >"$envs/production/plan.cache"
+verifie_code 0 'un plan enregistré est appliqué TEL QUEL' \
+  env FAKE_TERRAFORM_LOG="$journal" TF_STATE_BASE_URL="$etat" \
+  bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --apply -e production --require-plan -d "$envs"
+verifie_fichier_contient "$journal" 'apply -input=false -no-color plan.cache' \
+  "c'est le fichier de plan qui est appliqué"
+verifie_fichier_contient_pas "$journal" '-auto-approve' \
+  "un plan enregistré n'a pas à être approuvé une seconde fois"
+rm -f "$envs/production/plan.cache"
+
 journal="$(nouveau_journal terraform)"
 verifie_code 0 '--apply -e production ne touche que production' \
-  env FAKE_TERRAFORM_LOG="$journal" \
+  env FAKE_TERRAFORM_LOG="$journal" TF_STATE_BASE_URL="$etat" \
   bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --apply -e production -d "$envs"
 verifie_fichier_contient "$journal" 'apply' "l'apply est bien lancé"
-verifie_fichier_contient_pas "$journal" 'staging' "staging n'a pas été touché"
+verifie_fichier_contient "$journal" '-auto-approve' \
+  'sans plan enregistré, le mode poste replanifie'
+verifie_contient "n'a donc été relu par personne" \
+  'et il le dit clairement dans le journal'
+verifie_fichier_contient_pas "$journal" "$etat/staging" "l'état de staging n'a pas été ouvert"
+verifie_fichier_contient_pas "$journal" '-lock=false' \
+  "l'apply, lui, garde le verrou — il écrit"
 
 # L'apply est le seul mode qui écrit : son échec doit remonter, sans quoi un
 # pipeline vert laisserait croire que l'infrastructure est en place.
 journal="$(nouveau_journal terraform)"
 verifie_code 1 'un apply en échec fait échouer le job' \
-  env FAKE_TERRAFORM_LOG="$journal" FAKE_TF_APPLY_FAIL=1 \
+  env FAKE_TERRAFORM_LOG="$journal" TF_STATE_BASE_URL="$etat" FAKE_TF_APPLY_FAIL=1 \
   bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --apply -e production -d "$envs"
 
 # ==========================================================================

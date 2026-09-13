@@ -14,7 +14,7 @@ les procédures. Celui-ci décrit les résultats.
 ## 1. L'essentiel, y compris ce qui fâche
 
 Le projet livre une chaîne complète : deux images Docker construites en
-multi-étapes, un pipeline GitLab CI de 9 étapes et 30 jobs, des manifestes
+multi-étapes, un pipeline GitLab CI de 9 étapes et 32 jobs, des manifestes
 Kubernetes en overlays Kustomize doublés d'un chart Helm, l'infrastructure
 décrite en Terraform et le poste provisionné par Ansible, une stack ELK qui
 collecte réellement les logs de l'application, et un collecteur d'indicateurs
@@ -44,7 +44,7 @@ argumentée et non une preuve.
 
 | Domaine                        | Résultat mesuré                                                 | Où c'est établi            |
 | ------------------------------ | --------------------------------------------------------------- | -------------------------- |
-| Pipeline                       | 30 jobs, 9 étapes, toutes images d'outillage figées             | `ARCHITECTURE.md` §4       |
+| Pipeline                       | 32 jobs, 9 étapes, toutes images d'outillage figées             | `ARCHITECTURE.md` §4       |
 | Tests back                     | 115 tests · **97,40 %** lignes · 100 % branches                 | `back/`, job `test-back`   |
 | Tests front                    | 73 tests · **100 %** lignes · 88,6 % branches                   | `front/`, job `test-front` |
 | Tests des scripts              | 151 assertions, sans cluster ni registry                        | `SCRIPTS.md`               |
