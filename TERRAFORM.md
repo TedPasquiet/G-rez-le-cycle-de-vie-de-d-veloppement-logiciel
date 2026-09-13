@@ -331,10 +331,11 @@ le rend dangereux : il n'apparaît nulle part.
 
 `--plan` enregistre donc son plan, et `--apply` applique **ce fichier** :
 
-| Fichier      | Contenu                              | Qui le lit                             |
-| ------------ | ------------------------------------ | -------------------------------------- |
-| `plan.cache` | le plan binaire                      | `terraform apply plan.cache`           |
-| `plan.json`  | trois entiers (create/update/delete) | le widget des merge requests de GitLab |
+| Fichier            | Contenu                          | Qui le lit                             |
+| ------------------ | -------------------------------- | -------------------------------------- |
+| `<env>/plan.cache` | le plan binaire                  | `terraform apply plan.cache`           |
+| `<env>/plan.json`  | trois entiers, par environnement | la lecture humaine, en artefact        |
+| `plan-global.json` | la somme des trois               | le widget des merge requests de GitLab |
 
 Les deux sont produits par environnement, publiés en artefact par
 `terraform-plan`, et récupérés par les jobs d'apply via `needs:`. Trois détails
@@ -349,6 +350,21 @@ qui ne sont pas des détails :
   bougé depuis. C'est le comportement recherché — mieux vaut un job rouge qui
   demande de replanifier qu'un apply silencieusement différent de ce qui a été
   approuvé.
+- **Un seul fichier pour le widget**, et c'est une contrainte de GitLab, pas un
+  choix. Le rapport `terraform` n'accepte qu'un fichier par job ; un glob sur
+  les trois résumés fait échouer l'envoi des artefacts, donc le job — alors que
+  le plan, lui, a réussi :
+
+  ```
+  ERROR: Uploading artifacts as "terraform" … only one file can be sent as raw
+  ```
+
+  Deux issues étaient possibles : un job de plan par environnement (trois lignes
+  de widget, mais la liste des environnements écrite en dur dans le YAML), ou
+  une somme. C'est la somme qui est retenue — la découverte des environnements
+  est une règle du lot (§5), et le détail par environnement reste lisible dans
+  le journal du job et dans les `plan.json` publiés en artefact.
+
 - **`access: 'developer'` sur l'artefact.** Un plan binaire embarque les valeurs
   lues dans l'état : même sensibilité que l'état lui-même. Laissé en accès
   public, il serait téléchargeable par quiconque peut voir le projet. Le JSON

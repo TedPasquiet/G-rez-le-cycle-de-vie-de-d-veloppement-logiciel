@@ -567,6 +567,15 @@ if command -v jq >/dev/null 2>&1; then
   verifie_fichier_contient "$envs/staging/plan.json" '"delete": 0' \
     "et ne compte pas un no-op comme une suppression"
   verifie_contient 'Résumé du plan' 'le résumé est aussi affiché dans le journal du job'
+
+  # ⚠️ Le rapport `terraform` de GitLab n'accepte qu'UN fichier par job :
+  # présenter les trois résumés fait échouer l'envoi des artefacts, donc le job,
+  # alors que le plan a réussi. D'où cette somme — et d'où ce test, qui vérifie
+  # qu'elle additionne vraiment au lieu de recopier le dernier environnement.
+  verifie_fichier_contient "$envs/plan-global.json" '"create": 2' \
+    'le résumé global additionne les deux environnements'
+  verifie_contient 'Résumé global (2 environnement(s))' \
+    "et le journal dit sur combien d'environnements il porte"
 else
   verifie_contient 'jq absent' "sans jq, le script le dit au lieu de produire un résumé faux"
 fi
@@ -574,11 +583,19 @@ fi
 # ⚠️ Un résumé est un confort de lecture, pas une preuve : s'il échoue alors que
 # le plan a réussi, le contrôle doit rester vert. L'inverse ferait échouer des
 # pipelines pour un widget.
+#
+# Le code de retour, lui, vaut avec ou sans jq — c'est l'invariant. Seul le
+# message diffère, d'où le test conditionnel : sans jq le script s'arrête avant
+# d'appeler `show`, il ne peut donc pas signaler un résumé « non produit ».
 journal="$(nouveau_journal terraform)"
 verifie_code 0 "un résumé de plan non produit n'échoue pas le contrôle" \
   env FAKE_TERRAFORM_LOG="$journal" TF_STATE_BASE_URL="$etat" FAKE_TF_SHOW_FAIL=1 \
   bash "$ROOT_DIR/scripts/ci/terraform_check.sh" --plan -d "$envs"
-verifie_contient 'restera muet' "l'absence de résumé est signalée, pas passée sous silence"
+if command -v jq >/dev/null 2>&1; then
+  verifie_contient 'restera muet' "l'absence de résumé est signalée, pas passée sous silence"
+else
+  verifie_contient 'jq absent' "sans jq, le script le dit au lieu de produire un résumé faux"
+fi
 
 journal="$(nouveau_journal terraform)"
 verifie_code 0 "sans identifiants, le script prévient du 401 à venir" \

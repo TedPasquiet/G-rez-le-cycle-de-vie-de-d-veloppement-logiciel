@@ -131,10 +131,14 @@ Terraform replanifie, avec un avertissement. Et si l'état a bougé entre les
 deux, c'est Terraform qui refuse : « Saved plan is stale ».
 
 Le second fichier, `<env>/plan.json`, ne contient que trois entiers
-(create/update/delete) et alimente le widget Terraform des merge requests. Il
-demande `jq`, qui reste **facultatif** : absent, le script prévient et continue —
-un widget muet ne justifie pas de faire échouer un plan qui a réussi. Le JSON
-complet du plan, lui, n'est jamais écrit sur le disque.
+(create/update/delete), et leur somme est écrite à la racine du répertoire des
+environnements, dans `plan-global.json` : c'est **elle** qui alimente le widget
+Terraform des merge requests, parce que GitLab n'accepte qu'un seul fichier de
+rapport par job (« only one file can be sent as raw » — mesuré, le job échoue
+sinon, alors même que le plan a réussi). Les deux demandent `jq`, qui reste
+**facultatif** : absent, le script prévient et continue — un widget muet ne
+justifie pas de faire échouer un plan qui a réussi. Le JSON complet du plan, lui,
+n'est jamais écrit sur le disque.
 
 ```bash
 scripts/ci/terraform_check.sh                       # validate, hors cluster

@@ -115,6 +115,22 @@ usage() { sed -n '2,${/^#/!q;s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"; }
 readonly FICHIER_PLAN="plan.cache"
 readonly FICHIER_RESUME="plan.json"
 
+# Le résumé GLOBAL, écrit à la racine du répertoire des environnements.
+#
+# Il existe pour une raison mesurée, et pas jolie : le rapport `terraform` de
+# GitLab n'accepte QU'UN SEUL fichier par job. Présenter les trois résumés fait
+# échouer l'envoi des artefacts — et donc le job, alors que le plan, lui, a
+# réussi :
+#
+#   ERROR: Uploading artifacts as "terraform" … only one file can be sent as raw
+#
+# Deux issues étaient possibles : un job par environnement (trois lignes de
+# widget, mais la liste des environnements écrite en dur dans le YAML), ou une
+# somme. C'est la somme qui est retenue : la découverte des environnements est
+# une règle du lot, et le détail par environnement reste lisible dans le journal
+# du job comme dans les artefacts plan.json.
+readonly FICHIER_RESUME_GLOBAL="plan-global.json"
+
 # Lance une commande en la nommant, et renvoie 1 si elle échoue — sans arrêter
 # l'appelant, qui doit pouvoir continuer sur l'environnement suivant.
 #
@@ -193,6 +209,30 @@ resume_plan() {
     # « 0 to add » sur un plan qui en crée six.
     rm -f "$env/$FICHIER_RESUME"
     log_warn "[$nom] Résumé du plan non produit — le widget de merge request restera muet"
+  fi
+  return 0
+}
+
+# Additionne les résumés par environnement en un seul, pour le widget.
+#
+# Même contrat que resume_plan : n'échoue jamais le contrôle. Le widget est un
+# confort de lecture, le plan est la preuve.
+resume_global() {
+  local destination="$1"
+  shift
+  local -a fichiers=("$@")
+
+  ((${#fichiers[@]} > 0)) || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  if jq -s 'reduce .[] as $e ({"create": 0, "update": 0, "delete": 0};
+              {"create": (.create + $e.create),
+               "update": (.update + $e.update),
+               "delete": (.delete + $e.delete)})' "${fichiers[@]}" >"$destination"; then
+    log_info "Résumé global (${#fichiers[@]} environnement(s)) : $(tr -d ' \n' <"$destination")"
+  else
+    rm -f "$destination"
+    log_warn "Résumé global non produit — le widget de merge request restera muet"
   fi
   return 0
 }
@@ -281,6 +321,10 @@ main() {
 
   local echecs=0
   local env nom
+  # Les résumés réellement produits, pour la somme finale. Un environnement dont
+  # le plan a échoué n'y figure pas : mieux vaut un widget qui compte deux
+  # environnements sur trois qu'un widget qui invente un zéro.
+  local -a resumes=()
 
   if [[ "$mode" == 'validate' ]]; then
     # `fmt` porte sur le parent du répertoire des environnements, pas sur les
@@ -407,6 +451,13 @@ main() {
       if lance "[$nom] Plan" \
         terraform -chdir="$env" plan -input=false -lock=false -no-color -out="$FICHIER_PLAN"; then
         resume_plan "$env" "$nom"
+        # Écrit en toutes lettres plutôt qu'en `[[ … ]] && …` : sous `errexit`,
+        # une forme courte qui se termine par un test faux vaut code de retour
+        # non nul, et c'est le genre de raccourci qui fait sortir un script là
+        # où personne ne s'y attend.
+        if [[ -f "$env/$FICHIER_RESUME" ]]; then
+          resumes+=("$env/$FICHIER_RESUME")
+        fi
       else
         echecs=$((echecs + 1))
         # Un plan à moitié écrit appliquerait n'importe quoi. Mieux vaut aucun
@@ -416,6 +467,10 @@ main() {
       fi
     fi
   done
+
+  if [[ "$mode" == 'plan' ]]; then
+    resume_global "$envs_dir/$FICHIER_RESUME_GLOBAL" ${resumes[@]+"${resumes[@]}"}
+  fi
 
   if ((echecs > 0)); then
     log_error "Bilan : $echecs contrôle(s) en échec sur ${#envs[@]} environnement(s) (mode $mode)"
