@@ -248,6 +248,18 @@ seulement un agent absent du menu.
    ajoutant `--set rbac.useExistingRole=gitlab-agent-microcrm`** ;
 5. l'agent doit apparaître « connected ».
 
+Installation réellement jouée, pour mémoire — le namespace et le nom de release
+viennent de la commande que GitLab affiche, et ils déterminent le nom du
+ServiceAccount (`microcrm-gitlab-agent`) :
+
+```shell
+helm upgrade --install microcrm gitlab/gitlab-agent \
+  --namespace gitlab-agent-microcrm --create-namespace \
+  --set config.token=<jeton affiché par GitLab> \
+  --set config.kasAddress=grpcs://kas.gitlab.com \
+  --set rbac.useExistingRole=gitlab-agent-microcrm
+```
+
 **Les droits de l'agent dans le cluster — l'étape qu'on oublie.** Le fichier
 `config.yaml` dit QUI peut emprunter le tunnel ; il ne dit pas ce que le tunnel
 permet de faire. Par défaut, le chart Helm lie le ServiceAccount de l'agent à
@@ -259,15 +271,43 @@ seuls jobs qui passent par l'agent manipulent quatre types d'objets.
 `.gitlab/agents/microcrm/rbac.yaml` porte donc un `ClusterRole` restreint à ces
 quatre types (`namespaces`, `resourcequotas`, `limitranges`,
 `networkpolicies`), plus la découverte de l'API, et l'option
-`rbac.useExistingRole` le substitue à `cluster-admin`. Le contrôle qui vaut
-n'est pas la lecture du fichier mais l'interrogation du cluster :
+`rbac.useExistingRole` le substitue à `cluster-admin`.
+
+⚠️ **Ce que l'installation a appris, et qu'aucune lecture n'aurait donné.**
+`rbac.useExistingRole` **remplace** la liaison vers `cluster-admin`, il n'ajoute
+rien : ce que `cluster-admin` couvrait par accident doit être redonné
+explicitement. Or l'agent a des besoins qui n'ont rien à voir avec Terraform. Au
+premier démarrage, ses journaux ont répété :
+
+```
+leases.coordination.k8s.io "agent-3175822-lock" is forbidden:
+  User "system:serviceaccount:gitlab-agent-microcrm:microcrm-gitlab-agent"
+  cannot get resource "leases" in API group "coordination.k8s.io"
+```
+
+Le chart déploie **deux réplicas** depuis sa version 1.17, qui s'élisent un
+leader au moyen d'un `Lease` — et consignent le résultat dans un `Event`. Le
+fichier porte donc aussi un `Role` **namespacé** (pas un `ClusterRole` : ces
+objets vivent dans le namespace de l'agent, autoriser ceux du cluster entier
+n'aurait aucun sens) pour `leases` et `events`. Après quoi : zéro refus, bail
+acquis, leader élu.
+
+C'est la démonstration de ce qui rend un rôle minimal difficile — il ne se
+vérifie pas en le lisant, seulement en le faisant tourner. Le contrôle qui vaut
+n'est donc pas la lecture du fichier mais l'interrogation du cluster :
 
 ```shell
-SA=system:serviceaccount:gitlab-agent:microcrm-gitlab-agent
-kubectl auth can-i create namespaces  --as="$SA"   # yes
-kubectl auth can-i create deployments --as="$SA"   # no  ← le but
-kubectl auth can-i get secrets -A     --as="$SA"   # no  ← le but
+SA=system:serviceaccount:gitlab-agent-microcrm:microcrm-gitlab-agent
+kubectl auth can-i create namespaces     --as="$SA"      # yes
+kubectl auth can-i create resourcequotas --as="$SA"      # yes
+kubectl auth can-i create networkpolicies --as="$SA"     # yes
+kubectl auth can-i create deployments    --as="$SA" -A   # no  ← le but
+kubectl auth can-i get    secrets        --as="$SA" -A   # no  ← le but
+kubectl auth can-i create clusterroles   --as="$SA" -A   # no  ← le but
 ```
+
+Vérifié sur le cluster : les trois premiers répondent `yes`, les trois derniers
+`no`, et les journaux de l'agent ne contiennent plus aucun `forbidden`.
 
 Ce rôle ne couvre pas les objets applicatifs : les jobs de déploiement passent
 encore par `$KUBE_CONFIG`, pas par l'agent. Le jour où ils basculeront sur le
@@ -291,10 +331,11 @@ le rend dangereux : il n'apparaît nulle part.
 
 `--plan` enregistre donc son plan, et `--apply` applique **ce fichier** :
 
-| Fichier      | Contenu                              | Qui le lit                             |
-| ------------ | ------------------------------------ | -------------------------------------- |
-| `plan.cache` | le plan binaire                      | `terraform apply plan.cache`           |
-| `plan.json`  | trois entiers (create/update/delete) | le widget des merge requests de GitLab |
+| Fichier            | Contenu                          | Qui le lit                             |
+| ------------------ | -------------------------------- | -------------------------------------- |
+| `<env>/plan.cache` | le plan binaire                  | `terraform apply plan.cache`           |
+| `<env>/plan.json`  | trois entiers, par environnement | la lecture humaine, en artefact        |
+| `plan-global.json` | la somme des trois               | le widget des merge requests de GitLab |
 
 Les deux sont produits par environnement, publiés en artefact par
 `terraform-plan`, et récupérés par les jobs d'apply via `needs:`. Trois détails
@@ -309,6 +350,21 @@ qui ne sont pas des détails :
   bougé depuis. C'est le comportement recherché — mieux vaut un job rouge qui
   demande de replanifier qu'un apply silencieusement différent de ce qui a été
   approuvé.
+- **Un seul fichier pour le widget**, et c'est une contrainte de GitLab, pas un
+  choix. Le rapport `terraform` n'accepte qu'un fichier par job ; un glob sur
+  les trois résumés fait échouer l'envoi des artefacts, donc le job — alors que
+  le plan, lui, a réussi :
+
+  ```
+  ERROR: Uploading artifacts as "terraform" … only one file can be sent as raw
+  ```
+
+  Deux issues étaient possibles : un job de plan par environnement (trois lignes
+  de widget, mais la liste des environnements écrite en dur dans le YAML), ou
+  une somme. C'est la somme qui est retenue — la découverte des environnements
+  est une règle du lot (§5), et le détail par environnement reste lisible dans
+  le journal du job et dans les `plan.json` publiés en artefact.
+
 - **`access: 'developer'` sur l'artefact.** Un plan binaire embarque les valeurs
   lues dans l'état : même sensibilité que l'état lui-même. Laissé en accès
   public, il serait téléchargeable par quiconque peut voir le projet. Le JSON

@@ -349,6 +349,14 @@ test-scripts:
   image: $PYTHON_IMAGE
   stage: test
   needs: []
+  before_script:
+    # `jq` sert au résumé de plan de terraform_check.sh. Sans lui, la suite
+    # passe quand même — le script prévient et continue, et les tests le
+    # vérifient — mais elle n'éprouve JAMAIS le calcul du résumé, c'est-à-dire
+    # la seule partie qui contienne de la logique. Un test qui ne teste que la
+    # branche « outil absent » donne une fausse impression de couverture.
+    - apt-get update -qq && apt-get install -y --no-install-recommends jq
+    - jq --version
   script:
     - bash scripts/tests/run_tests.sh
   <<: *rules_test
@@ -721,11 +729,19 @@ terraform-plan:
     paths:
       - '$TERRAFORM_ENVS_DIR/*/plan.cache'
       - '$TERRAFORM_ENVS_DIR/*/plan.json'
+      - '$TERRAFORM_ENVS_DIR/plan-global.json'
     reports:
-      # Le motif reste un glob, comme le reste du lot : les environnements sont
-      # découverts, jamais listés en dur, sinon un quatrième environnement
-      # perdrait son widget sans que rien ne le dise.
-      terraform: '$TERRAFORM_ENVS_DIR/*/plan.json'
+      # ⚠️ UN SEUL fichier, et c'est une contrainte mesurée, pas un choix de
+      # style. Un glob sur les trois résumés fait échouer l'envoi des
+      # artefacts — donc le job, alors que le plan a réussi :
+      #
+      #   ERROR: Uploading artifacts as "terraform" … only one file can be
+      #   sent as raw
+      #
+      # Le script produit donc une somme des trois environnements. Le détail
+      # par environnement reste dans le journal du job et dans les plan.json
+      # publiés juste au-dessus.
+      terraform: '$TERRAFORM_ENVS_DIR/plan-global.json'
   rules:
     - if: '$CI_MERGE_REQUEST_ID'
     - if: '$CI_COMMIT_BRANCH == "develop"'

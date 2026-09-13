@@ -34,6 +34,7 @@ terraform.tfstate.*
 plan.out
 plan.cache
 plan.json
+plan-global.json
 
 # Journal d'un crash du binaire : contient la configuration complète.
 crash.log
