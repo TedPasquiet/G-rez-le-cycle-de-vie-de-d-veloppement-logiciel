@@ -1,0 +1,132 @@
+# ---------------------------------------------------------------------------
+# Qualité — analyse Sonar, bugs, seuil de couverture, force des assertions — 6 job(s)
+# ---------------------------------------------------------------------------
+# Inclus par `.gitlab-ci.yml`. Les gabarits que ces jobs étendent vivent dans
+# `.gitlab/ci/templates.yml` : `extends:` traverse un `include:`, une ancre YAML
+# non — c'est toute la raison de la conversion (docs/pipeline-ci.md §6.1).
+sonar-back:
+  image: $GRADLE_IMAGE
+  stage: quality
+  needs: ['test-back']
+  dependencies:
+    - test-back
+  script:
+    - cd back
+    - ./gradlew sonar -Dsonar.host.url=$SONAR_HOST_URL -Dsonar.token=$SONAR_TOKEN
+  allow_failure: true
+  extends: [.cache_gradle, .rules_test_back]
+
+sonar-front:
+  image: $SONAR_SCANNER_IMAGE
+  stage: quality
+  needs: ['test-front']
+  dependencies:
+    - test-front
+  script:
+    - cd front
+    - sonar-scanner -Dsonar.host.url=$SONAR_HOST_URL -Dsonar.token=$SONAR_TOKEN
+      -Dsonar.projectKey=$SONAR_PROJECT_KEY_FRONT
+      -Dsonar.organization=$SONAR_ORGANIZATION
+  allow_failure: true
+  extends: .rules_test_front
+
+spotbugs-back:
+  image: $GRADLE_IMAGE
+  stage: quality
+  # `needs: []` — démarre sans attendre l'étape précédente. Rien à recevoir :
+  # ce job ne lit que les sources.
+  needs: []
+  script:
+    - cd back
+    - ./gradlew spotbugsMain
+  artifacts:
+    when: always
+    paths:
+      - back/build/reports/spotbugs/
+    expire_in: 1 week
+  allow_failure: true
+  extends: [.cache_gradle, .rules_test_back]
+
+# Ce job lance mon script Python qui vérifie la couverture de tests du back.
+# Il se sert du rapport JaCoCo généré par le job test-back.
+coverage-gate:
+  image: $PYTHON_IMAGE
+  stage: quality
+  needs: ['test-back']
+  dependencies:
+    - test-back
+  script:
+    - python3 scripts/ci/check_coverage.py
+      --report back/build/reports/jacoco/test/jacocoTestReport.xml
+      --min "$COVERAGE_MIN"
+  # Gate bloquant. Il ne l'était pas tant que la couverture flottait loin du
+  # seuil ; elle est maintenant tenue par les tests et vérifiée aussi en local,
+  # un échec ici signale donc une vraie régression, pas un réglage à ajuster.
+  allow_failure: false
+  extends: .rules_test_back
+
+# Tests de mutation du back.
+#
+# La couverture répond à « quelles lignes les tests traversent-ils ? », pas à
+# « que vérifient-ils ? ». Un test sans assertion affiche 100 % de couverture.
+# PIT modifie le bytecode (inverse une condition, remplace un retour par null,
+# supprime un appel) et relance les tests qui couvrent la ligne : un mutant qui
+# survit désigne du code exécuté mais pas vérifié.
+#
+# Job séparé et non bloquant : PIT relance la suite une fois par mutant, il est
+# nettement plus lent que `test-back`, et son seuil ne doit pas arrêter une
+# livraison sur un mutant équivalent (une mutation qui ne change réellement
+# rien, comme la suppression d'un appel à une implémentation par défaut vide).
+# Le rapport HTML est publié en artefact pour être lu à la revue.
+#
+# Même service PostgreSQL que `test-back` : sans lui, PIT mesurerait la solidité
+# de la suite sur un moteur qu'on ne déploie pas. Coût assumé, PIT rejouant la
+# suite par mutant — d'où le `timeout` explicite, qui se lit comme un signal.
+mutation-back:
+  image: $GRADLE_IMAGE
+  stage: quality
+  needs: ['test-back']
+  # Mesuré à 1 min 46 sur le runner partagé, base PostgreSQL comprise : 45 min
+  # ne signalait plus rien. 10 min laisse de la marge tout en restant un signal.
+  timeout: 10 minutes
+  script:
+    - cd back
+    - ./gradlew pitest
+  artifacts:
+    when: always
+    paths:
+      - back/build/reports/pitest/
+    expire_in: 1 week
+  allow_failure: true
+  extends: [.postgres_service, .cache_gradle, .rules_test_back]
+
+# Ce job lance mon script Python qui demande à SonarCloud si le Quality Gate
+# est passé, une fois que l'analyse a été envoyée.
+#
+# ⚠️ Il ne tourne QUE sur main, contrairement aux autres jobs de qualité. Le plan
+# gratuit de SonarCloud n'expose le Quality Gate que pour la branche principale
+# du projet : sur `develop` ou une branche `feature/*`, l'API répond
+#   403 "Organization is not allowed to access data from non main branches"
+# quel que soit le token utilisé. Les analyses, elles, continuent d'être envoyées
+# sur toutes les branches par sonar-back / sonar-front — c'est seulement la
+# *relecture* du verdict qui est bridée.
+quality-gate:
+  image: $PYTHON_IMAGE
+  stage: quality
+  needs: ['sonar-back', 'sonar-front']
+  script:
+    - python3 scripts/ci/quality_gate.py
+      --host "$SONAR_HOST_URL"
+      --project-key "$SONAR_PROJECT_KEY_BACK"
+      --branch "$CI_COMMIT_REF_NAME"
+    - python3 scripts/ci/quality_gate.py
+      --host "$SONAR_HOST_URL"
+      --project-key "$SONAR_PROJECT_KEY_FRONT"
+      --branch "$CI_COMMIT_REF_NAME"
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ===========================================================================
+# SECURITY (SCA + scan filesystem)
+# ===========================================================================

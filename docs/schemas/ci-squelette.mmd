@@ -1,12 +1,13 @@
-%% Schéma — Le squelette du pipeline : neuf étapes, deux régimes.
+%% Schéma — Le squelette du pipeline : dix étapes, deux régimes.
 %% Source versionnée du bloc Mermaid de docs/pipeline-ci.md §2.
-%% Les étapes s'exécutent strictement dans l'ordre : c'est le régime par défaut
-%% de GitLab, et il gouverne 18 des 30 jobs.
+%% La dixième étape, `infra-apply`, est un correctif : un job manuel sans
+%% allow_failure est BLOQUANT, il ne peut donc pas vivre au milieu du pipeline.
 flowchart LR
     subgraph V["Vérification — toutes branches + MR"]
-        l["lint<br/>5 jobs"] --> t["test<br/>3 jobs"] --> q["quality<br/>6 jobs"] --> s["security<br/>2 jobs"] --> i["infra<br/>4 jobs"]
+        l["lint<br/>5 jobs"] --> t["test<br/>3 jobs"] --> q["quality<br/>6 jobs"] --> s["security<br/>2 jobs"] --> i["infra<br/>3 jobs"]
     end
     subgraph C["Livraison — develop, release/, hotfix/, main, tag"]
-        b["build<br/>2 jobs"] --> p["package<br/>2 jobs"] --> f["perf<br/>3 jobs"] --> d["deploy<br/>3 jobs"]
+        b["build<br/>2 jobs"] --> p["package<br/>2 jobs"] --> f["perf<br/>enfant, 3 jobs"] --> d["deploy<br/>3 jobs"]
     end
     V --> C
+    C --> a["infra-apply<br/>3 jobs manuels"]

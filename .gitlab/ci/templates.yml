@@ -1,0 +1,302 @@
+# ---------------------------------------------------------------------------
+# Les gabarits — le vocabulaire commun des 32 jobs
+# ---------------------------------------------------------------------------
+# Ce sont les anciennes ancres YAML (`&cache_gradle`, `&rules_test`…), devenues
+# des **jobs cachés** : un nom qui commence par un point n'est jamais exécuté,
+# il ne sert qu'à être étendu.
+#
+# POURQUOI CETTE CONVERSION ÉTAIT OBLIGATOIRE, et pas cosmétique : une ancre
+# YAML est résolue à la lecture d'UN document. Elle ne franchit pas un
+# `include:`. Découper le pipeline en gardant les ancres aurait cassé les 32
+# jobs d'un coup. `extends:`, lui, est résolu par GitLab après l'assemblage de
+# tous les fichiers inclus (docs/pipeline-ci.md §6.1).
+#
+# ⚠️ Une différence de sémantique à connaître : `<<:` fusionnait à PLAT (la clé
+# du job remplaçait entièrement celle du gabarit), `extends:` fusionne en
+# PROFONDEUR (les sous-clés se combinent). La traduction a été vérifiée exacte :
+# aucun job ne redéfinit une clé que son gabarit définit déjà, et les gabarits
+# combinés (`extends: [.cache_gradle, .rules_test]`) ont des clés disjointes.
+# Si un jour un job redéfinit `variables:` alors que son gabarit en a un, les
+# deux se combineront au lieu de s'écraser — ce sera le bon comportement, mais
+# ce ne sera plus le comportement d'avant.
+.cache_gradle:
+  cache:
+    key:
+      files:
+        - back/build.gradle
+    paths:
+      - .gradle/caches
+      - .gradle/wrapper
+
+.cache_node:
+  cache:
+    key:
+      files:
+        - front/package-lock.json
+    paths:
+      - front/node_modules
+
+# ---------------------------------------------------------------------------
+# Ici je définis quand les jobs doivent se lancer (sur quelles branches).
+# Comme plusieurs jobs utilisent les mêmes règles, je les écris une fois ici
+# et je les réutilise plus bas.
+# ---------------------------------------------------------------------------
+# Les règles par périmètre — ne pas rejouer le back pour un commit front
+# ---------------------------------------------------------------------------
+# Ces deux familles ne diffèrent de `.rules_test` que sur deux lignes : en merge
+# request et sur une branche de fonctionnalité, le job ne tourne que si SON
+# périmètre a bougé.
+#
+# CE QUE ÇA ÉCONOMISE, mesuré sur les durées de docs/pipeline-ci.md §5 : un
+# commit qui ne touche que `front/` déclenchait `test-back` (1 min), puis
+# `mutation-back` (1 min 46) et `dependency-check-back` (3 min 41) — près de
+# sept minutes pour du code que personne n'a modifié. Sur un projet dont le
+# quota CI a déjà été épuisé une fois, c'est l'économie la plus directe du lot.
+#
+# ⚠️ CE QUI N'EST PAS FILTRÉ, et pourquoi. `build-*`, `package-*` et les jobs de
+# déploiement gardent `.rules_build` sans `changes:`. La raison est concrète :
+# les images sont taguées par `$CI_COMMIT_SHORT_SHA`, et `deploy` comme les
+# services k6 les réclament sous CE tag. Sauter `package-back` parce que le back
+# n'a pas bougé produirait un tag qui n'existe pas, et un déploiement qui échoue
+# sur une image introuvable. Le filtrage s'arrête donc à la vérification.
+#
+# ⚠️ Les fichiers de CI sont dans les deux listes : une modification du pipeline
+# doit être éprouvée par tout le pipeline, sinon on livre une CI que rien n'a
+# exercée.
+#
+# `compare_to` n'est pas décoratif non plus : sur une branche de fonctionnalité
+# (hors merge request), `changes` se compare au commit précédent de la branche,
+# ce qui donne un résultat différent selon qu'on pousse un ou dix commits.
+# Comparer à `develop` rend le filtre stable — il répond « ce que cette branche
+# change », pas « ce que ce push change ».
+.rules_test_front:
+  rules:
+    - if: '$CI_MERGE_REQUEST_ID'
+      changes:
+        - 'front/**/*'
+        - '.gitlab-ci.yml'
+        - '.gitlab/ci/**/*'
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\//'
+      changes:
+        paths:
+          - 'front/**/*'
+          - '.gitlab-ci.yml'
+          - '.gitlab/ci/**/*'
+        compare_to: 'refs/heads/develop'
+    # Au-delà des branches de travail, plus aucun filtre : avant une livraison,
+    # tout est rejoué, y compris ce qui n'a pas bougé.
+    - if: '$CI_COMMIT_BRANCH =~ /^release\//'
+    - if: '$CI_COMMIT_BRANCH =~ /^hotfix\//'
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
+
+.rules_test_back:
+  rules:
+    - if: '$CI_MERGE_REQUEST_ID'
+      changes:
+        - 'back/**/*'
+        - '.gitlab-ci.yml'
+        - '.gitlab/ci/**/*'
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\//'
+      changes:
+        paths:
+          - 'back/**/*'
+          - '.gitlab-ci.yml'
+          - '.gitlab/ci/**/*'
+        compare_to: 'refs/heads/develop'
+    - if: '$CI_COMMIT_BRANCH =~ /^release\//'
+    - if: '$CI_COMMIT_BRANCH =~ /^hotfix\//'
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
+
+# ---------------------------------------------------------------------------
+.rules_test:
+  rules:
+    - if: '$CI_MERGE_REQUEST_ID'
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\//'
+    - if: '$CI_COMMIT_BRANCH =~ /^release\//'
+    - if: '$CI_COMMIT_BRANCH =~ /^hotfix\//'
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
+
+.rules_build:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_COMMIT_BRANCH =~ /^release\//'
+    - if: '$CI_COMMIT_BRANCH =~ /^hotfix\//'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
+
+# ===========================================================================
+# LINT
+# ===========================================================================
+.postgres_service:
+  services:
+    - name: $POSTGRES_IMAGE
+      alias: postgres
+  variables:
+    POSTGRES_DB: 'microcrm_test'
+    POSTGRES_USER: 'microcrm'
+    POSTGRES_PASSWORD: 'microcrm'
+    SPRING_DATASOURCE_URL: 'jdbc:postgresql://postgres:5432/$POSTGRES_DB'
+    SPRING_DATASOURCE_USERNAME: '$POSTGRES_USER'
+    SPRING_DATASOURCE_PASSWORD: '$POSTGRES_PASSWORD'
+
+# Ce job teste mes propres scripts d'automatisation avant qu'ils ne servent
+# plus loin dans le pipeline. Il ne construit et ne déploie rien : les vraies
+# commandes (kubectl, docker, trivy) sont remplacées par de faux programmes,
+# ce qui permet de vérifier aussi les cas d'échec (déploiement raté, rollback
+.terraform_infra:
+  image:
+    name: $TERRAFORM_IMAGE
+    entrypoint: ['']
+  stage: infra
+  variables:
+    # Identifiants du backend `http` qui héberge l'état. Le jeton de job est
+    # émis pour CE job, expire avec lui et ne donne accès qu'à ce projet : rien
+    # à créer à la main, rien à faire tourner, rien à révoquer. L'adresse, elle,
+    # est composée par environnement dans le script à partir de
+    # $TF_STATE_BASE_URL — voir TERRAFORM.md §4.
+    TF_HTTP_USERNAME: 'gitlab-ci-token'
+    TF_HTTP_PASSWORD: '$CI_JOB_TOKEN'
+  before_script:
+    # L'image hashicorp/terraform est basée sur Alpine et n'a que busybox sh ;
+    # le script est en bash. Même remède que .deploy_template.
+    #
+    # `jq` sert au résumé du plan qui alimente le widget des merge requests. Il
+    # est facultatif — sans lui le script prévient et continue — mais l'ajouter
+    # coûte un paquet Alpine, et un widget muet se remarque beaucoup moins
+    # qu'un job rouge.
+    - apk add --no-cache bash jq
+    # $KUBECONFIG est posé par GitLab À L'EXÉCUTION, pour les jobs des projets
+    # que l'agent autorise (.gitlab/agents/$KUBE_AGENT_NAME/config.yaml, clé
+    # `ci_access`). Il ne peut donc pas être lu depuis un bloc `variables:`, qui
+    # est résolu avant le démarrage du job — d'où ces `export` en before_script,
+    # qui partagent le shell du `script:`.
+    #
+    # Le contrôle explicite vaut mieux que l'erreur de Terraform : sans lui,
+    # l'absence d'agent se présenterait comme un problème de chemin de
+    # kubeconfig, et se chercherait dans le HCL au lieu de la configuration de
+    # l'agent.
+    - |
+      if [ -z "${KUBECONFIG:-}" ]; then
+        echo "ERREUR : ce job n'a reçu aucun kubeconfig de l'agent Kubernetes." >&2
+        echo "  Attendu : l'agent '$KUBE_AGENT_NAME' autorise ce projet et son pod est connecté." >&2
+        echo "  À vérifier : .gitlab/agents/$KUBE_AGENT_NAME/config.yaml (clé ci_access)," >&2
+        echo "  puis Operate > Kubernetes clusters, qui doit afficher l'agent « connected »." >&2
+        exit 1
+      fi
+    # Les deux coordonnées que providers.tf attend. Les défauts des variables
+    # Terraform sont ceux d'un POSTE (`~/.kube/config`, contexte `minikube`) :
+    # laissés tels quels ici, ils produisent l'échec décrit en tête de bloc.
+    - export TF_VAR_kubeconfig_path="$KUBECONFIG"
+    - export TF_VAR_kube_context="$CI_PROJECT_PATH:$KUBE_AGENT_NAME"
+    - terraform version
+    # Guillemets simples autour de TOUTE l'entrée : sans eux, le « : » du
+    # message ferait lire cette ligne comme un dictionnaire YAML et GitLab
+    # refuserait le job (« script config should be a string »).
+    - 'echo "Contexte Kubernetes visé : $TF_VAR_kube_context"'
+
+# `terraform plan` sur tous les environnements découverts.
+#
+# AUTOMATIQUE et BLOQUANT, alors qu'il était `manual` + `allow_failure: true`
+# jusqu'ici. Ce qui a changé n'est pas l'avis qu'on porte sur le job, ce sont
+# les deux raisons qui le rendaient inutilisable :
+#
+# 1. Il n'existait aucun chemin entre un runner partagé et le cluster. L'agent
+#    Kubernetes en fournit un, sortant, sans exposer d'API ni stocker de
+#    kubeconfig en variable — donc disponible sur TOUTES les branches, y compris
+#    les branches de fonctionnalité où les variables protégées ne le sont pas.
+# 2. L'état étant local et jamais commité, le plan repartait d'un état vide et
+#    annonçait « tout à créer » quoi qu'il arrive. Avec l'état managé GitLab, il
+#    lit l'état réel : « 0 to add, 0 to change » devient une information, et une
+#    modification faite à la main dans le cluster apparaît ici en dérive.
+#
+# C'est ce qui justifie de le rendre bloquant : un plan en échec veut maintenant
+# dire quelque chose. `-lock=false` est posé par le script (jamais sur l'apply) :
+# un plan ne persiste aucun état, et prendre le verrou ferait s'attendre les uns
+# les autres tous les pipelines de MR.
+.terraform_apply_rules:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+
+.package_template:
+  image: $DOCKER_IMAGE
+  stage: package
+  services:
+    - $DOCKER_DIND_IMAGE
+  # Mon script est écrit en Bash, or l'image docker:24 (basée sur Alpine) n'a
+  # que sh par défaut. Donc j'installe bash avant de lancer le script.
+  before_script:
+    - apk add --no-cache bash
+  extends: .rules_build
+
+.k6_template:
+  image:
+    # Version figée : d'une version de k6 à l'autre les mesures ne seraient
+    # plus comparables.
+    name: $K6_IMAGE
+    entrypoint: ['']
+  stage: perf
+  services:
+    - name: '$CI_REGISTRY_IMAGE/$APP_BACK_NAME:$CI_COMMIT_SHORT_SHA'
+      alias: back
+  variables:
+    K6_BASE_URL: 'http://back:8080'
+    K6_READY_TIMEOUT_S: '90' # démarrage de Spring Boot dans un conteneur
+
+# Test de fumée : court et stable, donc bloquant. Une erreur ici veut dire que
+# l'image construite ne répond pas correctement — inutile d'aller déployer.
+.deploy_template:
+  image:
+    name: $KUBECTL_IMAGE
+    entrypoint: ['']
+  stage: deploy
+  variables:
+    KUBECONFIG: '$KUBE_CONFIG'
+  before_script:
+    # alpine/kubectl est basée sur Alpine : elle n'a que sh, alors que mes
+    # scripts de déploiement sont en bash. On l'installe, puis on vérifie.
+    - apk add --no-cache bash
+    - command -v bash
+    # Fabrique l'overlay éphémère qui porte l'image réelle de ce pipeline.
+    # Définie ici pour que deploy-staging et deploy-production l'appellent sans
+    # dupliquer le gabarit ; before_script et script partagent le même shell.
+    #
+    # Le seul outil utilisé est le Kustomize embarqué dans `kubectl` :
+    # $KUBECTL_IMAGE ne contient que le binaire kubectl, pas de kustomize
+    # autonome, donc `kustomize edit set image` n'est pas disponible. Le
+    # transformateur `images:` d'un kustomization.yaml écrit à la volée fait le
+    # même travail sans figer une image d'outillage de plus.
+    - |
+      build_deploy_overlay() {
+        local overlay_name="$1"
+        rm -rf "$DEPLOY_OVERLAY_DIR"
+        mkdir -p "$DEPLOY_OVERLAY_DIR"
+        cat > "$DEPLOY_OVERLAY_DIR/kustomization.yaml" <<EOF
+      apiVersion: kustomize.config.k8s.io/v1beta1
+      kind: Kustomization
+      resources:
+        - ../$K8S_OVERLAYS_DIR/$overlay_name
+      images:
+        - name: $K8S_PLACEHOLDER_IMAGE_PREFIX/$APP_BACK_NAME
+          newName: $CI_REGISTRY_IMAGE/$APP_BACK_NAME
+          newTag: $CI_COMMIT_SHORT_SHA
+        - name: $K8S_PLACEHOLDER_IMAGE_PREFIX/$APP_FRONT_NAME
+          newName: $CI_REGISTRY_IMAGE/$APP_FRONT_NAME
+          newTag: $CI_COMMIT_SHORT_SHA
+      EOF
+        echo "Overlay éphémère ($overlay_name) :"
+        cat "$DEPLOY_OVERLAY_DIR/kustomization.yaml"
+        # Garde-fou : si le transformateur ne mordait plus (préfixe changé dans
+        # les manifestes, par exemple), le placeholder partirait tel quel vers le
+        # cluster. Mieux vaut échouer ici que déployer une image inexistante.
+        if kubectl kustomize "$DEPLOY_OVERLAY_DIR" | grep -q 'PLACEHOLDER'; then
+          echo "ERREUR : le rendu contient encore PLACEHOLDER — la substitution d'image n'a pas mordu." >&2
+          exit 1
+        fi
+      }

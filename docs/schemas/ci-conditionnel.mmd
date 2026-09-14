@@ -1,16 +1,23 @@
-%% Schéma — Le déclenchement conditionnel par branche.
+%% Schéma — Le déclenchement conditionnel par branche et par périmètre.
 %% Source versionnée du bloc Mermaid de docs/pipeline-ci.md §4.
-%% Seuls feature/, release/, hotfix/, develop, main et les tags déclenchent des
-%% jobs. Une branche fix/ ou ci/ ne lance rien.
+%% Le filtrage par périmètre (front/ ou back/) s'arrête à la vérification : les
+%% images étant taguées par SHA, sauter un package produirait un tag inexistant.
 flowchart LR
-    mr(["Merge request<br/>feature/"]) --> V
+    mr(["Merge request<br/>feature/"]) --> F{"quel<br/>périmètre ?"}
+    F -->|"front/"| vf["vérification front"]
+    F -->|"back/"| vb["vérification back"]
+    F -->|"les deux, ou CI"| vt["tout"]
     dev(["develop"]) --> V
     rel(["release/<br/>hotfix/"]) --> V
     main(["main<br/>tag"]) --> V
-    V["Vérification<br/>lint, test, quality,<br/>security, infra"] --> G{"branche ?"}
+    vf --> V["Vérification"]
+    vb --> V
+    vt --> V
+    V --> G{"branche ?"}
     G -->|"MR, feature/"| stop(["s'arrête là"])
     G -->|"develop, release/,<br/>hotfix/, main, tag"| L["Livraison<br/>build, package, perf"]
     L --> H{"branche ?"}
     H -->|"develop"| st(["deploy-staging ✋"])
     H -->|"main, tag"| pr(["deploy-production ✋<br/>rollback ✋"])
     H -->|"release/, hotfix/"| rien(["aucun déploiement"])
+    H -->|"main"| ia(["terraform-apply ✋"])
