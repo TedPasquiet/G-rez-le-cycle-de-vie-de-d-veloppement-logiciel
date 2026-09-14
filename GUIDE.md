@@ -91,9 +91,9 @@ casser un pipeline sans qu'aucun commit ne l'explique.
 Quatre contrôles complémentaires. Checkstyle et ESLint sur le style, SpotBugs sur
 les défauts de programmation Java, SonarCloud sur la dette et les vulnérabilités,
 un seuil de couverture et des tests de mutation sur le back. Deux points à
-connaître : `coverage-gate` est **bloquant** (`allow_failure: false`), là où
-`mutation-back` informe ; et `quality-gate` ne tourne que sur `main`, parce que
-le plan gratuit de SonarCloud refuse de livrer le verdict des autres branches.
+connaître : tous ces contrôles sont **bloquants**, `mutation-back` compris ; et
+`quality-gate` ne tourne que sur `main`, parce que le plan gratuit de SonarCloud
+refuse de livrer le verdict des autres branches.
 Les analyses, elles, sont bien envoyées depuis toutes les branches.
 
 **Fichiers** : `back/config/checkstyle/`, `back/config/spotbugs/`, `front/.eslintrc.json`, `front/sonar-project.properties`, `scripts/ci/check_coverage.py`, `scripts/ci/quality_gate.py`

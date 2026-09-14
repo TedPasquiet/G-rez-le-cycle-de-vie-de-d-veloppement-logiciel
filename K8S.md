@@ -357,8 +357,8 @@ n'attend le front ni ne le ramène en arrière s'il échoue. _(Cette dernière
 conséquence est déduite du mécanisme, elle n'a pas été rejouée en provoquant un
 échec du back.)_
 
-`deploy-staging` porte en outre `allow_failure: true` : en staging, cette
-situation ne fait pas échouer le pipeline.
+`deploy-staging` n'a plus d'`allow_failure` : un échec du déploiement en staging
+fait échouer le pipeline, comme en production.
 
 ## 7. Ce qui varie entre les environnements
 

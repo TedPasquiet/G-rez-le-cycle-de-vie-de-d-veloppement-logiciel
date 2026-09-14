@@ -89,8 +89,6 @@ pas des oublis.
 | Tests E2E (Cypress/Playwright)             | **non implémenté** — aucun stage `integration`                                           |
 | `deploy-staging` automatique sur `develop` | en `when: manual` ; le passage en `on_success` est une ligne                             |
 | Trivy bloquant                             | tourne en `--exit-code 0` — 4 mauvaises configurations à traiter d'abord                 |
-| Quality Gate Sonar bloquant                | `allow_failure: true`, et ne tourne que sur `main`                                       |
-| Tests de mutation bloquants                | `allow_failure: true` — le seuil de 80 % est tenu mais non imposé                        |
 | Métriques Prometheus / Grafana             | **non implémenté** — la supervision est faite par les logs (ELK) et les indicateurs DORA |
 | Signature des images                       | **non implémenté** — les images sont taguées par SHA, pas signées                        |
 | Déploiement progressif (canary)            | **non implémenté** — `RollingUpdate` avec `maxUnavailable: 0`                            |

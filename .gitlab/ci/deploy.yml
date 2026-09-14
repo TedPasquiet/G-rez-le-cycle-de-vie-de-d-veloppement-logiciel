@@ -58,9 +58,12 @@ deploy-staging:
     - bash scripts/deploy/deploy.sh -n "$STAGING_NAMESPACE" -d "$APP_FRONT_NAME" -c "$APP_FRONT_NAME"
       -i "$CI_REGISTRY_IMAGE/$APP_FRONT_NAME:$CI_COMMIT_SHORT_SHA" -t "$DEPLOY_TIMEOUT"
   rules:
+    # Manuel et bloquant, comme deploy-production. Sans conséquence sur ce qui
+    # suit : sur develop, `deploy` est la dernière étape. Le pipeline reste
+    # « bloqué » tant que le staging n'est pas déployé, et c'est exactement
+    # l'information qu'il doit donner.
     - if: '$CI_COMMIT_BRANCH == "develop"'
       when: manual
-      allow_failure: true
 
 deploy-production:
   extends: .deploy_template
