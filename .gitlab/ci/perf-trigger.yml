@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+# Le pont vers le pipeline enfant de performance — le seul `trigger:` du projet
+# ---------------------------------------------------------------------------
+# POURQUOI ICI, ET NULLE PART AILLEURS.
+#
+# `trigger:` ne sert pas à découper un pipeline — c'est `include:` qui fait ça.
+# Il crée un pipeline SÉPARÉ, et cette frontière a un coût précis : les `needs:`
+# ne la traversent pas, et le passage d'artefacts devient malaisé. Un domaine ne
+# peut donc devenir un pipeline enfant que s'il est réellement autonome.
+#
+# Les trois candidats ont été examinés, et deux ont été écartés pour des raisons
+# vérifiables dans ce dépôt :
+#
+#   - **front / back** (la piste de docs/pipeline-ci.md §5) : `quality-gate` a
+#     besoin de `sonar-back` ET de `sonar-front`, or un `needs:` ne franchit pas
+#     la frontière parent/enfant. Et l'économie visée est déjà obtenue, sans
+#     aucune frontière, par les règles `.rules_test_front` / `.rules_test_back`.
+#   - **infra** : `terraform-apply-<env>` applique le `plan.cache` produit par
+#     `terraform-plan` — un artefact, précisément ce qui passe mal d'un pipeline
+#     à l'autre. En faire un enfant casserait la garantie « on applique le plan
+#     qui a été relu » (TERRAFORM.md §4.2).
+#   - **perf** : retenu. Les trois jobs k6 ne produisent aucun artefact, n'en
+#     consomment aucun, et personne ne les `needs:`. Leur seule entrée est
+#     l'image du back, tirée du registry par son tag de commit — pas du
+#     pipeline. La frontière ne coupe donc rien.
+#
+# Ce qu'on y gagne, au-delà de l'exercice : la campagne de performance devient
+# rejouable seule, sans relancer le pipeline entier, et ses trois jobs cessent
+# d'encombrer le graphe principal.
+perf:
+  stage: perf
+  trigger:
+    include:
+      - local: '/.gitlab/ci/perf-pipeline.yml'
+    # `depend` fait remonter le verdict : sans lui, ce job passerait au vert dès
+    # que l'enfant est CRÉÉ, sans attendre son résultat — un pipeline vert qui
+    # ne dit rien des tests de charge.
+    strategy: depend
+  # Les mêmes règles que les jobs déclenchés. `k6-stress`, manuel, a les
+  # siennes — plus étroites — dans l'enfant : ce job-ci se contente d'ouvrir la
+  # porte, il ne décide pas de ce qui tourne derrière.
+  extends: .rules_build

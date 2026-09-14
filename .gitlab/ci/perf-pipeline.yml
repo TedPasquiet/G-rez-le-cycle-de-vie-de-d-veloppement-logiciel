@@ -1,0 +1,19 @@
+# ---------------------------------------------------------------------------
+# Racine du pipeline ENFANT de performance
+# ---------------------------------------------------------------------------
+# Ce fichier n'est jamais inclus par `.gitlab-ci.yml` : il est passé à
+# `trigger:` par le job `perf` (voir perf-trigger.yml), et GitLab en fait un
+# pipeline à part entière, avec ses propres étapes et sa propre page.
+#
+# ⚠️ UN PIPELINE ENFANT N'HÉRITE PAS DES VARIABLES GLOBALES DE SON PARENT. C'est
+# la raison d'être de `.gitlab/ci/variables.yml` : les deux racines l'incluent,
+# donc $K6_IMAGE, $APP_BACK_NAME et le reste valent la même chose des deux
+# côtés, sans duplication et sans risque de divergence.
+include:
+  - local: '/.gitlab/ci/variables.yml'
+  - local: '/.gitlab/ci/templates.yml'
+  - local: '/.gitlab/ci/perf.yml'
+
+# Le pipeline enfant a sa propre liste d'étapes, et elle tient en une ligne.
+stages:
+  - perf

@@ -1,0 +1,86 @@
+# ---------------------------------------------------------------------------
+# Build et package — les artefacts, puis les images taguées par SHA — 4 job(s)
+# ---------------------------------------------------------------------------
+# Inclus par `.gitlab-ci.yml`. Les gabarits que ces jobs étendent vivent dans
+# `.gitlab/ci/templates.yml` : `extends:` traverse un `include:`, une ancre YAML
+# non — c'est toute la raison de la conversion (docs/pipeline-ci.md §6.1).
+build-front:
+  image: $NODE_IMAGE
+  stage: build
+  script:
+    - cd front
+    - npm ci
+    - npx @angular/cli build --optimization
+  artifacts:
+    paths:
+      - front/dist/
+    expire_in: 1 week
+  extends: [.cache_node, .rules_build]
+
+build-back:
+  image: $GRADLE_IMAGE
+  stage: build
+  script:
+    - cd back
+    - ./gradlew build -x test
+  artifacts:
+    paths:
+      - back/build/libs/*.jar
+    expire_in: 1 week
+  extends: [.cache_gradle, .rules_build]
+
+# ===========================================================================
+# PACKAGE : on construit les images Docker et on les envoie sur le registry
+# de GitLab (les variables $CI_REGISTRY_* sont fournies automatiquement).
+# ===========================================================================
+package-back:
+  extends: .package_template
+  variables:
+    IMAGE: '$CI_REGISTRY_IMAGE/$APP_BACK_NAME'
+  script:
+    - bash scripts/ci/build_and_push.sh --context ./back --image "$IMAGE" --tag "$CI_COMMIT_SHORT_SHA"
+    # On scanne l'image finale avec Trivy. Ici c'est juste pour info : avec
+    # --exit-code 0 ça n'arrête pas le pipeline même s'il trouve des soucis.
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY_IMAGE image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"
+
+package-front:
+  extends: .package_template
+  variables:
+    IMAGE: '$CI_REGISTRY_IMAGE/$APP_FRONT_NAME'
+  script:
+    - bash scripts/ci/build_and_push.sh --context ./front --image "$IMAGE" --tag "$CI_COMMIT_SHORT_SHA"
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY_IMAGE image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"
+
+# ===========================================================================
+# PERF : tests de performance k6 (dossier tests/k6/).
+#
+# L'application testée est démarrée par GitLab comme un *service* : c'est
+# l'image qu'on vient de packager, donc bien l'artefact qui partira en prod.
+# k6 tourne dans le conteneur du job et l'appelle sur http://back:8080.
+# D'où la place du stage, après `package` : ces jobs ont besoin de l'image.
+#
+# Quatre points à connaître :
+#
+#   1. L'entrypoint de l'image grafana/k6 est `k6` lui-même. On le neutralise
+#      (entrypoint: ['']) pour que GitLab puisse lancer son propre shell.
+#
+#   2. Le conteneur k6 tourne avec un utilisateur non-root : il lit le dépôt
+#      mais ne peut pas y écrire. On ne produit donc pas de rapport JSON en
+#      artefact — le résumé de k6 est dans le log du job. Pour un rapport
+#      exploitable, lancer scripts/tests/run_k6.sh en local.
+#
+#   3. L'attente du démarrage est faite par le scénario k6 lui-même (fonction
+#      setup), pas par un `sleep` au jugé. C'est nécessaire : GitLab considère
+#      un service comme prêt dès que son port répond, ce qui ne dit pas que
+#      Spring Boot a fini de démarrer. C'est donc l'attente de setup qui fait
+#      foi. (back/Dockerfile déclarait EXPOSE 4200 alors que l'application
+#      écoute sur 8080 ; c'est corrigé.)
+#
+#   4. Pour voir les logs de l'application quand un job échoue, définir la
+#      variable CI_DEBUG_SERVICES = "true" dans GitLab.
+#
+# Réglage de la charge : toute variable K6_* définie dans GitLab est vue par
+# le scénario (K6_LOAD_VUS, K6_LOAD_DURATION...). Les seuils sont dans
+# tests/k6/lib/config.js et ont vocation à y rester : les desserrer depuis
+# l'interface viderait le gate de son sens.
+# ===========================================================================

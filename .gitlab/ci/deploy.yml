@@ -1,0 +1,117 @@
+# ---------------------------------------------------------------------------
+# Déploiement — Kubernetes, et le retour arrière qui va avec — 3 job(s)
+# ---------------------------------------------------------------------------
+# Inclus par `.gitlab-ci.yml`. Les gabarits que ces jobs étendent vivent dans
+# `.gitlab/ci/templates.yml` : `extends:` traverse un `include:`, une ancre YAML
+# non — c'est toute la raison de la conversion (docs/pipeline-ci.md §6.1).
+deploy-staging:
+  extends: .deploy_template
+  environment:
+    name: staging
+  script:
+    # 1. Le Secret d'accès au registry, que les deux Deployments référencent en
+    #    imagePullSecrets. Sans lui, un cluster vierge ne peut pas tirer les
+    #    images d'un registry privé et tous les pods restent en
+    #    ImagePullBackOff.
+    #
+    #    `create --dry-run=client -o yaml | apply -f -` plutôt que `create` seul :
+    #    `create` échouerait avec « already exists » au deuxième déploiement,
+    #    alors que cette forme est idempotente et actualise le Secret si le mot
+    #    de passe a changé.
+    #
+    #    ⚠️ La sortie de `-o yaml` contient le mot de passe encodé en base64.
+    #    Le masquage GitLab travaille sur la valeur littérale et ne reconnaîtrait
+    #    PAS cette forme encodée : le flux doit donc aller directement dans le
+    #    pipe, sans jamais passer par le log du job. Ne pas y ajouter de `tee`,
+    #    de `cat`, ni de `kubectl get secret -o yaml` de vérification.
+    - |
+      kubectl create secret docker-registry "$REGISTRY_SECRET_NAME" \
+        --docker-server="$CI_REGISTRY" \
+        --docker-username="$CI_REGISTRY_USER" \
+        --docker-password="$CI_REGISTRY_PASSWORD" \
+        -n "$STAGING_NAMESPACE" --dry-run=client -o yaml \
+        | kubectl apply -n "$STAGING_NAMESPACE" -f -
+    # 2. On fabrique l'overlay éphémère : l'overlay de staging, plus le chemin de
+    #    registry et le tag du commit posés par le transformateur `images:`.
+    #    Les manifestes du dépôt gardent leur placeholder — c'est ce qui permet à
+    #    lint-k8s de les valider sans coordonnées de registry (K8S.md §4).
+    - build_deploy_overlay staging
+    # 3. On applique. C'est ce qui rend le déploiement idempotent sur un cluster
+    #    vierge : sans cette étape, deploy.sh s'arrête sur « Deployment 'back'
+    #    introuvable » puisqu'il ne sait que modifier un Deployment existant.
+    #
+    #    L'état désiré envoyé au cluster contient désormais la VRAIE image, donc
+    #    l'annotation last-applied-configuration aussi. C'est le correctif : tant
+    #    que l'image passait par `kubectl set image` (étape 4), l'annotation
+    #    gardait `PLACEHOLDER` et chaque `apply` le reposait, insérant une
+    #    révision placeholder dans l'historique. La « révision précédente » d'un
+    #    déploiement sain était donc toujours le placeholder, ce qui rendait
+    #    rollback-production destructeur au lieu de réparateur. Voir K8S.md §6.
+    - kubectl apply -k "$DEPLOY_OVERLAY_DIR" -n "$STAGING_NAMESPACE"
+    # 4. deploy.sh attend la fin du rollout et revient automatiquement en arrière
+    #    s'il n'aboutit pas dans $DEPLOY_TIMEOUT. Son `kubectl set image` est
+    #    devenu un no-op — l'étape 3 a déjà posé la bonne image, donc il ne crée
+    #    aucune révision supplémentaire (vérifié). On le garde pour l'attente et
+    #    le garde-fou, couverts par les assertions de scripts/tests/run_tests.sh.
+    - bash scripts/deploy/deploy.sh -n "$STAGING_NAMESPACE" -d "$APP_BACK_NAME" -c "$APP_BACK_NAME"
+      -i "$CI_REGISTRY_IMAGE/$APP_BACK_NAME:$CI_COMMIT_SHORT_SHA" -t "$DEPLOY_TIMEOUT"
+    - bash scripts/deploy/deploy.sh -n "$STAGING_NAMESPACE" -d "$APP_FRONT_NAME" -c "$APP_FRONT_NAME"
+      -i "$CI_REGISTRY_IMAGE/$APP_FRONT_NAME:$CI_COMMIT_SHORT_SHA" -t "$DEPLOY_TIMEOUT"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: manual
+      allow_failure: true
+
+deploy-production:
+  extends: .deploy_template
+  environment:
+    name: production
+  script:
+    # Même ordonnancement qu'en staging : le Secret du registry, l'overlay
+    # éphémère qui porte déjà la bonne image, l'apply, puis deploy.sh pour
+    # l'attente de rollout et le retour arrière. Voir deploy-staging pour le
+    # détail — en particulier sur le fait que la sortie de `-o yaml` ne doit
+    # jamais atteindre le log, et sur la raison pour laquelle l'image ne passe
+    # plus par `kubectl set image`.
+    - |
+      kubectl create secret docker-registry "$REGISTRY_SECRET_NAME" \
+        --docker-server="$CI_REGISTRY" \
+        --docker-username="$CI_REGISTRY_USER" \
+        --docker-password="$CI_REGISTRY_PASSWORD" \
+        -n "$PROD_NAMESPACE" --dry-run=client -o yaml \
+        | kubectl apply -n "$PROD_NAMESPACE" -f -
+    - build_deploy_overlay production
+    - kubectl apply -k "$DEPLOY_OVERLAY_DIR" -n "$PROD_NAMESPACE"
+    - bash scripts/deploy/deploy.sh -n "$PROD_NAMESPACE" -d "$APP_BACK_NAME" -c "$APP_BACK_NAME"
+      -i "$CI_REGISTRY_IMAGE/$APP_BACK_NAME:$CI_COMMIT_SHORT_SHA" -t "$DEPLOY_TIMEOUT"
+    - bash scripts/deploy/deploy.sh -n "$PROD_NAMESPACE" -d "$APP_FRONT_NAME" -c "$APP_FRONT_NAME"
+      -i "$CI_REGISTRY_IMAGE/$APP_FRONT_NAME:$CI_COMMIT_SHORT_SHA" -t "$DEPLOY_TIMEOUT"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+    - if: '$CI_COMMIT_TAG'
+      when: manual
+
+# À lancer à la main si une mise en prod se passe mal : ça remet la version d'avant.
+#
+# `rollback.sh` est appelé sans --to-revision, donc il vise la révision
+# immédiatement précédente. Ce job ne vaut que si cette révision est saine :
+# tant que deploy-staging / deploy-production posaient l'image par
+# `kubectl set image` après un `apply` resté sur PLACEHOLDER, chaque déploiement
+# insérait DEUX révisions — le placeholder puis la vraie image — et la
+# précédente était donc toujours le placeholder. Ce job aurait cassé la
+# production au lieu de la réparer. L'overlay éphémère supprime la révision
+# placeholder ; c'est ce qui rend ce rollback fiable. Vérifié sur cluster,
+# voir K8S.md §14.10.
+rollback-production:
+  extends: .deploy_template
+  environment:
+    name: production
+  script:
+    - bash scripts/deploy/rollback.sh -n "$PROD_NAMESPACE" -d "$APP_BACK_NAME" -t "$DEPLOY_TIMEOUT"
+    - bash scripts/deploy/rollback.sh -n "$PROD_NAMESPACE" -d "$APP_FRONT_NAME" -t "$DEPLOY_TIMEOUT"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+    - if: '$CI_COMMIT_TAG'
+      when: manual

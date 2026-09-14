@@ -1,17 +1,20 @@
-%% Schéma — Les interdépendances réelles entre jobs.
+%% Schéma — Les interdépendances entre jobs.
 %% Source versionnée du bloc Mermaid de docs/pipeline-ci.md §3.
-%% Douze jobs sortent de l'ordre des étapes : six par `needs: []` qui démarrent
-%% immédiatement, six par un `needs` explicite de job à job.
+%% 14 jobs démarrent immédiatement, 8 déclarent un besoin précis, et 11 gardent
+%% volontairement la barrière d'étape : on ne package pas ce qui n'est pas vérifié.
 flowchart LR
-    subgraph A["needs: [] — démarrent sans attendre l'étape précédente"]
-        a1["lint-k8s"] ~~~ a2["lint-helm"] ~~~ a3["test-scripts"] ~~~ a4["terraform-validate"] ~~~ a5["ansible-lint"] ~~~ a6["terraform-plan"]
+    subgraph A["needs: [] — 14 jobs, démarrent immédiatement"]
+        a1["lint-front"] ~~~ a2["lint-back"] ~~~ a3["shellcheck"] ~~~ a4["test-front"] ~~~ a5["test-back"] ~~~ a6["dependency-check-back"]
     end
-    subgraph B["needs explicites — dépendance de job à job"]
+    subgraph B["needs explicites — 8 jobs"]
         tb["test-back"] --> cg["coverage-gate"]
         tb --> sb["sonar-back"]
         tb --> mb["mutation-back"]
         tf["test-front"] --> sf["sonar-front"]
         sb --> qg["quality-gate"]
         sf --> qg
-        tval["terraform-validate"] --> tapp["terraform-apply"]
+        tpl["terraform-plan"] --> tap["terraform-apply-&lt;env&gt;"]
+    end
+    subgraph C["barrière d'étape conservée — 11 jobs"]
+        bu["build-*"] --> pk["package-*"] --> pf["perf"] --> dp["deploy-*"]
     end

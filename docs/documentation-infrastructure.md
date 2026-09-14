@@ -68,7 +68,7 @@ flowchart TB
     dev(["git push / merge"]) --> gh["GitHub<br/>dépôt de travail, Pull Requests"]
     gh -->|"GitHub Actions : mirror-to-gitlab.yaml"| gl["GitLab<br/>miroir en lecture seule"]
     gl --> pipe
-    subgraph pipe["Pipeline GitLab CI : 9 étapes, 32 jobs"]
+    subgraph pipe["Pipeline GitLab CI : 10 étapes, 33 jobs"]
         direction LR
         s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
     end
@@ -116,19 +116,20 @@ Actions recopie toutes les références à chaque push.
 branche absente de GitHub y est supprimée. Committer directement sur GitLab
 revient à perdre le travail au push suivant.
 
-### 2.2 Les neuf étapes
+### 2.2 Les dix étapes
 
-| Étape      | Jobs                                                                               | Rôle                                                |
-| ---------- | ---------------------------------------------------------------------------------- | --------------------------------------------------- |
-| `lint`     | `lint-front`, `lint-back`, `shellcheck`, `lint-k8s`, `lint-helm`                   | Forme du code, des scripts, des manifestes          |
-| `test`     | `test-scripts`, `test-front`, `test-back`                                          | Scripts d'automatisation, Karma, JUnit              |
-| `quality`  | `sonar-back`, `sonar-front`, `spotbugs-back`, `coverage-gate`, `quality-gate`      | Analyse statique, bugs, seuil de couverture         |
-| `security` | `dependency-check-back`, `trivy-fs`                                                | CVE des dépendances, secrets, misconfigurations     |
-| `infra`    | `terraform-validate`, `ansible-lint`, `terraform-plan`, 3× `terraform-apply-<env>` | L'infrastructure se valide **avant** la compilation |
-| `build`    | `build-front`, `build-back`                                                        | Compilation des artefacts                           |
-| `package`  | `package-back`, `package-front`                                                    | Images Docker taguées par SHA + scan Trivy          |
-| `perf`     | `k6-smoke`, `k6-load`, `k6-stress`                                                 | Tests de performance sur l'image construite         |
-| `deploy`   | `deploy-staging`, `deploy-production`, `rollback-production`                       | Déploiement Kubernetes et retour arrière            |
+| Étape         | Jobs                                                                          | Rôle                                                |
+| ------------- | ----------------------------------------------------------------------------- | --------------------------------------------------- |
+| `lint`        | `lint-front`, `lint-back`, `shellcheck`, `lint-k8s`, `lint-helm`              | Forme du code, des scripts, des manifestes          |
+| `test`        | `test-scripts`, `test-front`, `test-back`                                     | Scripts d'automatisation, Karma, JUnit              |
+| `quality`     | `sonar-back`, `sonar-front`, `spotbugs-back`, `coverage-gate`, `quality-gate` | Analyse statique, bugs, seuil de couverture         |
+| `security`    | `dependency-check-back`, `trivy-fs`                                           | CVE des dépendances, secrets, misconfigurations     |
+| `infra`       | `terraform-validate`, `ansible-lint`, `terraform-plan`                        | L'infrastructure se valide **avant** la compilation |
+| `build`       | `build-front`, `build-back`                                                   | Compilation des artefacts                           |
+| `package`     | `package-back`, `package-front`                                               | Images Docker taguées par SHA + scan Trivy          |
+| `perf`        | job `perf` → **pipeline enfant** (3 jobs k6)                                  | Tests de performance sur l'image construite         |
+| `deploy`      | `deploy-staging`, `deploy-production`, `rollback-production`                  | Déploiement Kubernetes et retour arrière            |
+| `infra-apply` | 3× `terraform-apply-<env>`                                                    | Manuels et bloquants, donc placés en dernier        |
 
 L'ordre n'est pas cosmétique. `infra` passe **avant** `build` parce qu'un chart,
 un manifeste ou un plan Terraform cassé n'a pas besoin d'attendre une
