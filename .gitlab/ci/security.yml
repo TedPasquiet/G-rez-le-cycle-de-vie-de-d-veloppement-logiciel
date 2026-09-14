@@ -1,0 +1,77 @@
+# ---------------------------------------------------------------------------
+# Sécurité — CVE des dépendances, secrets et misconfigurations du dépôt — 2 job(s)
+# ---------------------------------------------------------------------------
+# Inclus par `.gitlab-ci.yml`. Les gabarits que ces jobs étendent vivent dans
+# `.gitlab/ci/templates.yml` : `extends:` traverse un `include:`, une ancre YAML
+# non — c'est toute la raison de la conversion (docs/pipeline-ci.md §6.1).
+dependency-check-back:
+  image: $GRADLE_IMAGE
+  stage: security
+  # `needs: []` — démarre sans attendre l'étape précédente. Rien à recevoir :
+  # ce job ne lit que les sources.
+  needs: []
+  # On garde en cache la base NVD (.gradle/dependency-check-data) pour ne pas la
+  # retélécharger à chaque fois : le 1er run est long, les suivants beaucoup moins.
+  cache:
+    - key:
+        files:
+          - back/build.gradle
+      paths:
+        - .gradle/caches
+        - .gradle/wrapper
+    - key: nvd-data
+      paths:
+        - .gradle/dependency-check-data
+      when: always
+  # Mesuré à 3 min 41 une fois le cache `nvd-data` réellement constitué.
+  # 15 min laissent de la marge pour un rattrapage sans faire du délai un
+  # plafond qui ne signale plus rien.
+  timeout: 15 minutes
+  script:
+    - cd back
+    - ./gradlew dependencyCheckAnalyze
+  artifacts:
+    when: always
+    paths:
+      - back/build/reports/dependency-check-report.*
+    expire_in: 1 week
+  # Bloquant : le scan trouve 0 vulnérabilité sur le runtimeClasspath, la porte
+  # se ferme donc sur du vide. Toute CVE >= CVSS 7 introduite ensuite arrête
+  # le pipeline, au lieu d'être signalée dans un job que personne ne relit.
+  allow_failure: false
+  extends: .rules_test_back
+
+trivy-fs:
+  image:
+    name: $TRIVY_IMAGE
+    entrypoint: ['']
+  stage: security
+  # `needs: []` — démarre sans attendre l'étape précédente. Rien à recevoir :
+  # ce job ne lit que les sources.
+  needs: []
+  # Trivy regarde le code du dépôt et cherche des dépendances vulnérables ou des
+  # secrets oubliés. Le fichier .trivyignore sert à ignorer les faux positifs.
+  script:
+    - trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --exit-code 0 --no-progress .
+  allow_failure: true
+  extends: .rules_test
+
+# ===========================================================================
+# INFRA (Terraform et Ansible — l'infrastructure comme code)
+# ===========================================================================
+# Ces jobs valident ce qui PORTE l'application, là où les étapes précédentes
+# valident l'application elle-même. Le partage des responsabilités est écrit
+# dans ANSIBLE.md §2 : Ansible possède le poste et le cluster, Terraform le
+# namespace et ses garde-fous, Kustomize l'application, la CI les secrets.
+#
+# Toute la logique vit dans scripts/ci/, pas dans ces blocs YAML — même règle
+# que pour validate_k8s.sh (SCRIPTS.md) : un script est testable en local,
+# relu par ShellCheck, et doublé de faux binaires qui permettent d'éprouver ses
+# chemins d'échec dans test-scripts. Un bloc YAML n'est rien de tout cela.
+
+# Validation hors ligne des configurations Terraform : mise en forme, puis
+# `init -backend=false` et `validate` sur chaque environnement.
+#
+# `-backend=false` est ce qui rend le job jouable sur une branche de feature :
+# il télécharge les providers sans jamais toucher à l'état, donc sans avoir
+# besoin ni du backend ni d'un cluster.

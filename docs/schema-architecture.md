@@ -39,7 +39,7 @@ eux-mêmes.
 
 ```mermaid
 flowchart LR
-    dev(["Commit<br/>Pull Request"]) --> ci["Pipeline GitLab CI<br/>9 étapes bloquantes"]
+    dev(["Commit<br/>Pull Request"]) --> ci["Pipeline GitLab CI<br/>10 étapes bloquantes"]
     ci --> reg[("Registry privé<br/>images signées<br/>tag = SHA")]
     reg --> stg["staging<br/>déploiement<br/>automatique"]
     stg --> prd["production<br/>promotion de la<br/>MÊME image<br/>décision humaine"]

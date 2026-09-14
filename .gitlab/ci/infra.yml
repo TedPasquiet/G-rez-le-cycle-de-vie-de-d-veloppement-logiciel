@@ -1,0 +1,168 @@
+# ---------------------------------------------------------------------------
+# Infrastructure — Terraform et Ansible, ce qui PORTE l'application — 6 job(s)
+# ---------------------------------------------------------------------------
+# Inclus par `.gitlab-ci.yml`. Les gabarits que ces jobs étendent vivent dans
+# `.gitlab/ci/templates.yml` : `extends:` traverse un `include:`, une ancre YAML
+# non — c'est toute la raison de la conversion (docs/pipeline-ci.md §6.1).
+terraform-validate:
+  image:
+    name: $TERRAFORM_IMAGE
+    entrypoint: ['']
+  stage: infra
+  needs: []
+  before_script:
+    # L'image hashicorp/terraform est basée sur Alpine et n'a que busybox sh ;
+    # le script est en bash. Même remède que .deploy_template pour
+    # alpine/kubectl.
+    - apk add --no-cache bash
+  script:
+    - terraform version
+    - bash scripts/ci/terraform_check.sh --validate -d "$TERRAFORM_ENVS_DIR"
+  extends: .rules_test
+
+# Lint du projet Ansible : syntaxe du playbook, puis ansible-lint.
+#
+# Pas d'image Ansible figée disponible (voir le bloc variables), donc les deux
+# paquets sont installés à version exacte dans $PYTHON_IMAGE. `--no-cache-dir`
+# évite de garder un cache pip que rien ne réutilisera d'un job à l'autre.
+ansible-lint:
+  image: $PYTHON_IMAGE
+  stage: infra
+  needs: []
+  before_script:
+    - pip install --no-cache-dir "ansible==$ANSIBLE_VERSION" "ansible-lint==$ANSIBLE_LINT_VERSION"
+    - ansible --version | head -1
+    - ansible-lint --version | head -1
+  script:
+    - bash scripts/ci/ansible_check.sh -d "$ANSIBLE_DIR"
+  extends: .rules_test
+
+# ---------------------------------------------------------------------------
+# Gabarit des jobs Terraform qui touchent l'ÉTAT et le CLUSTER
+# ---------------------------------------------------------------------------
+# `terraform-validate` n'a besoin de rien : `-backend=false`, aucun cluster.
+# `plan` et `apply`, eux, ont besoin des deux, et c'est ce gabarit qui les leur
+# donne. Il a été écrit après un échec qui valait la peine d'être compris :
+# lancé tel quel, `plan` tombait sur
+#
+#     'config_path' refers to an invalid path: "/root/.kube/config"
+#
+# sur les trois environnements. Trois causes empilées, chacune suffisante :
+# l'image tourne en root et `~/.kube/config` s'y résout en `/root/.kube/config`,
+# qui n'existe pas ; le `KUBECONFIG: $KUBE_CONFIG` que portait le job n'était de
+# toute façon jamais lu par Terraform, dont le `config_path` est explicite dans
+# providers.tf ; et le contexte visé, `minikube`, n'existe dans aucun kubeconfig
+# de CI. Les exports ci-dessous répondent aux trois.
+terraform-plan:
+  extends: .terraform_infra
+  needs: []
+  script:
+    - bash scripts/ci/terraform_check.sh --plan -d "$TERRAFORM_ENVS_DIR"
+  artifacts:
+    # `plan.cache` est le plan binaire : c'est LUI que les jobs d'apply
+    # appliquent, au lieu d'en recalculer un autre. `plan.json` est le résumé à
+    # trois entiers qui alimente le widget des merge requests.
+    #
+    # ⚠️ `access: developer` n'est pas décoratif : un plan binaire embarque les
+    # valeurs lues dans l'état, donc la même sensibilité que l'état lui-même
+    # (voir terraform/.gitignore). Laissé en accès public, il serait
+    # téléchargeable par quiconque peut voir le projet. Le JSON COMPLET du plan,
+    # lui, n'est jamais écrit sur le disque — il ne fait que passer dans un tube
+    # vers jq.
+    access: 'developer'
+    # Plus long que le pipeline, parce que l'apply est MANUEL et peut être
+    # cliqué le lendemain. Pas beaucoup plus, parce qu'un plan vieux d'une
+    # semaine sera de toute façon refusé comme obsolète par Terraform dès que
+    # l'état aura bougé.
+    expire_in: '1 week'
+    paths:
+      - '$TERRAFORM_ENVS_DIR/*/plan.cache'
+      - '$TERRAFORM_ENVS_DIR/*/plan.json'
+      - '$TERRAFORM_ENVS_DIR/plan-global.json'
+    reports:
+      # ⚠️ UN SEUL fichier, et c'est une contrainte mesurée, pas un choix de
+      # style. Un glob sur les trois résumés fait échouer l'envoi des
+      # artefacts — donc le job, alors que le plan a réussi :
+      #
+      #   ERROR: Uploading artifacts as "terraform" … only one file can be
+      #   sent as raw
+      #
+      # Le script produit donc une somme des trois environnements. Le détail
+      # par environnement reste dans le journal du job et dans les plan.json
+      # publiés juste au-dessus.
+      terraform: '$TERRAFORM_ENVS_DIR/plan-global.json'
+  rules:
+    - if: '$CI_MERGE_REQUEST_ID'
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# Application réelle de l'infrastructure — UN JOB PAR ENVIRONNEMENT.
+#
+# Ce n'était pas le cas, et le job unique qui existait ici ne pouvait que
+# échouer : il appelait `--apply` sans `-e`, ce que le script refuse
+# délibérément (« appliquer sur tous les environnements à la fois n'est pas une
+# opération qu'on lance sans la nommer »). Personne ne l'avait vu parce qu'il
+# est manuel et n'avait jamais été cliqué. Trois jobs nommés valent mieux qu'un
+# job générique : dans la liste du pipeline, on lit quel environnement on
+# s'apprête à modifier.
+#
+# Manuels, sur `main` seulement, et jamais en `allow_failure` : contrairement au
+# plan, un `apply` interrompu laisse l'infrastructure dans un état intermédiaire,
+# et le pipeline doit le dire.
+#
+# `--require-plan` est la pièce qui rend ces jobs honnêtes. Ils appliquent le
+# `plan.cache` produit par `terraform-plan` du MÊME pipeline (récupéré par
+# `needs:`), donc exactement le plan qui a été relu — et pas un plan recalculé
+# au moment du clic, qui pourrait différer sans que personne ne le voie. Si
+# l'artefact manque (expiré, job relancé seul), le drapeau fait échouer l'apply
+# au lieu de replanifier en silence. Et si l'état a bougé entre-temps, c'est
+# Terraform qui refuse le plan : « Saved plan is stale ».
+#
+# `resource_group` sérialise les exécutions d'un même environnement côté GitLab,
+# en plus du verrou d'état côté backend. Les deux ne font pas le même travail :
+# le verrou fait échouer ou attendre le second `apply`, le resource_group
+# l'empêche de démarrer.
+#
+# ⚠️ Sur un environnement dont le namespace a été créé à la main, cet apply
+# échoue sur « namespaces … already exists » tant que l'objet n'a pas été
+# importé. La procédure est en TERRAFORM.md §10.1 ; elle ne peut pas être
+# automatisée ici sans rendre le job destructeur sur un cluster vierge.
+terraform-apply-staging:
+  extends: [.terraform_infra, .terraform_apply_rules]
+  # Écrase le `stage: infra` du gabarit : ces jobs sont manuels et bloquants,
+  # ils doivent donc être en fin de pipeline (voir .gitlab-ci.yml).
+  stage: infra-apply
+  needs: ['terraform-validate', 'terraform-plan']
+  environment:
+    name: staging
+  resource_group: terraform-staging
+  script:
+    - bash scripts/ci/terraform_check.sh --apply -e staging --require-plan -d "$TERRAFORM_ENVS_DIR"
+
+terraform-apply-logging:
+  extends: [.terraform_infra, .terraform_apply_rules]
+  # Écrase le `stage: infra` du gabarit : ces jobs sont manuels et bloquants,
+  # ils doivent donc être en fin de pipeline (voir .gitlab-ci.yml).
+  stage: infra-apply
+  needs: ['terraform-validate', 'terraform-plan']
+  environment:
+    name: logging
+  resource_group: terraform-logging
+  script:
+    - bash scripts/ci/terraform_check.sh --apply -e logging --require-plan -d "$TERRAFORM_ENVS_DIR"
+
+terraform-apply-production:
+  extends: [.terraform_infra, .terraform_apply_rules]
+  # Écrase le `stage: infra` du gabarit : ces jobs sont manuels et bloquants,
+  # ils doivent donc être en fin de pipeline (voir .gitlab-ci.yml).
+  stage: infra-apply
+  needs: ['terraform-validate', 'terraform-plan']
+  environment:
+    name: production
+  resource_group: terraform-production
+  script:
+    - bash scripts/ci/terraform_check.sh --apply -e production --require-plan -d "$TERRAFORM_ENVS_DIR"
+
+# ===========================================================================
+# BUILD (compilation des artefacts)
+# ===========================================================================

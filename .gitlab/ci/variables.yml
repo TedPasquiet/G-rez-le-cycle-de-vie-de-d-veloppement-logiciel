@@ -1,0 +1,149 @@
+# ---------------------------------------------------------------------------
+# Les variables globales du pipeline
+# ---------------------------------------------------------------------------
+# Dans un fichier à part, et pas dans `.gitlab-ci.yml`, pour une raison
+# précise : un **pipeline enfant** (`trigger:`) n'hérite PAS des variables
+# globales de son parent. Il lui faut les inclure lui-même. Les garder ici les
+# rend disponibles aux deux, sans duplication et sans risque de divergence.
+variables:
+  # On dit à Gradle de mettre son cache dans le projet, comme ça GitLab peut
+  # le garder d'un job à l'autre (sinon il retélécharge tout à chaque fois).
+  GRADLE_USER_HOME: '$CI_PROJECT_DIR/.gradle'
+  GRADLE_OPTS: '-Dorg.gradle.daemon=false'
+  # Les infos pour se connecter au registry Docker de GitLab. Elles sont
+  # utilisées par le script build_and_push.sh.
+  REGISTRY_HOST: '$CI_REGISTRY'
+  REGISTRY_USER: '$CI_REGISTRY_USER'
+  REGISTRY_PASSWORD: '$CI_REGISTRY_PASSWORD'
+
+  # --- Images d'outillage --------------------------------------------------
+  # Toutes les versions sont figées. Un tag flottant (`latest`, ou pas de tag
+  # du tout) fait casser le pipeline sans qu'aucun commit ne l'explique, et
+  # rend les analyses non comparables d'une exécution à l'autre. Pour mettre à
+  # jour un outil : on change la version ici, dans un commit dédié qui dit
+  # pourquoi.
+  NODE_IMAGE: 'node:22-alpine' # même version que front/Dockerfile
+  GRADLE_IMAGE: 'gradle:8.14.5-jdk21' # même JDK que back/Dockerfile
+  PYTHON_IMAGE: 'python:3.12-slim'
+  DOCKER_IMAGE: 'docker:24.0.9'
+  DOCKER_DIND_IMAGE: 'docker:24.0.9-dind'
+  TRIVY_IMAGE: 'aquasec/trivy:0.69.3'
+  SHELLCHECK_IMAGE: 'koalaman/shellcheck-alpine:v0.11.0'
+  SONAR_SCANNER_IMAGE: 'sonarsource/sonar-scanner-cli:11.5'
+  # Le tag Cypress porte les versions de Node ET des navigateurs : c'est
+  # justement ce qu'on veut figer, un changement de version de Chrome pouvant
+  # à lui seul faire tomber un test.
+  CYPRESS_IMAGE: 'cypress/browsers:node-22.21.0-chrome-141.0.7390.107-1-ff-144.0-edge-141.0.3537.92-1'
+  # bitnami/kubectl ne publie plus de tag versionné depuis la reprise du
+  # catalogue Bitnami (2025) : seul `latest` subsiste, donc impossible à figer.
+  # alpine/kubectl offre les mêmes commandes avec de vraies versions.
+  KUBECTL_IMAGE: 'alpine/kubectl:1.34.2'
+  # Outillage du chart Helm. alpine/k8s embarque kubectl, helm ET kustomize dans
+  # la même image, et c'est ce qui décide du choix : le job lint-helm compare le
+  # rendu du chart à celui des overlays Kustomize, il lui faut donc les deux
+  # dans le même conteneur. Une image helm seule (alpine/helm) ne saurait pas
+  # construire le rendu de référence. Le tag suit la version de kubectl —
+  # 1.36.2 ici, la même que le poste de développement ; le helm embarqué est en
+  # 4.2.1, un correctif derrière le 4.2.2 du poste, ce qui est sans effet sur le
+  # rendu (vérifié : les deux produisent les mêmes objets).
+  HELM_IMAGE: 'alpine/k8s:1.36.2'
+  # Terraform. Le tag suit exactement la version du poste de développement :
+  # `terraform validate` peut accepter en 1.15 ce qu'une autre mineure refuse,
+  # et un écart entre les deux ferait échouer la CI sur du HCL validé en local.
+  #
+  # ⚠️ L'image est basée sur Alpine et n'a PAS bash, alors que
+  # scripts/ci/terraform_check.sh en est. Le job l'installe donc, comme le fait
+  # déjà .deploy_template pour alpine/kubectl. Son entrypoint est `terraform`,
+  # d'où le `entrypoint: ['']` sans lequel la première commande du script serait
+  # passée en argument à terraform.
+  TERRAFORM_IMAGE: 'hashicorp/terraform:1.15.7'
+  # Ansible n'a pas d'image officielle versionnée exploitable : le seul dépôt
+  # courant (pipelinecomponents/ansible-lint) ne publie que `edge` et des tags
+  # de commit — impossible à figer, même problème que bitnami/kubectl
+  # (VARIABILISATION.md). On installe donc les deux paquets, à version exacte,
+  # dans $PYTHON_IMAGE qui est déjà figée. Ce sont ces deux numéros qui font foi.
+  ANSIBLE_VERSION: '14.1.0'
+  ANSIBLE_LINT_VERSION: '26.8.0'
+  # Figée de longue date : d'une version de k6 à l'autre les mesures ne
+  # seraient plus comparables.
+  K6_IMAGE: 'grafana/k6:2.1.0'
+  # Base des jobs qui exécutent la suite du back (voir .postgres_service).
+  # Majeure figée : d'une majeure à l'autre le comportement observable change
+  # (types, collation donc ordre de tri), une suite verte sur 16 ne dit rien de 17.
+  POSTGRES_IMAGE: 'postgres:16-alpine'
+
+  # --- Identité des projets SonarQube --------------------------------------
+  # Source de vérité pour la CI. back/build.gradle et
+  # front/sonar-project.properties reprennent ces valeurs en repli, pour que
+  # l'analyse reste lançable en local sans la CI.
+  SONAR_ORGANIZATION: 'pasquietted'
+  SONAR_PROJECT_KEY_BACK: 'pasquietted_G-rez-le-cycle-de-vie-de-d-veloppement-logiciel'
+  SONAR_PROJECT_KEY_FRONT: 'pasquietted_G-rez-le-cycle-de-vie-de-d-veloppement-logiciel-front'
+
+  # --- Réglages du pipeline ------------------------------------------------
+  # Couverture minimale du back exigée par coverage-gate. Le seuil est calé
+  # juste sous la couverture réelle (97 %) : assez haut pour qu'une régression
+  # se voie, assez bas pour ne pas se déclencher sur une ligne de plus.
+  # Le même seuil est appliqué en local par jacocoTestCoverageVerification
+  # (back/build.gradle), pour échouer avant le push et pas après.
+  COVERAGE_MIN: '90'
+  # Proportion minimale de mutants tués par PIT (job mutation-back). Mesure la
+  # force des assertions, là où COVERAGE_MIN ne mesure que les lignes atteintes.
+  MUTATION_MIN: '80'
+  # Noms des Deployments et des conteneurs Kubernetes, qui servent aussi de
+  # noms d'images dans le registry ($CI_REGISTRY_IMAGE/<nom>).
+  APP_BACK_NAME: 'back'
+  APP_FRONT_NAME: 'front'
+  # Temps d'attente max d'un rollout avant retour arrière automatique.
+  DEPLOY_TIMEOUT: '180s'
+  # Racine des overlays Kustomize. Les manifestes décrivent la forme de
+  # l'application ; le namespace et le chemin du registry restent fournis par la
+  # CI (voir K8S.md §4).
+  K8S_OVERLAYS_DIR: 'k8s/overlays'
+  # Racine du chart Helm. Le chart double les overlays Kustomize : il répond à
+  # l'exigence du brief sans remplacer le mécanisme qui déploie réellement.
+  # C'est Kustomize qui fait foi — voir HELM.md §3.
+  HELM_CHART_DIR: 'helm/microcrm'
+  # Racine des environnements Terraform et du projet Ansible. Les scripts de
+  # scripts/ci/ les lisent depuis ces variables, jamais en dur : c'est ce qui
+  # permet de les jouer en local sur une copie sans toucher au dépôt.
+  TERRAFORM_ENVS_DIR: 'terraform/environments'
+  ANSIBLE_DIR: 'ansible'
+  # Nom de l'agent GitLab pour Kubernetes, tel qu'il est déclaré par le
+  # répertoire .gitlab/agents/<nom>/. C'est lui qui donne aux jobs un accès au
+  # cluster SANS qu'aucun kubeconfig ne soit stocké en variable : l'agent, qui
+  # tourne dans le cluster, ouvre une connexion SORTANTE vers GitLab, et les
+  # jobs passent par ce tunnel. C'est ce qui rend joignable un cluster qui n'a
+  # aucune adresse publique — un minikube derrière une box, par exemple.
+  #
+  # Le contexte kubectl que l'agent fabrique porte un nom imposé :
+  # `<chemin du projet>:<nom de l'agent>`. Les jobs Terraform le recomposent à
+  # partir de cette variable, ils ne l'écrivent pas en dur.
+  KUBE_AGENT_NAME: 'microcrm'
+  # Racine des états Terraform hébergés par GitLab (un état par environnement,
+  # avec verrou). L'identifiant numérique du projet n'est écrit NULLE PART : il
+  # arrive par $CI_PROJECT_ID, ce qui laisse le dépôt forkable et déplaçable.
+  # scripts/ci/terraform_check.sh y ajoute `/<environnement>`.
+  TF_STATE_BASE_URL: '$CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state'
+  # Overlay éphémère fabriqué par les jobs de déploiement : il compose l'overlay
+  # d'environnement et pose par-dessus le chemin de registry et le tag du commit,
+  # de sorte que `apply` reçoive directement la bonne image (voir K8S.md §6).
+  #
+  # Il doit vivre DANS le dépôt et être désigné par un chemin relatif : Kustomize
+  # refuse un chemin absolu dans `resources` (« new root … cannot be absolute »),
+  # donc un répertoire sous /tmp ne convient pas. Il est dans .gitignore.
+  DEPLOY_OVERLAY_DIR: '.k8s-deploy-overlay'
+  # Préfixe des images *placeholder* écrites dans k8s/base/*-deployment.yaml
+  # (`microcrm/back:PLACEHOLDER`). C'est la clé sur laquelle le transformateur
+  # `images:` de l'overlay éphémère fait sa correspondance : si le préfixe change
+  # dans les manifestes, il doit changer ici, sinon la substitution ne mord plus
+  # et le placeholder partirait tel quel vers le cluster.
+  K8S_PLACEHOLDER_IMAGE_PREFIX: 'microcrm'
+  # Nom du Secret qui porte les identifiants du registry. Il est référencé en
+  # `imagePullSecrets` par les deux Deployments : cette valeur et celle des
+  # manifestes doivent rester identiques, et scripts/tests/validate_k8s.sh
+  # échoue si elles divergent. Le Secret lui-même n'est pas versionné — il est
+  # (re)créé par les jobs de déploiement. Voir K8S.md §12.
+  REGISTRY_SECRET_NAME: 'gitlab-registry'
+
+# Petits blocs de cache que je réutilise dans plusieurs jobs pour aller plus vite.

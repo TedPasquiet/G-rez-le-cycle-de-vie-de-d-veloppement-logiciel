@@ -136,24 +136,27 @@ de port, qui oblige à conserver `NET_BIND_SERVICE` dans le conteneur même avec
 
 ## 4. Pipeline CI/CD (GitLab)
 
-Le pipeline compte **9 stages et 32 jobs**, exécutés dans cet ordre :
+Le pipeline compte **10 étapes et 33 jobs**, répartis sur **13 fichiers** : une
+racine qui ne contient aucun job, un fichier par domaine, et un pipeline enfant
+pour la performance (voir `docs/pipeline-ci.md`).
 
 ```mermaid
 flowchart LR
-    commit([git push]) --> lint --> test --> quality --> security --> infra --> build --> package --> perf --> deploy
+    commit([git push]) --> lint --> test --> quality --> security --> infra --> build --> package --> perf --> deploy --> infra-apply
 ```
 
-| Stage      | Jobs                                                                                                   | Rôle                                                  |
-| ---------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
-| `lint`     | `lint-front`, `lint-back`, `shellcheck`, `lint-k8s`, `lint-helm`                                       | ESLint, Checkstyle, Bash, manifestes et chart         |
-| `test`     | `test-scripts`, `test-front`, `test-back`                                                              | Tests des scripts d'automatisation, Karma, JUnit      |
-| `quality`  | `sonar-back`, `sonar-front`, `spotbugs-back`, `coverage-gate`, `mutation-back`, `quality-gate`         | Analyse Sonar, bugs, seuil de couverture, mutation    |
-| `security` | `dependency-check-back`, `trivy-fs`                                                                    | CVE des dépendances, secrets, misconfigurations       |
-| `infra`    | `terraform-validate`, `ansible-lint`, `terraform-plan`, `terraform-apply-{staging,logging,production}` | L'infrastructure se valide **avant** qu'on ne compile |
-| `build`    | `build-front`, `build-back`                                                                            | Compilation des artefacts                             |
-| `package`  | `package-back`, `package-front`                                                                        | Images Docker taguées par SHA + scan Trivy            |
-| `perf`     | `k6-smoke`, `k6-load`, `k6-stress`                                                                     | Tests de performance k6 sur l'image construite        |
-| `deploy`   | `deploy-staging`, `deploy-production`, `rollback-production`                                           | Déploiement Kubernetes et retour arrière              |
+| Stage         | Jobs                                                                                           | Rôle                                                  |
+| ------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `lint`        | `lint-front`, `lint-back`, `shellcheck`, `lint-k8s`, `lint-helm`                               | ESLint, Checkstyle, Bash, manifestes et chart         |
+| `test`        | `test-scripts`, `test-front`, `test-back`                                                      | Tests des scripts d'automatisation, Karma, JUnit      |
+| `quality`     | `sonar-back`, `sonar-front`, `spotbugs-back`, `coverage-gate`, `mutation-back`, `quality-gate` | Analyse Sonar, bugs, seuil de couverture, mutation    |
+| `security`    | `dependency-check-back`, `trivy-fs`                                                            | CVE des dépendances, secrets, misconfigurations       |
+| `infra`       | `terraform-validate`, `ansible-lint`, `terraform-plan`                                         | L'infrastructure se valide **avant** qu'on ne compile |
+| `build`       | `build-front`, `build-back`                                                                    | Compilation des artefacts                             |
+| `package`     | `package-back`, `package-front`                                                                | Images Docker taguées par SHA + scan Trivy            |
+| `perf`        | job `perf` → **pipeline enfant** (`k6-smoke`, `k6-load`, `k6-stress`)                          | Tests de performance k6 sur l'image construite        |
+| `deploy`      | `deploy-staging`, `deploy-production`, `rollback-production`                                   | Déploiement Kubernetes et retour arrière              |
+| `infra-apply` | `terraform-apply-{staging,logging,production}`                                                 | Manuels et **bloquants** : d'où leur place en dernier |
 
 Le détail du déclenchement par branche et de la procédure de release est dans
 [RELEASE.md](RELEASE.md) ; celui des scripts appelés par ces jobs dans
@@ -187,7 +190,7 @@ deux sont reliés par un workflow GitHub Actions,
 flowchart LR
     dev([git push]) --> gh[GitHub<br/>dépôt de travail, Pull Requests]
     gh -->|GitHub Actions<br/>miroir automatique| gl[GitLab<br/>miroir + exécution du pipeline]
-    gl --> ci[".gitlab-ci.yml<br/>9 stages, 32 jobs"]
+    gl --> ci[".gitlab-ci.yml<br/>10 étapes, 33 jobs<br/>13 fichiers"]
 ```
 
 À chaque push sur n'importe quelle branche ou tag, le workflow recopie toutes les
@@ -279,7 +282,7 @@ flowchart TB
     gh -->|"GitHub Actions : mirror-to-gitlab.yaml<br/>push --prune de toutes les refs"| gl["GitLab<br/>miroir en lecture seule"]
     gl --> pipe
 
-    subgraph pipe["Pipeline GitLab CI : 9 étapes, 32 jobs"]
+    subgraph pipe["Pipeline GitLab CI : 10 étapes, 33 jobs"]
         direction LR
         s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
     end

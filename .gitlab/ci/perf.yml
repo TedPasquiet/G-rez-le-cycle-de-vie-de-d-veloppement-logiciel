@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------------------
+# Performance — k6 contre l'image réellement construite — 3 job(s)
+# ---------------------------------------------------------------------------
+# ⚠️ Ce fichier n'est PAS inclus par `.gitlab-ci.yml`. Il est assemblé par
+# `perf-pipeline.yml`, la racine du pipeline ENFANT, que le job `perf` du parent
+# déclenche (`trigger:`). Le pourquoi est écrit dans `perf-trigger.yml`.
+#
+# Les gabarits que ces jobs étendent vivent dans `.gitlab/ci/templates.yml`, que
+# les deux racines incluent : `extends:` traverse un `include:`, une ancre YAML
+# non (docs/pipeline-ci.md §6.1).
+k6-smoke:
+  extends: [.k6_template, .rules_build]
+  script:
+    - k6 run tests/k6/smoke.js
+
+# Charge nominale : c'est ce job qui porte les vrais seuils de temps de réponse.
+# Je le laisse en allow_failure pour l'instant, parce que les runners partagés
+# GitLab sont mutualisés et que leurs mesures varient d'une exécution à l'autre :
+# un seuil dur donnerait des échecs aléatoires sans rapport avec le code.
+# Sur un runner dédié, passer allow_failure à false pour en faire un vrai gate.
+k6-load:
+  extends: [.k6_template, .rules_build]
+  script:
+    - k6 run tests/k6/load.js
+  allow_failure: true
+
+# Test de stress : on cherche volontairement le point de rupture. Ça n'a rien à
+# faire dans un pipeline automatique (c'est long et ça sature le runner), donc
+# on le déclenche à la main quand on veut connaître la marge disponible.
+k6-stress:
+  extends: .k6_template
+  script:
+    - k6 run tests/k6/stress.js
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_COMMIT_TAG'
+      when: manual
+      allow_failure: true
+
+# ===========================================================================
+# DEPLOY : déploiement sur Kubernetes + possibilité de revenir en arrière.
+#
+# Avant que ça marche, il faut créer ces variables dans GitLab :
+#   KUBE_CONFIG  : le fichier de connexion au cluster (variable de type "File").
+#   STAGING_NAMESPACE / PROD_NAMESPACE : les namespaces où déployer.
+#
+# J'ai mis les jobs en "manual" : ils ne partent pas tout seuls, il faut cliquer
+# pour les lancer. Tant qu'on n'a pas de vrai cluster c'est plus prudent.
+# (voir RELEASE.md pour rendre le staging automatique)
+# ===========================================================================
