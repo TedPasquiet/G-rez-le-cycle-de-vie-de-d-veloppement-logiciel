@@ -151,7 +151,7 @@ flowchart LR
     end
     subgraph fb["front/Dockerfile — multi-stage"]
         direction LR
-        n["node:22<br/>npm ci, ng build"] -->|"copie les fichiers"| ca["caddy:2-alpine<br/>image finale"]
+        n["node:22<br/>npm ci, ng build"] -->|"copie les fichiers"| ca["alpine + Caddy recompilé<br/>image finale"]
     end
     ba --> reg[("Registry privé<br/>tag = SHA, image signée")]
     ca --> reg
