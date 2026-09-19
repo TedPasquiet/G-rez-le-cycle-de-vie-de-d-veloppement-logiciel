@@ -426,6 +426,16 @@ une instance disparaît avec elle — et celle-ci tourne sur un poste de
 développement. Chaque panneau a été confronté à la même agrégation jouée
 directement contre Elasticsearch : mêmes chiffres des deux côtés.
 
+Les deux tableaux de bord, capturés le 19 septembre 2026 sur une fenêtre de
+90 jours :
+
+![Tableau de bord de supervision — volume par conteneur, latence p50/p95/p99, erreurs applicatives, erreurs HTTP, statuts servis par le front et table des logs récents.](captures/kibana-supervision-volume-latence-erreurs-90j.jpg)
+
+![Tableau de bord DORA — les quatre indicateurs, la chronologie des tentatives, et la table qui porte la raison quand la valeur manque.](captures/kibana-dora-quatre-indicateurs-90j.jpg)
+
+À la date de ces captures, l'index porte **28 271 documents** ; les 50 du
+tableau ci-dessus sont ceux de la vérification initiale du 16 août 2026.
+
 Le dimensionnement de la stack a été confronté à une charge réelle, ce qui n'est
 pas la même chose qu'un plan validé. Pendant le rollout de Kibana, le quota du
 namespace affichait `limits.memory 5376Mi/6Gi`, `requests.memory 3200Mi/4Gi`,
@@ -503,10 +513,12 @@ révèle.
 Cette liste est donnée sans enrobage : elle est ce qu'un jury est en droit
 d'attaquer, et il vaut mieux qu'elle vienne du rapport que de la lecture.
 
-- **Aucune capture d'écran de la chaîne de livraison.** Le brief en demande
-  explicitement. Il n'y en a pas, pour une raison simple : **il n'existe aucune
-  exécution réussie à montrer.** Sept déploiements déclenchés, sept échecs, et
-  un quota de minutes désormais épuisé qui empêche d'en tenter un huitième.
+- **Aucune capture d'un déploiement réussi.** Le brief demande des captures de
+  la chaîne de livraison : celles du pipeline et des deux tableaux de bord
+  figurent dans `docs/captures/` (§6.2), mais **aucune ne montre un déploiement
+  qui aboutit**, pour une raison simple : il n'en existe aucun. Sept
+  déploiements déclenchés, sept échecs, et un quota de minutes épuisé qui
+  empêche d'en tenter un huitième.
 - **Aucune métrique système.** Ni CPU, ni mémoire, ni latence d'API. Le projet
   collecte des logs, pas des métriques.
 - **Aucun alerting.** Rien ne prévient personne.
