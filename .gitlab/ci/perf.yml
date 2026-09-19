@@ -26,8 +26,13 @@ k6-load:
 
 # Test de stress : on cherche volontairement le point de rupture. Ça n'a rien à
 # faire dans un pipeline automatique (c'est long et ça sature le runner), donc
-# il ne tourne que sur demande : « Run pipeline » sur develop, main ou un tag,
+# il ne tourne que sur demande : « New pipeline » sur develop, main ou un tag,
 # avec la variable K6_STRESS=true.
+#
+# Prérequis HORS DÉPÔT : Settings → CI/CD → Variables → « Minimum role to use
+# pipeline variables » réglé sur Developer. Sur « No one allowed », le défaut
+# des projets récents, le formulaire n'affiche même pas la section Variables et
+# ce job devient impossible à lancer.
 #
 # ⚠️ Surtout pas `when: manual`. Sans allow_failure, un job manuel est BLOQUANT :
 # ce pipeline enfant ne se terminerait jamais, et le job `perf` du parent

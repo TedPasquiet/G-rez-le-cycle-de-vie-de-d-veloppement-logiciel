@@ -274,8 +274,11 @@ produirait des échecs aléatoires sans rapport avec le code — le meilleur moy
 faire perdre confiance dans un gate. Sur un runner dédié, il suffit de passer
 `allow_failure` à `false` pour en faire un vrai gate. `k6-stress`, lui, cherche
 volontairement la rupture : il n'a rien à faire dans un pipeline automatique. Il ne
-tourne que si le pipeline est lancé à la main (« Run pipeline ») avec la variable
-`K6_STRESS=true`. Il n'est pas en `when: manual` : sans `allow_failure`, un job
+tourne que si le pipeline est lancé à la main (« New pipeline ») avec la variable
+`K6_STRESS=true`. Prérequis hors dépôt : dans Settings → CI/CD → Variables,
+« Minimum role to use pipeline variables » doit être réglé sur Developer ; sur
+« No one allowed », le défaut des projets récents, le formulaire n'affiche pas la
+section Variables. Il n'est pas en `when: manual` : sans `allow_failure`, un job
 manuel bloquerait le pipeline enfant, et le déploiement derrière lui. Conséquence à
 connaître : s'il franchit ses seuils de rupture, ce pipeline-là passe au rouge.
 
