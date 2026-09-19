@@ -214,17 +214,22 @@ tient la charge.
 | SonarQube                                          | Bonnes pratiques, dette, couverture agrégée          | `quality`  | non             |
 | SpotBugs + Find-Sec-Bugs                           | Bugs latents dans le bytecode (~140 motifs sécurité) | `quality`  | non             |
 | OWASP Dependency-Check                             | CVE des dépendances Java (base NVD)                  | `security` | **oui**         |
-| Trivy                                              | CVE d'images, secrets, misconfigurations             | `security` | non             |
+| Trivy                                              | CVE d'images, secrets, misconfigurations             | `security` | **oui**         |
 | k6                                                 | L'API répond-elle, et assez vite ?                   | `perf`     | **oui** (smoke) |
 
-⚠️ **Une partie de ces contrôles n'est pas bloquante.** Six jobs de qualité et de
-sécurité restent en `allow_failure: true`, et les scans Trivy tournent en
-`--exit-code 0` : ils informent sans arrêter le pipeline. C'est un choix
-de démarrage assumé, à lever contrôle par contrôle une fois le processus de
-traitement des vulnérabilités rodé — pas un état à présenter comme final. La
-seule exception est `k6-smoke`, bloquant parce qu'il ne mesure pas une tendance
-mais un fait binaire : l'image qu'on s'apprête à déployer répond, ou elle ne
-répond pas.
+✅ **Ces contrôles sont bloquants, à une exception près.** L'état que décrivait
+ce rapport — six jobs en `allow_failure: true` et des scans Trivy en
+`--exit-code 0` — a été levé en deux temps : les contrôles de qualité et
+`dependency-check-back` le 14 septembre 2026, les trois scans Trivy le
+19 septembre. Le choix de démarrage était assumé ; il n'avait pas vocation à
+être présenté comme final.
+
+Un seul job reste non bloquant : **`k6-load`**. Ses mesures varient d'une
+exécution à l'autre sur les runners partagés, et un seuil dur y produirait des
+échecs sans rapport avec le code ; sur un runner dédié, il suffit de basculer
+son `allow_failure`. `k6-smoke`, lui, a toujours été bloquant, parce qu'il ne
+mesure pas une tendance mais un fait binaire : l'image qu'on s'apprête à
+déployer répond, ou elle ne répond pas.
 
 Deux constats connus et non corrigés : Find-Sec-Bugs remonte `PERMISSIVE_CORS`
 dans `SpringDataRestCustomization.java`, et **aucun job ne lance `npm audit`** —

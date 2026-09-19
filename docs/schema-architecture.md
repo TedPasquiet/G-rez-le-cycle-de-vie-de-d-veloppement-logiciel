@@ -225,8 +225,11 @@ remise, au moment où le code est encore frais à l'esprit de la personne qui l'
 écrit. Le coût de correction d'une CVE croît avec le temps écoulé depuis son
 introduction ; l'analyse la plus utile est donc la plus précoce.
 
-**Les exceptions sont tenues explicitement.** Le fichier `.trivyignore` associe
-à chaque CVE tolérée une justification et une date de réexamen. C'est la
+**Les exceptions sont tenues explicitement.** Le fichier `.trivyignore.yaml`
+associe à chaque exception tolérée — CVE ou misconfiguration — un chemin, une
+justification et une date de réexamen. Le chemin compte autant que le reste :
+il empêche qu'une exclusion accordée à un fichier en couvre silencieusement un
+autre. C'est la
 contrepartie indispensable d'un contrôle bloquant : sans liste d'exceptions
 tenue, une porte trop stricte finit contournée, et l'équipe apprend à ignorer le
 signal.
