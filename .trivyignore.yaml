@@ -24,8 +24,16 @@ misconfigurations:
       crée et met à jour les NetworkPolicy du namespace, et l'agent est le seul
       chemin d'accès au cluster depuis la CI (TERRAFORM.md §4.1). Restreindre
       aux verbes get/list/watch, comme le demande la règle, casserait le job
-      terraform-apply. Le périmètre reste borné par le RoleBinding, limité aux
-      namespaces du projet.
+      terraform-apply.
+
+      ⚠️ Correction du 2026-09-22 : cette justification affirmait que « le
+      périmètre reste borné par le RoleBinding, limité aux namespaces du
+      projet ». C'est FAUX — le rôle est lié par un ClusterRoleBinding, donc à
+      l'échelle du cluster (vérifié sur le cluster). Le rôle a par ailleurs été
+      élargi aux objets applicatifs le même jour, les jobs de déploiement étant
+      passés sur le tunnel de l'agent. L'exception reste assumée, mais pour ce
+      qu'elle est : un agent unique, cluster-wide, qui porte l'infrastructure et
+      l'application. La forme correcte resterait un agent par périmètre.
     expiredAt: 2026-12-31
 
   - id: KSV-0014
