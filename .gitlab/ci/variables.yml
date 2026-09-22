@@ -33,7 +33,30 @@ variables:
   # Le tag Cypress porte les versions de Node ET des navigateurs : c'est
   # justement ce qu'on veut figer, un changement de version de Chrome pouvant
   # à lui seul faire tomber un test.
-  CYPRESS_IMAGE: 'cypress/browsers:node-22.21.0-chrome-141.0.7390.107-1-ff-144.0-edge-141.0.3537.92-1'
+  #
+  # ⚠️ Référencée par DIGEST, pas par son tag, et ce n'est pas du zèle.
+  #
+  # Un tag est une LISTE de manifestes. Sur un runner Apple Silicon, Docker y
+  # choisit la variante arm64 — qui n'embarque pas Google Chrome, seulement
+  # Firefox et Electron. Karma s'arrête alors sur « Can not find the binary
+  # /opt/google/chrome/chrome ».
+  #
+  # `image:docker:platform: linux/amd64` NE SUFFIT PAS. Le runner écrit bien
+  # « Pulling docker image ... for platform linux/amd64 » dans son journal, mais
+  # le conteneur qu'il démarre reste celui que le tag résout pour l'hôte.
+  # Vérifié le 2026-09-22 sur un échec réel : l'image du job était en arm64
+  # (`docker image inspect` → Arch=arm64) malgré cette ligne dans le journal.
+  #
+  # Un digest ne laisse aucune place à cette résolution : il désigne un seul
+  # manifeste. Celui-ci est la variante **amd64** du tag
+  # `node-22.21.0-chrome-141.0.7390.107-1-ff-144.0-edge-141.0.3537.92-1`.
+  # Sur Apple Silicon elle tourne en émulation — plus lent, mais Chrome headless
+  # y démarre et rend correctement (vérifié le 2026-09-22).
+  #
+  # Pour la mettre à jour :
+  #   docker manifest inspect cypress/browsers:<nouveau tag>
+  # puis reprendre le digest de la ligne linux/amd64.
+  CYPRESS_IMAGE: 'cypress/browsers@sha256:6a34e3c7eb94a1a5d2fffa22862d5fffb78023f2dcda485efbb34d265708d671'
   # bitnami/kubectl ne publie plus de tag versionné depuis la reprise du
   # catalogue Bitnami (2025) : seul `latest` subsiste, donc impossible à figer.
   # alpine/kubectl offre les mêmes commandes avec de vraies versions.

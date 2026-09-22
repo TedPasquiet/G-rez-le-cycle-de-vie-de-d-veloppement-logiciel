@@ -262,6 +262,135 @@ Le pipeline cible et sa table de normalisation détaillée sont dans
 
 Le détail de mise en œuvre de chaque contrôle est dans [QUALITY.md](QUALITY.md).
 
-> 📌 **À compléter en fin de projet** : le processus de traitement d'une
-> vulnérabilité détectée (qui arbitre, sous quel délai, comment on documente une
-> exception), ainsi que la politique de mise à jour des dépendances.
+> **Mise à jour du 2026-09-22.** Le contrôle R6 est en place : la version d'une
+> release est un tag Git SemVer qui se propage jusqu'à l'image, par promotion et
+> non par reconstruction — `back:1.0.0` et `back:<sha>` désignent le même digest.
+> Voir [RELEASE.md](RELEASE.md) §2.1.
+
+---
+
+## 7.4 Traiter une vulnérabilité détectée
+
+Ce processus n'est pas une intention : il est **imposé par la chaîne** depuis le
+2026-09-19, date à laquelle les quatre portes de sécurité sont devenues
+bloquantes. Avant cette date elles étaient en `allow_failure` et ne décidaient
+de rien.
+
+### 7.4.1 Ce qui déclenche
+
+| Porte                            | Ce qu'elle voit                                   | Seuil          | Étape      |
+| -------------------------------- | ------------------------------------------------- | -------------- | ---------- |
+| `dependency-check-back`          | CVE des dépendances Java                          | CVSS ≥ 7       | `security` |
+| `trivy-fs`                       | Secrets commités, misconfigurations, CVE du dépôt | HIGH, CRITICAL | `security` |
+| `package-back` / `package-front` | CVE des couches système de l'image                | HIGH, CRITICAL | `package`  |
+
+Le seuil de Dependency-Check est `failBuildOnCVSS = 7` (`back/build.gradle`), ce
+qui correspond à la borne basse de la sévérité HIGH du CVSS v3. Les deux
+familles d'outils s'arrêtent donc au même niveau de gravité, ce qui évite qu'une
+CVE bloque d'un côté et passe de l'autre.
+
+### 7.4.2 Sous quel délai
+
+**Zéro, et par construction.** Une porte bloquante ne laisse pas le choix entre
+traiter et remettre à plus tard : rien n'est livré tant que la découverte n'a pas
+été arbitrée. C'est tout l'intérêt d'avoir retiré les `allow_failure` — un
+contrôle qui signale sans arrêter finit par être lu comme du bruit.
+
+La contrepartie est assumée : une CVE publiée dans une dépendance transitive peut
+bloquer une livraison sans rapport avec le changement en cours. C'est le prix, et
+il est préférable à une livraison qui ignore ce qu'elle emporte.
+
+### 7.4.3 Les trois issues, dont une seule est la voie normale
+
+1. **Corriger** — monter la version de la dépendance ou de l'image de base.
+   C'est la voie par défaut, et celle qui doit être tentée en premier.
+2. **Inscrire une exception motivée** — uniquement quand la vulnérabilité ne
+   s'applique pas au contexte, ou quand aucun correctif n'existe et que le
+   risque résiduel est acceptable et écrit.
+3. **Arrêter la livraison** — quand ni l'un ni l'autre n'est possible. Ne rien
+   livrer reste une décision valable.
+
+**Exemple vécu, issue n°1.** Le 2026-09-19, Trivy a bloqué sur des CVE des
+couches système. La réponse a été de monter Spring Boot de 3.2.5 à 3.5.16 et de
+recompiler Caddy, et non d'inscrire une exception — commit `df1634f`. Les deux
+images sortent depuis à zéro CVE HIGH ou CRITICAL.
+
+### 7.4.4 Qui arbitre, et où s'écrit une exception
+
+**L'arbitrage passe par la revue de merge request, pas par une décision
+individuelle.** C'est une conséquence du format retenu : une exception n'existe
+que sous la forme d'une entrée dans un fichier versionné. Elle arrive donc dans
+une MR, avec sa justification, et ne peut pas être posée en silence par la
+personne que le pipeline dérange.
+
+Deux registres, selon la nature :
+
+| Registre                                        | Ce qu'il couvre                    | État actuel |
+| ----------------------------------------------- | ---------------------------------- | ----------- |
+| `.trivyignore.yaml`                             | Misconfigurations et CVE d'image   | 4 entrées   |
+| `back/config/dependency-check/suppressions.xml` | CVE de dépendances (faux positifs) | **vide**    |
+
+Trois règles de forme, et elles ne sont pas décoratives :
+
+- **Une exception est bornée à un chemin.** Le format historique `.trivyignore`
+  applique un identifiant à tout le dépôt : ignorer `KSV-0014` pour un manifeste
+  masquerait le jour où un autre perdrait vraiment son `readOnlyRootFilesystem`.
+  C'est la raison pour laquelle `.trivyignore` est conservé **vide** et que les
+  jobs passent explicitement `--ignorefile .trivyignore.yaml`.
+- **Une exception porte une justification écrite**, qui dit pourquoi la
+  vulnérabilité ne s'applique pas — pas qu'elle dérange.
+- **Une exception porte une date de revue** (`expiredAt`). Ce n'est pas une
+  décharge permanente : le fichier est relu à chaque release, et une entrée
+  expirée redevient bloquante d'elle-même.
+
+### 7.4.5 Ce que ce processus ne couvre pas encore
+
+**Un écart entre Dependency-Check et Trivy n'a jamais été expliqué** :
+Dependency-Check ne remontait pas des CVE Tomcat que Trivy voyait. Les deux
+outils regardent des périmètres différents — les dépendances déclarées pour l'un,
+les couches de l'image pour l'autre — ce qui explique peut-être tout, mais ne l'a
+pas été. Les deux portes étant désormais bloquantes, la première exécution réelle
+de la chaîne tranchera.
+
+---
+
+## 7.5 Politique de mise à jour des dépendances
+
+Trois registres se mettent à jour séparément, et confondre les trois est la
+première cause de mise à jour oubliée.
+
+| Registre                 | Où                                        | Contrôlé par               |
+| ------------------------ | ----------------------------------------- | -------------------------- |
+| Dépendances applicatives | `back/build.gradle`, `front/package.json` | `dependency-check-back`    |
+| Images de base           | `back/Dockerfile`, `front/Dockerfile`     | Trivy, à l'étape `package` |
+| Images d'outillage de CI | `.gitlab/ci/variables.yml`                | aucun contrôle automatique |
+
+**La règle commune : aucune version flottante.** Ni `latest`, ni plage ouverte.
+Un tag mobile fait casser la chaîne sans qu'aucun commit ne l'explique, et rend
+deux analyses incomparables. Une montée de version se fait donc dans un **commit
+dédié qui dit pourquoi**, ce que les messages de commit du dépôt vérifient déjà
+par convention.
+
+**La cadence.** Trois déclencheurs, par ordre de fréquence :
+
+1. **À chaque pipeline** — les portes de sécurité signalent ce qui est devenu
+   vulnérable depuis la dernière exécution. C'est le mécanisme principal, et il
+   est automatique.
+2. **À chaque release** — relecture des entrées de `.trivyignore.yaml` et de
+   `suppressions.xml` dont la date de revue approche.
+3. **Sur publication d'une CVE majeure** touchant une brique de la pile, sans
+   attendre le pipeline suivant.
+
+**Le trou connu : le troisième registre n'est surveillé par rien.** Les images
+d'outillage de la CI — `$TRIVY_IMAGE`, `$KUBECTL_IMAGE`, `$CYPRESS_IMAGE` et les
+autres — sont figées, ce qui est la bonne décision, mais aucun contrôle ne
+signale qu'une version figée a vieilli. Elles ne tournent pas en production, donc
+le risque est indirect ; il n'est pas nul pour autant, puisqu'elles manipulent
+les identifiants du registry.
+
+**Aucun outil de mise à jour automatique n'est en place** — ni Dependabot, ni
+Renovate. Ce n'est pas un choix argumenté, c'est une absence. Renovate est
+l'option la plus adaptée ici : il couvre Gradle, npm **et** les images Docker
+d'un fichier CI GitLab, c'est-à-dire les trois registres du tableau ci-dessus, là
+où Dependabot ignorerait le troisième. C'est l'évolution naturelle de cette
+politique, et elle est chiffrée comme telle.
