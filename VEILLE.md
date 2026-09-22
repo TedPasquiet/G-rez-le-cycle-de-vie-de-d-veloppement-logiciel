@@ -91,7 +91,7 @@ même façon, ce qui simplifie la chaîne.
 
 **Bonnes pratiques retenues :**
 
-- image de base minimale (`alpine`, `caddy:2-alpine`) ;
+- image de base minimale (`alpine`, Caddy recompilé posé sur une Alpine nue) ;
 - **utilisateur non privilégié** dans l'image finale ;
 - `.dockerignore` par contexte de build, pour ne pas envoyer `node_modules` au démon ;
 - **tag = SHA du commit**, jamais `latest` en déploiement.

@@ -39,9 +39,13 @@ package-back:
     IMAGE: '$CI_REGISTRY_IMAGE/$APP_BACK_NAME'
   script:
     - bash scripts/ci/build_and_push.sh --context ./back --image "$IMAGE" --tag "$CI_COMMIT_SHORT_SHA"
-    # On scanne l'image finale avec Trivy. Ici c'est juste pour info : avec
-    # --exit-code 0 ça n'arrête pas le pipeline même s'il trouve des soucis.
-    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY_IMAGE image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    # On scanne l'image finale avec Trivy, et le scan est BLOQUANT : une CVE
+    # HIGH ou CRITICAL dans l'image arrête le pipeline avant le déploiement.
+    # Les deux images sortent à 0 depuis la montée de version du 2026-09-19
+    # (Alpine 3.24, JRE 21, Caddy recompilé) — la porte se ferme sur du vide.
+    # Pas d'--ignorefile ici : aucun fichier du dépôt n'est monté dans ce
+    # conteneur, et aucune exclusion n'est nécessaire sur les images.
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY_IMAGE image --severity HIGH,CRITICAL --exit-code 1 "$IMAGE:$CI_COMMIT_SHORT_SHA"
 
 package-front:
   extends: .package_template
@@ -49,7 +53,7 @@ package-front:
     IMAGE: '$CI_REGISTRY_IMAGE/$APP_FRONT_NAME'
   script:
     - bash scripts/ci/build_and_push.sh --context ./front --image "$IMAGE" --tag "$CI_COMMIT_SHORT_SHA"
-    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY_IMAGE image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY_IMAGE image --severity HIGH,CRITICAL --exit-code 1 "$IMAGE:$CI_COMMIT_SHORT_SHA"
 
 # ===========================================================================
 # PERF : tests de performance k6 (dossier tests/k6/).

@@ -44,7 +44,7 @@ spec:
       securityContext:
         # UID 1000 : c'est celui que reçoit l'utilisateur `app` créé par
         # `adduser -D -H app` dans back/Dockerfile. Vérifié en exécutant la
-        # commande dans alpine:3.19 — `adduser` attribue le premier UID libre à
+        # commande dans alpine:3.24 — `adduser` attribue le premier UID libre à
         # partir de 1000. Valeur figée ici pour que `runAsNonRoot` puisse être
         # contrôlé par le kubelet avant même de démarrer le conteneur.
         runAsNonRoot: true

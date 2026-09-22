@@ -50,10 +50,21 @@ trivy-fs:
   # ce job ne lit que les sources.
   needs: []
   # Trivy regarde le code du dépôt et cherche des dépendances vulnérables ou des
-  # secrets oubliés. Le fichier .trivyignore sert à ignorer les faux positifs.
+  # secrets oubliés.
+  #
+  # ⚠️ `--ignorefile` n'est pas décoratif : Trivy ne lit que `.trivyignore` par
+  # défaut, jamais `.trivyignore.yaml`. Sans ce drapeau, les exclusions
+  # justifiées du dépôt ne s'appliquent pas et le job échoue sur 5 faux
+  # positifs. Le format YAML est retenu parce qu'il borne chaque exclusion à un
+  # chemin : une ligne `KSV-0014` dans un `.trivyignore` classique vaudrait pour
+  # tout le dépôt et masquerait une régression réelle ailleurs.
+  #
+  # Bloquant : vérifié le 2026-09-19, le scan sort en 0 une fois les exclusions
+  # appliquées. La porte se ferme donc sur du vide, et c'est ce qui serait
+  # introduit ensuite qui arrêterait le pipeline.
   script:
-    - trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --exit-code 0 --no-progress .
-  allow_failure: true
+    - trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --exit-code 1 --ignorefile .trivyignore.yaml --no-progress .
+  allow_failure: false
   extends: .rules_test
 
 # ===========================================================================

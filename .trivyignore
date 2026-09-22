@@ -1,8 +1,12 @@
-# Vulnérabilités et misconfigurations volontairement acceptées.
+# ⚠️ Ce fichier n'est plus la source des exclusions Trivy.
 #
-# Une ligne = un identifiant (CVE-..., DS-..., AVD-...).
-# Toute entrée doit porter une justification et une date de revue :
-# ce fichier est relu à chaque release, pas une décharge permanente.
+# Les exceptions assumées vivent dans `.trivyignore.yaml`, qui borne chaque
+# exclusion à un chemin précis. C'est impossible ici : dans ce format, un
+# identifiant vaut pour tout le dépôt, et ignorer `KSV-0014` à cause d'un seul
+# manifeste masquerait le jour où un autre perdrait vraiment son
+# `readOnlyRootFilesystem`.
 #
-# Exemple :
-# CVE-2024-00000 exp:2026-12-31  # non exploitable : le composant vulnérable n'est pas chargé
+# Les jobs de CI passent donc explicitement `--ignorefile .trivyignore.yaml`,
+# car Trivy ne lit que `.trivyignore` par défaut. Ce fichier est conservé
+# **vide de toute exclusion**, précisément pour que ce comportement par défaut
+# ne réactive rien en silence si le drapeau venait à sauter.

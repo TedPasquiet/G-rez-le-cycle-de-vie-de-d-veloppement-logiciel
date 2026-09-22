@@ -106,10 +106,12 @@ des vulnérabilités connues. Trivy scanne le dépôt à la recherche de dépend
 vulnérables, de secrets oubliés et de mauvaises configurations, et scanne aussi
 les images avant leur envoi au registry. Les conteneurs déployés tournent en
 utilisateur non privilégié, système de fichiers en lecture seule et sans aucune
-capability. `dependency-check-back` est **bloquant** depuis qu'il aboutit et
-ne trouve aucune vulnérabilité ; `trivy-fs` renseigne encore sans bloquer.
+capability. `dependency-check-back` et `trivy-fs` sont **bloquants** depuis
+qu'ils aboutissent sans rien trouver, tout comme les scans d'image de
+`package-back` et `package-front` : la porte se ferme sur du vide, et c'est ce
+qui serait introduit ensuite qui arrêterait le pipeline.
 
-**Fichiers** : `back/config/dependency-check/suppressions.xml`, `.trivyignore`, `scripts/ci/build_and_push.sh`, `k8s/base/*-deployment.yaml`
+**Fichiers** : `back/config/dependency-check/suppressions.xml`, `.trivyignore.yaml`, `scripts/ci/build_and_push.sh`, `k8s/base/*-deployment.yaml`
 **Jobs CI** : `dependency-check-back`, `trivy-fs` · **Détail** : [AUDIT.md](AUDIT.md)
 
 ## 9. La performance

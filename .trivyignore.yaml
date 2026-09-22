@@ -1,0 +1,67 @@
+# Misconfigurations volontairement acceptées — une entrée = un identifiant ET
+# un chemin.
+#
+# Pourquoi ce format plutôt que le `.trivyignore` historique : une ligne
+# `KSV-0014` dans un `.trivyignore` classique vaut pour TOUT le dépôt. Elle
+# masquerait le jour où un manifeste réel perdrait son `readOnlyRootFilesystem`.
+# Ici chaque exclusion est bornée au fichier qui la justifie : un même
+# identifiant reste bloquant partout ailleurs.
+#
+# Chaque entrée porte une justification et une date de revue. Ce fichier est
+# relu à chaque release, ce n'est pas une décharge permanente.
+#
+# Scan de référence : trivy 0.69.3, `fs --scanners misconfig --severity
+# HIGH,CRITICAL`, exécuté le 2026-09-19 — 5 misconfigurations, toutes reprises
+# ci-dessous.
+
+misconfigurations:
+  - id: KSV-0056
+    paths:
+      - .gitlab/agents/microcrm/rbac.yaml
+    statement: >-
+      Droits d'écriture sur les ressources networking accordés à l'agent
+      GitLab. Ce n'est pas un excès de privilège : terraform/modules/network-policy
+      crée et met à jour les NetworkPolicy du namespace, et l'agent est le seul
+      chemin d'accès au cluster depuis la CI (TERRAFORM.md §4.1). Restreindre
+      aux verbes get/list/watch, comme le demande la règle, casserait le job
+      terraform-apply. Le périmètre reste borné par le RoleBinding, limité aux
+      namespaces du projet.
+    expiredAt: 2026-12-31
+
+  - id: KSV-0014
+    paths:
+      - k8s/elk/elasticsearch-deployment.yaml
+    statement: >-
+      Écart assumé et déjà commenté dans le manifeste. L'entrypoint
+      d'Elasticsearch 8 écrit dans son propre répertoire d'installation avant
+      de lancer la JVM : il crée config/elasticsearch.keystore s'il est absent.
+      Avec un système de fichiers racine en lecture seule, le conteneur
+      s'arrête au démarrage. Le reste du durcissement est en place :
+      runAsNonRoot, capabilities ALL retirées, allowPrivilegeEscalation à
+      false. Cette exclusion tombe si la stack passe un jour à l'opérateur ECK,
+      qui gère le keystore hors du conteneur.
+    expiredAt: 2026-12-31
+
+  - id: KSV-0014
+    paths:
+      - k8s/overlays/production/back-resources-patch.yaml
+    statement: >-
+      Faux positif de méthode, pas d'appréciation. Ce fichier est un patch
+      stratégique Kustomize qui ne contient qu'un bloc `resources` ; Trivy le
+      lit isolément, le voit comme un Deployment complet, et lui reproche
+      l'absence d'un réglage qui vit dans k8s/base/back-deployment.yaml.
+      Le rendu réellement appliqué — `kubectl kustomize k8s/overlays/production`
+      — porte bien readOnlyRootFilesystem à true, ce que vérifient les
+      assertions de scripts/tests/validate_k8s.sh.
+    expiredAt: 2026-12-31
+
+  - id: KSV-0118
+    paths:
+      - k8s/overlays/production/back-resources-patch.yaml
+    statement: >-
+      Même cause que l'entrée KSV-0014 ci-dessus : le patch n'a pas de
+      securityContext parce que la base en porte un, et Trivy scanne le
+      fragment au lieu du rendu. L'assertion d'équivalence de
+      scripts/tests/validate_k8s.sh contrôle le résultat final, qui est la
+      seule chose que le cluster reçoive.
+    expiredAt: 2026-12-31

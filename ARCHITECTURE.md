@@ -73,7 +73,7 @@ flowchart LR
         g["gradle:8.14.5-jdk21<br/>compile"] -->|"copie le .jar"| ba["alpine + JRE<br/>image finale"]
     end
     subgraph front_build["front/Dockerfile"]
-        n["node:22<br/>ng build"] -->|"copie les fichiers"| ca["caddy:2-alpine<br/>image finale"]
+        n["node:22<br/>ng build"] -->|"copie les fichiers"| ca["alpine + Caddy recompilé<br/>image finale"]
     end
 ```
 
@@ -83,15 +83,18 @@ flowchart LR
 
 ### Taille des images livrées
 
-| Image   | Taille     | Base                     | Dont l'application |
-| ------- | ---------- | ------------------------ | ------------------ |
-| `back`  | **377 Mo** | `alpine:3.19` (11,9 Mo)  | ~365 Mo            |
-| `front` | **85 Mo**  | `caddy:2-alpine` (85 Mo) | ~0,2 Mo            |
+| Image   | Taille     | Base                    | Dont l'application            |
+| ------- | ---------- | ----------------------- | ----------------------------- |
+| `back`  | **399 Mo** | `alpine:3.24` (13,6 Mo) | ~385 Mo (le JRE)              |
+| `front` | **86 Mo**  | `alpine:3.24` (13,6 Mo) | ~72 Mo (Caddy, bundle 0,2 Mo) |
 
-Le front est à quelques centaines de kilo-octets près sa propre image de base :
-un bundle Angular optimisé pèse peu, et Caddy est un binaire unique.
+Le front tient presque entier dans le binaire Caddy : un bundle Angular optimisé
+pèse quelques centaines de kilo-octets. Ce binaire est recompilé par
+`front/Dockerfile` pour corriger les CVE de sa chaîne Go, et posé sur une Alpine
+nue — le copier par-dessus l'image Caddy officielle aurait laissé l'original
+dans sa couche et porté l'image à 158 Mo.
 
-Le back, lui, est dominé par `openjdk21-jre-headless` — environ 365 des 377 Mo.
+Le back, lui, est dominé par `openjdk21-jre-headless` — environ 385 des 399 Mo.
 C'est le prix d'un JRE complet. Un runtime taillé sur mesure avec `jlink`, ne
 contenant que les modules réellement utilisés, ramènerait l'image autour de
 150 Mo. Ce n'est pas fait aujourd'hui : la complexité ajoutée au Dockerfile ne

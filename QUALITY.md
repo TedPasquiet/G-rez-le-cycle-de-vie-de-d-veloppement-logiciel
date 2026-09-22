@@ -24,18 +24,16 @@ local.
 Le pipeline complet compte 8 stages : `lint` → `test` → `quality` → `security` →
 `build` → `package` → `perf` → `deploy`. Voir [ARCHITECTURE.md](ARCHITECTURE.md) §4.
 
-> ⚠️ **Tous ces contrôles sont bloquants, sauf deux.**
+> ⚠️ **Tous ces contrôles sont bloquants, sauf un.**
 >
-> - **Les scans Trivy** (§4) : `trivy-fs` est en `allow_failure: true`, et les trois
->   scans tournent en `--exit-code 0`. Ils **informent** sans arrêter le pipeline.
 > - **`k6-load`** (§5) : ses mesures varient d'une exécution à l'autre sur les
 >   runners partagés, et un seuil dur y produirait des échecs sans rapport avec le
 >   code.
 >
 > Pour tout le reste, un échec arrête le pipeline : analyse Sonar qui n'a pas eu
 > lieu, Quality Gate non franchie, défaut SpotBugs, CVE de score CVSS 7 ou plus dans
-> les dépendances Java, couverture ou score de mutation sous leur seuil, image qui ne
-> répond pas au smoke test.
+> les dépendances Java, misconfiguration ou CVE système relevée par Trivy, couverture
+> ou score de mutation sous leur seuil, image qui ne répond pas au smoke test.
 
 ---
 
@@ -156,8 +154,11 @@ contient aussi un OS (Alpine), une JRE, un serveur web (Caddy) — chacun avec s
 propres CVE. Trivy scanne les **couches système** de l'image finale. Il détecte en
 prime les **secrets commités** et les **mauvaises configurations** de Dockerfile.
 
-> Exemples concrets sur ce projet : `front/Dockerfile` tourne en `root` (DS-0002),
-> et plusieurs CVE HIGH sont ouvertes sur les paquets `@angular/*`.
+> Exemple concret sur ce projet : le scan du dépôt relève 5 misconfigurations HIGH
+> sur les manifestes Kubernetes et le RBAC de l'agent GitLab. Toutes sont justifiées
+> et bornées à leur fichier dans `.trivyignore.yaml`. Les deux défauts que cette
+> section citait auparavant — image front en `root`, CVE ouvertes sur `@angular/*` —
+> sont fermés depuis la montée d'Angular 20 et celle des images du 2026-09-19.
 
 **Deux jobs, deux portées.**
 
@@ -167,12 +168,15 @@ prime les **secrets commités** et les **mauvaises configurations** de Dockerfil
   `package-back` et `package-front`, juste après la construction de l'image, via un
   `docker run aquasec/trivy image`.
 
-Les deux tournent aujourd'hui avec `--exit-code 0` : ils **publient** les
-vulnérabilités sans jamais bloquer le pipeline. Le script
-[`scripts/ci/build_and_push.sh`](scripts/ci/build_and_push.sh) sait pourtant refuser
-de pousser une image porteuse d'une CVE CRITICAL (option `--scan`, code de sortie 2) —
-il suffirait d'activer cette option dans les jobs `package-*` pour rendre le contrôle
-bloquant.
+**Les deux sont bloquants** (`--exit-code 1`) depuis le 2026-09-19. `trivy-fs`
+passe en plus `--ignorefile .trivyignore.yaml` : Trivy ne lit que `.trivyignore`
+par défaut, et sans ce drapeau les exclusions justifiées ne s'appliquent pas.
+
+La porte se ferme sur du vide, et c'est voulu : le scan du dépôt sort en 0 une
+fois les exclusions appliquées, et les deux images ne portent plus aucune CVE
+HIGH ou CRITICAL depuis la montée de version (Alpine 3.24, Spring Boot 3.5.16,
+Caddy recompilé). Ce qui arrêtera le pipeline, c'est donc ce qui sera introduit
+**après**.
 
 **Utilisation locale** (sans installer Trivy) :
 
@@ -188,7 +192,8 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:lates
   image --severity HIGH,CRITICAL --ignore-unfixed back-p6
 ```
 
-Les exceptions assumées se déclarent dans `.trivyignore`.
+Les exceptions assumées se déclarent dans `.trivyignore.yaml` — une entrée par
+identifiant **et** par chemin, avec sa justification et sa date de revue.
 
 ---
 
@@ -274,8 +279,11 @@ produirait des échecs aléatoires sans rapport avec le code — le meilleur moy
 faire perdre confiance dans un gate. Sur un runner dédié, il suffit de passer
 `allow_failure` à `false` pour en faire un vrai gate. `k6-stress`, lui, cherche
 volontairement la rupture : il n'a rien à faire dans un pipeline automatique. Il ne
-tourne que si le pipeline est lancé à la main (« Run pipeline ») avec la variable
-`K6_STRESS=true`. Il n'est pas en `when: manual` : sans `allow_failure`, un job
+tourne que si le pipeline est lancé à la main (« New pipeline ») avec la variable
+`K6_STRESS=true`. Prérequis hors dépôt : dans Settings → CI/CD → Variables,
+« Minimum role to use pipeline variables » doit être réglé sur Developer ; sur
+« No one allowed », le défaut des projets récents, le formulaire n'affiche pas la
+section Variables. Il n'est pas en `when: manual` : sans `allow_failure`, un job
 manuel bloquerait le pipeline enfant, et le déploiement derrière lui. Conséquence à
 connaître : s'il franchit ses seuils de rupture, ce pipeline-là passe au rouge.
 
