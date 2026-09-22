@@ -21,16 +21,10 @@ test-scripts:
   extends: .rules_test
 
 test-front:
-  image:
-    name: $CYPRESS_IMAGE
-    # amd64 forcé : la variante arm64 de l'image Cypress n'embarque pas Google
-    # Chrome (seulement Firefox), et Karma échoue sur « Can not find the binary
-    # /opt/google/chrome/chrome ». Sans effet sur les runners partagés, déjà en
-    # amd64 ; sur le runner du poste (Apple Silicon), l'image tourne en
-    # émulation — plus lent, mais Chrome headless y rend correctement (vérifié
-    # le 2026-09-19).
-    docker:
-      platform: linux/amd64
+  # $CYPRESS_IMAGE est référencée par digest, donc forcément en amd64 : c'est la
+  # seule variante qui embarque Google Chrome. Le pourquoi, et pourquoi
+  # `image:docker:platform` ne suffisait pas, sont dans .gitlab/ci/variables.yml.
+  image: $CYPRESS_IMAGE
   stage: test
   # `needs: []` — démarre sans attendre l'étape précédente. Rien à recevoir :
   # ce job ne lit que les sources.
