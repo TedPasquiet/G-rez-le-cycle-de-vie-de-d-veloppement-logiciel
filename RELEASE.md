@@ -295,15 +295,12 @@ kubectl -n "$NAMESPACE" port-forward svc/back 18081:8080 &
 curl -s http://127.0.0.1:18081/persons | head -c 200
 ```
 
-⚠️ **Cette procédure n'a PAS encore été exécutée de bout en bout.** Chacune de
-ses étapes l'a été séparément — le playbook Ansible est idempotent et rejoué
-(ANSIBLE.md §7), l'application a été déployée et son rollback observé
-(K8S.md §14), Terraform a créé et peuplé le namespace `logging` (MONITORING.md
-§6) — mais l'enchaînement complet, à partir d'une destruction réelle, reste à
-jouer. Tant qu'il ne l'a pas été, la reconstruction est une conviction
-raisonnable, pas une preuve.
+✅ **Cette procédure a été exécutée de bout en bout le 2026-09-22**, à partir
+d'une destruction réelle. Le compte rendu est en §9.5. Ce qui était jusque-là
+une conviction raisonnable est devenu une mesure.
 
-Deux points de vigilance connus pour le jour où elle sera jouée :
+Deux points de vigilance étaient connus avant de la jouer, et tous deux se sont
+vérifiés :
 
 - **Le namespace doit être absent**, sinon `terraform apply` s'arrête sur
   `already exists` et demande un `terraform import` préalable (TERRAFORM.md
@@ -312,3 +309,105 @@ Deux points de vigilance connus pour le jour où elle sera jouée :
   chargées par `minikube image load` (K8S.md §14.1) ; depuis la CI elles
   viennent du registry, et le `Secret` qui l'ouvre est recréé par le job de
   déploiement.
+
+---
+
+### 9.5 Compte rendu d'exécution — 2026-09-22
+
+**Contexte.** minikube v1.38.1, Kubernetes v1.35.1, nœud unique. Namespace
+`microcrm-staging` détruit par `kubectl delete namespace`, puis reconstruit
+depuis le seul dépôt.
+
+| Étape                       | Commande                              | Résultat                                                 |
+| --------------------------- | ------------------------------------- | -------------------------------------------------------- |
+| 0. Destruction              | `kubectl delete namespace`            | namespace supprimé, `NotFound` confirmé                  |
+| 1. Poste et cluster         | `ansible-playbook site.yml`           | `ok=23 changed=0 failed=0`                               |
+| 2. Namespace et gouvernance | `terraform apply plan.cache`          | **6 ressources créées**, 0 modifiée, 0 détruite          |
+| 3. Application              | `kubectl apply -k` (overlay éphémère) | 6 objets créés, rollout des deux Deployments en **11 s** |
+| 4. Vérification             | `curl /persons`                       | API répond, données de démonstration présentes           |
+
+**Ce que Terraform a recréé** : le namespace, `microcrm-staging-quota`,
+`microcrm-staging-limits` et les trois NetworkPolicy (`default-deny-ingress`,
+`allow-ingress-nginx-to-back`, `allow-ingress-nginx-to-front`). Le namespace
+porte à nouveau ses labels `app.kubernetes.io/managed-by=terraform`,
+`part-of=microcrm`, `environment=staging`, donc il rentre dans le recensement
+décrit en [TERRAFORM.md](TERRAFORM.md) §3.
+
+**Ce que la vérification a renvoyé** : `/persons` sert une personne
+(`John Doe`), recréée par Hibernate au démarrage puisque la base vit en mémoire
+— c'est exactement le comportement décrit en §9.1. `/actuator/health` répond
+`{"status":"UP","groups":["liveness","readiness"]}`.
+
+**Consommation du quota après déploiement** : `pods 2/10`,
+`requests.cpu 210m/1`, `requests.memory 544Mi/1536Mi`, `limits.cpu 1200m/3`,
+`limits.memory 832Mi/2Gi`. Le dimensionnement de `terraform.tfvars` laisse donc
+de la marge sur tous les axes.
+
+#### Trois écarts constatés, et ils valent d'être écrits
+
+**1. Le namespace n'était pas sous gouvernance Terraform avant l'exercice.**
+Relevé avant la destruction : aucun `ResourceQuota`, aucun `LimitRange`, aucune
+`NetworkPolicy`, et pour seul label `kubernetes.io/metadata.name`. Le namespace
+avait été créé à la main lors des campagnes de `K8S.md` §14. **C'est donc la
+première fois que Terraform le gouverne réellement** — l'exercice n'a pas
+restauré un état antérieur, il a corrigé un écart qui durait depuis 42 jours.
+
+**2. L'étape 3 de la procédure, telle qu'elle est écrite, est incomplète.**
+`kubectl apply -k k8s/overlays/staging` applique les manifestes du dépôt, qui
+portent délibérément `microcrm/back:PLACEHOLDER` (K8S.md §4). Appliqué tel quel,
+il déploierait une image inexistante. L'exécution a donc repris l'**overlay
+éphémère** du pipeline (K8S.md §6), avec `CI_REGISTRY_IMAGE=microcrm` et
+`CI_COMMIT_SHORT_SHA=t2-r2`, images déjà chargées par `minikube image load`. Le
+garde-fou anti-`PLACEHOLDER` du gabarit de déploiement a été exécuté et n'a rien
+signalé.
+
+**3. L'état Terraform a été substitué.** L'état de staging vit normalement sur
+GitLab (backend `http`, `versions.tf`), indisponible ce jour-là pour cause de
+quota. Un `backend "local"` a été posé en surcharge le temps de la manipulation,
+puis retiré. **Ce que cet exercice prouve est donc la reconstruction de
+l'environnement à partir du dépôt, pas le chemin de l'état partagé.** Ce dernier
+a été éprouvé juste après, par la migration décrite ci-dessous — mais depuis un
+poste, pas depuis un job.
+
+#### La conséquence, et comment elle a été réglée le même jour
+
+Les six ressources existaient dans le cluster mais n'étaient suivies que par
+l'état **local** produit pendant l'exercice. L'état partagé hébergé par GitLab,
+lui, les ignorait : un `terraform plan` lancé depuis la CI aurait annoncé « 6 à
+créer », et un `apply` aurait échoué sur `already exists` — le cas décrit en
+[TERRAFORM.md](TERRAFORM.md) §10.1.
+
+La réconciliation a été faite dans la foulée, par migration de l'état local vers
+le backend `http` :
+
+```shell
+cd terraform/environments/staging
+export TF_HTTP_ADDRESS="$CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/staging"
+export TF_HTTP_LOCK_ADDRESS="$TF_HTTP_ADDRESS/lock"
+export TF_HTTP_UNLOCK_ADDRESS="$TF_HTTP_ADDRESS/lock"
+export TF_HTTP_USERNAME="<compte GitLab>"   # le jeton, de portée api, n'est jamais écrit
+terraform init -migrate-state               # répondre « yes »
+```
+
+Terraform a acquis le verrou, constaté que l'état distant était **vide** — ce qui
+confirme au passage que l'`apply` n'avait jamais été joué sur cet environnement —
+puis copié les six ressources.
+
+**Vérification** : `terraform plan` rafraîchit désormais les six ressources
+**depuis l'état partagé** et répond `No changes. Your infrastructure matches the
+configuration.` L'état local a été retiré du répertoire ; le backend enregistré
+dans `.terraform/` est bien `http`.
+
+Deux choses en découlent :
+
+- La CI et le poste visent enfin le même état. Le prochain
+  `terraform-apply-staging` tournera contre un état conforme et n'aura rien à
+  faire.
+- **Le chemin de l'état partagé, annoncé plus haut comme non éprouvé, l'est
+  désormais en lecture et en écriture** : verrou pris et relâché, état écrit,
+  état relu. Il reste à le jouer depuis un job de CI, avec `$CI_JOB_TOKEN` au
+  lieu d'un jeton personnel.
+
+**Ce qui reste hors de portée de cet exercice** : la restauration de _données_.
+Elle n'a pas d'objet tant que la base vit en mémoire — le raisonnement est en
+§9.1, et il ne change pas.
