@@ -181,13 +181,13 @@ dont on ne sait pas si cela fonctionne.
 
 ### Vague 1 — Rendre les contrôles contraignants
 
-| ID   | Action                                                                                                                   | Irritant           | Porteur        | Effort | Preuve d'atteinte                                                             |
-| ---- | ------------------------------------------------------------------------------------------------------------------------ | ------------------ | -------------- | ------ | ----------------------------------------------------------------------------- |
-| A1.1 | Passer les scans Trivy à `--exit-code 1` sur `HIGH,CRITICAL` (`trivy-fs`, `package-back`, `package-front`)               | I3, I2             | Maïa           | S      | Une image porteuse d'une CVE critique fait échouer `package-*`                |
-| A1.2 | Tenir un `.trivyignore` **daté et justifié** : une ligne = une CVE, une raison, une date de réexamen                     | I3                 | Maïa + Roubina | S      | Aucune entrée sans raison ni date ; revue à chaque itération                  |
-| A1.3 | Rendre `dependency-check-back` bloquant au-delà d'un score CVSS convenu                                                  | I2                 | Sylvain        | S      | Le job échoue sur une dépendance vulnérable introduite volontairement en test |
-| A1.4 | Miroiter les images de base dans le registry interne et n'y référencer qu'elles                                          | I6, souhait Ops C8 | Nico           | M      | Aucun `FROM` ne pointe vers DockerHub ; le build passe DockerHub coupé        |
-| A1.5 | Remplacer l'email par le pipeline comme canal : un déploiement se désigne par un tag d'image, jamais par un numéro dicté | I6                 | Roubina + Nico | S      | Aucun échange de version par email sur une itération complète                 |
+| ID   | Action                                                                                                                   | Irritant           | Porteur        | Effort | Preuve d'atteinte                                                                               |
+| ---- | ------------------------------------------------------------------------------------------------------------------------ | ------------------ | -------------- | ------ | ----------------------------------------------------------------------------------------------- |
+| A1.1 | Passer les scans Trivy à `--exit-code 1` sur `HIGH,CRITICAL` (`trivy-fs`, `package-back`, `package-front`)               | I3, I2             | Maïa           | S      | **Fait le 2026-09-19.** Une image porteuse d'une CVE critique fait échouer `package-*`          |
+| A1.2 | Tenir un fichier d'exceptions **daté et justifié** : une entrée = un identifiant, un chemin, une raison, une date        | I3                 | Maïa + Roubina | S      | **Fait le 2026-09-19** — `.trivyignore.yaml`, 4 entrées bornées par chemin, revue au 2026-12-31 |
+| A1.3 | Rendre `dependency-check-back` bloquant au-delà d'un score CVSS convenu                                                  | I2                 | Sylvain        | S      | Le job échoue sur une dépendance vulnérable introduite volontairement en test                   |
+| A1.4 | Miroiter les images de base dans le registry interne et n'y référencer qu'elles                                          | I6, souhait Ops C8 | Nico           | M      | Aucun `FROM` ne pointe vers DockerHub ; le build passe DockerHub coupé                          |
+| A1.5 | Remplacer l'email par le pipeline comme canal : un déploiement se désigne par un tag d'image, jamais par un numéro dicté | I6                 | Roubina + Nico | S      | Aucun échange de version par email sur une itération complète                                   |
 
 > **A1.1 tient en un caractère, et c'est précisément le piège.** Le travail
 > n'est pas la modification, c'est A1.2 : sans une liste d'exceptions tenue

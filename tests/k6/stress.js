@@ -3,8 +3,8 @@
  *
  * On pousse au-delà de la charge nominale, par paliers, pour trouver à partir
  * de combien d'utilisateurs l'API décroche. Ce n'est pas un test qu'on passe
- * ou qu'on rate : c'est une mesure de la marge disponible. Il ne doit donc
- * jamais bloquer le pipeline (job `k6-stress` déclenché à la main).
+ * ou qu'on rate : c'est une mesure de la marge disponible. Il ne tourne donc
+ * que sur demande (job `k6-stress`, pipeline lancé avec K6_STRESS=true).
  *
  * Les seuils ci-dessous ne sont pas un gate mais un repère : les franchir
  * signifie qu'on a dépassé le point de rupture, et le palier atteint à ce

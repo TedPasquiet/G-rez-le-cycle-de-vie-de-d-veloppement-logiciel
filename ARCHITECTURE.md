@@ -73,7 +73,7 @@ flowchart LR
         g["gradle:8.14.5-jdk21<br/>compile"] -->|"copie le .jar"| ba["alpine + JRE<br/>image finale"]
     end
     subgraph front_build["front/Dockerfile"]
-        n["node:22<br/>ng build"] -->|"copie les fichiers"| ca["caddy:2-alpine<br/>image finale"]
+        n["node:22<br/>ng build"] -->|"copie les fichiers"| ca["alpine + Caddy recompilé<br/>image finale"]
     end
 ```
 
@@ -83,15 +83,18 @@ flowchart LR
 
 ### Taille des images livrées
 
-| Image   | Taille     | Base                     | Dont l'application |
-| ------- | ---------- | ------------------------ | ------------------ |
-| `back`  | **377 Mo** | `alpine:3.19` (11,9 Mo)  | ~365 Mo            |
-| `front` | **85 Mo**  | `caddy:2-alpine` (85 Mo) | ~0,2 Mo            |
+| Image   | Taille     | Base                    | Dont l'application            |
+| ------- | ---------- | ----------------------- | ----------------------------- |
+| `back`  | **399 Mo** | `alpine:3.24` (13,6 Mo) | ~385 Mo (le JRE)              |
+| `front` | **86 Mo**  | `alpine:3.24` (13,6 Mo) | ~72 Mo (Caddy, bundle 0,2 Mo) |
 
-Le front est à quelques centaines de kilo-octets près sa propre image de base :
-un bundle Angular optimisé pèse peu, et Caddy est un binaire unique.
+Le front tient presque entier dans le binaire Caddy : un bundle Angular optimisé
+pèse quelques centaines de kilo-octets. Ce binaire est recompilé par
+`front/Dockerfile` pour corriger les CVE de sa chaîne Go, et posé sur une Alpine
+nue — le copier par-dessus l'image Caddy officielle aurait laissé l'original
+dans sa couche et porté l'image à 158 Mo.
 
-Le back, lui, est dominé par `openjdk21-jre-headless` — environ 365 des 377 Mo.
+Le back, lui, est dominé par `openjdk21-jre-headless` — environ 385 des 399 Mo.
 C'est le prix d'un JRE complet. Un runtime taillé sur mesure avec `jlink`, ne
 contenant que les modules réellement utilisés, ramènerait l'image autour de
 150 Mo. Ce n'est pas fait aujourd'hui : la complexité ajoutée au Dockerfile ne
@@ -136,7 +139,7 @@ de port, qui oblige à conserver `NET_BIND_SERVICE` dans le conteneur même avec
 
 ## 4. Pipeline CI/CD (GitLab)
 
-Le pipeline compte **10 étapes et 33 jobs**, répartis sur **13 fichiers** : une
+Le pipeline compte **10 étapes et 36 jobs**, répartis sur **13 fichiers** : une
 racine qui ne contient aucun job, un fichier par domaine, et un pipeline enfant
 pour la performance (voir `docs/pipeline-ci.md`).
 
@@ -190,7 +193,7 @@ deux sont reliés par un workflow GitHub Actions,
 flowchart LR
     dev([git push]) --> gh[GitHub<br/>dépôt de travail, Pull Requests]
     gh -->|GitHub Actions<br/>miroir automatique| gl[GitLab<br/>miroir + exécution du pipeline]
-    gl --> ci[".gitlab-ci.yml<br/>10 étapes, 33 jobs<br/>13 fichiers"]
+    gl --> ci[".gitlab-ci.yml<br/>10 étapes, 36 jobs<br/>13 fichiers"]
 ```
 
 À chaque push sur n'importe quelle branche ou tag, le workflow recopie toutes les
@@ -282,7 +285,7 @@ flowchart TB
     gh -->|"GitHub Actions : mirror-to-gitlab.yaml<br/>push --prune de toutes les refs"| gl["GitLab<br/>miroir en lecture seule"]
     gl --> pipe
 
-    subgraph pipe["Pipeline GitLab CI : 10 étapes, 33 jobs"]
+    subgraph pipe["Pipeline GitLab CI : 10 étapes, 36 jobs"]
         direction LR
         s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
     end

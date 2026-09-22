@@ -14,7 +14,7 @@ les procédures. Celui-ci décrit les résultats.
 ## 1. L'essentiel, y compris ce qui fâche
 
 Le projet livre une chaîne complète : deux images Docker construites en
-multi-étapes, un pipeline GitLab CI de 10 étapes et 33 jobs, des manifestes
+multi-étapes, un pipeline GitLab CI de 10 étapes et 36 jobs, des manifestes
 Kubernetes en overlays Kustomize doublés d'un chart Helm, l'infrastructure
 décrite en Terraform et le poste provisionné par Ansible, une stack ELK qui
 collecte réellement les logs de l'application, et un collecteur d'indicateurs
@@ -44,7 +44,7 @@ argumentée et non une preuve.
 
 | Domaine                        | Résultat mesuré                                                 | Où c'est établi            |
 | ------------------------------ | --------------------------------------------------------------- | -------------------------- |
-| Pipeline                       | 33 jobs, 10 étapes, toutes images d'outillage figées            | `ARCHITECTURE.md` §4       |
+| Pipeline                       | 36 jobs, 10 étapes, toutes images d'outillage figées            | `ARCHITECTURE.md` §4       |
 | Tests back                     | 115 tests · **97,40 %** lignes · 100 % branches                 | `back/`, job `test-back`   |
 | Tests front                    | 73 tests · **100 %** lignes · 88,6 % branches                   | `front/`, job `test-front` |
 | Tests des scripts              | 151 assertions, sans cluster ni registry                        | `SCRIPTS.md`               |
@@ -214,17 +214,22 @@ tient la charge.
 | SonarQube                                          | Bonnes pratiques, dette, couverture agrégée          | `quality`  | non             |
 | SpotBugs + Find-Sec-Bugs                           | Bugs latents dans le bytecode (~140 motifs sécurité) | `quality`  | non             |
 | OWASP Dependency-Check                             | CVE des dépendances Java (base NVD)                  | `security` | **oui**         |
-| Trivy                                              | CVE d'images, secrets, misconfigurations             | `security` | non             |
+| Trivy                                              | CVE d'images, secrets, misconfigurations             | `security` | **oui**         |
 | k6                                                 | L'API répond-elle, et assez vite ?                   | `perf`     | **oui** (smoke) |
 
-⚠️ **Une partie de ces contrôles n'est pas bloquante.** Six jobs de qualité et de
-sécurité restent en `allow_failure: true`, et les scans Trivy tournent en
-`--exit-code 0` : ils informent sans arrêter le pipeline. C'est un choix
-de démarrage assumé, à lever contrôle par contrôle une fois le processus de
-traitement des vulnérabilités rodé — pas un état à présenter comme final. La
-seule exception est `k6-smoke`, bloquant parce qu'il ne mesure pas une tendance
-mais un fait binaire : l'image qu'on s'apprête à déployer répond, ou elle ne
-répond pas.
+✅ **Ces contrôles sont bloquants, à une exception près.** L'état que décrivait
+ce rapport — six jobs en `allow_failure: true` et des scans Trivy en
+`--exit-code 0` — a été levé en deux temps : les contrôles de qualité et
+`dependency-check-back` le 14 septembre 2026, les trois scans Trivy le
+19 septembre. Le choix de démarrage était assumé ; il n'avait pas vocation à
+être présenté comme final.
+
+Un seul job reste non bloquant : **`k6-load`**. Ses mesures varient d'une
+exécution à l'autre sur les runners partagés, et un seuil dur y produirait des
+échecs sans rapport avec le code ; sur un runner dédié, il suffit de basculer
+son `allow_failure`. `k6-smoke`, lui, a toujours été bloquant, parce qu'il ne
+mesure pas une tendance mais un fait binaire : l'image qu'on s'apprête à
+déployer répond, ou elle ne répond pas.
 
 Deux constats connus et non corrigés : Find-Sec-Bugs remonte `PERMISSIVE_CORS`
 dans `SpringDataRestCustomization.java`, et **aucun job ne lance `npm audit`** —
@@ -426,6 +431,16 @@ une instance disparaît avec elle — et celle-ci tourne sur un poste de
 développement. Chaque panneau a été confronté à la même agrégation jouée
 directement contre Elasticsearch : mêmes chiffres des deux côtés.
 
+Les deux tableaux de bord, capturés le 19 septembre 2026 sur une fenêtre de
+90 jours :
+
+![Tableau de bord de supervision — volume par conteneur, latence p50/p95/p99, erreurs applicatives, erreurs HTTP, statuts servis par le front et table des logs récents.](captures/kibana-supervision-volume-latence-erreurs-90j.jpg)
+
+![Tableau de bord DORA — les quatre indicateurs, la chronologie des tentatives, et la table qui porte la raison quand la valeur manque.](captures/kibana-dora-quatre-indicateurs-90j.jpg)
+
+À la date de ces captures, l'index porte **28 271 documents** ; les 50 du
+tableau ci-dessus sont ceux de la vérification initiale du 16 août 2026.
+
 Le dimensionnement de la stack a été confronté à une charge réelle, ce qui n'est
 pas la même chose qu'un plan validé. Pendant le rollout de Kibana, le quota du
 namespace affichait `limits.memory 5376Mi/6Gi`, `requests.memory 3200Mi/4Gi`,
@@ -503,10 +518,12 @@ révèle.
 Cette liste est donnée sans enrobage : elle est ce qu'un jury est en droit
 d'attaquer, et il vaut mieux qu'elle vienne du rapport que de la lecture.
 
-- **Aucune capture d'écran de la chaîne de livraison.** Le brief en demande
-  explicitement. Il n'y en a pas, pour une raison simple : **il n'existe aucune
-  exécution réussie à montrer.** Sept déploiements déclenchés, sept échecs, et
-  un quota de minutes désormais épuisé qui empêche d'en tenter un huitième.
+- **Aucune capture d'un déploiement réussi.** Le brief demande des captures de
+  la chaîne de livraison : celles du pipeline et des deux tableaux de bord
+  figurent dans `docs/captures/` (§6.2), mais **aucune ne montre un déploiement
+  qui aboutit**, pour une raison simple : il n'en existe aucun. Sept
+  déploiements déclenchés, sept échecs, et un quota de minutes épuisé qui
+  empêche d'en tenter un huitième.
 - **Aucune métrique système.** Ni CPU, ni mémoire, ni latence d'API. Le projet
   collecte des logs, pas des métriques.
 - **Aucun alerting.** Rien ne prévient personne.

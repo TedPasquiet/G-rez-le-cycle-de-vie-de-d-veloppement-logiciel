@@ -75,7 +75,7 @@ faute de `kubeconform` dans l'image.
 
 ## 6. Le pipeline CI/CD
 
-33 jobs répartis en 10 étapes : `lint`, `test`, `quality`, `security`, `infra`,
+36 jobs répartis en 10 étapes : `lint`, `test`, `quality`, `security`, `infra`,
 `build`, `package`, `perf`, `deploy`. Deux jeux de règles pilotent l'ensemble : les jobs
 de contrôle tournent sur toute branche `feature/*`, `release/*`, `hotfix/*`,
 `develop`, `main` et les tags ; les jobs qui produisent ou déploient un artefact
@@ -91,9 +91,9 @@ casser un pipeline sans qu'aucun commit ne l'explique.
 Quatre contrôles complémentaires. Checkstyle et ESLint sur le style, SpotBugs sur
 les défauts de programmation Java, SonarCloud sur la dette et les vulnérabilités,
 un seuil de couverture et des tests de mutation sur le back. Deux points à
-connaître : `coverage-gate` est **bloquant** (`allow_failure: false`), là où
-`mutation-back` informe ; et `quality-gate` ne tourne que sur `main`, parce que
-le plan gratuit de SonarCloud refuse de livrer le verdict des autres branches.
+connaître : tous ces contrôles sont **bloquants**, `mutation-back` compris ; et
+`quality-gate` ne tourne que sur `main`, parce que le plan gratuit de SonarCloud
+refuse de livrer le verdict des autres branches.
 Les analyses, elles, sont bien envoyées depuis toutes les branches.
 
 **Fichiers** : `back/config/checkstyle/`, `back/config/spotbugs/`, `front/.eslintrc.json`, `front/sonar-project.properties`, `scripts/ci/check_coverage.py`, `scripts/ci/quality_gate.py`
@@ -106,10 +106,12 @@ des vulnérabilités connues. Trivy scanne le dépôt à la recherche de dépend
 vulnérables, de secrets oubliés et de mauvaises configurations, et scanne aussi
 les images avant leur envoi au registry. Les conteneurs déployés tournent en
 utilisateur non privilégié, système de fichiers en lecture seule et sans aucune
-capability. `dependency-check-back` est **bloquant** depuis qu'il aboutit et
-ne trouve aucune vulnérabilité ; `trivy-fs` renseigne encore sans bloquer.
+capability. `dependency-check-back` et `trivy-fs` sont **bloquants** depuis
+qu'ils aboutissent sans rien trouver, tout comme les scans d'image de
+`package-back` et `package-front` : la porte se ferme sur du vide, et c'est ce
+qui serait introduit ensuite qui arrêterait le pipeline.
 
-**Fichiers** : `back/config/dependency-check/suppressions.xml`, `.trivyignore`, `scripts/ci/build_and_push.sh`, `k8s/base/*-deployment.yaml`
+**Fichiers** : `back/config/dependency-check/suppressions.xml`, `.trivyignore.yaml`, `scripts/ci/build_and_push.sh`, `k8s/base/*-deployment.yaml`
 **Jobs CI** : `dependency-check-back`, `trivy-fs` · **Détail** : [AUDIT.md](AUDIT.md)
 
 ## 9. La performance

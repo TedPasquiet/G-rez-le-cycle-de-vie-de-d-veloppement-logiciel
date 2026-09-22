@@ -36,7 +36,12 @@ perf:
     # que l'enfant est CRÉÉ, sans attendre son résultat — un pipeline vert qui
     # ne dit rien des tests de charge.
     strategy: depend
-  # Les mêmes règles que les jobs déclenchés. `k6-stress`, manuel, a les
+    # Les variables saisies au lancement du pipeline ne descendent PAS dans
+    # l'enfant par défaut (seules celles du YAML le font). Sans cette ligne,
+    # K6_STRESS=true n'atteindrait jamais `k6-stress`.
+    forward:
+      pipeline_variables: true
+  # Les mêmes règles que les jobs déclenchés. `k6-stress`, à la demande, a les
   # siennes — plus étroites — dans l'enfant : ce job-ci se contente d'ouvrir la
   # porte, il ne décide pas de ce qui tourne derrière.
   extends: .rules_build

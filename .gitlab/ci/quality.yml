@@ -13,7 +13,9 @@ sonar-back:
   script:
     - cd back
     - ./gradlew sonar -Dsonar.host.url=$SONAR_HOST_URL -Dsonar.token=$SONAR_TOKEN
-  allow_failure: true
+  # Bloquant, comme sonar-front : sans SONAR_TOKEN, ou SonarCloud injoignable,
+  # le pipeline s'arrête. Une analyse qui n'a pas eu lieu ne doit pas passer
+  # pour une analyse réussie.
   extends: [.cache_gradle, .rules_test_back]
 
 sonar-front:
@@ -27,7 +29,6 @@ sonar-front:
     - sonar-scanner -Dsonar.host.url=$SONAR_HOST_URL -Dsonar.token=$SONAR_TOKEN
       -Dsonar.projectKey=$SONAR_PROJECT_KEY_FRONT
       -Dsonar.organization=$SONAR_ORGANIZATION
-  allow_failure: true
   extends: .rules_test_front
 
 spotbugs-back:
@@ -44,7 +45,6 @@ spotbugs-back:
     paths:
       - back/build/reports/spotbugs/
     expire_in: 1 week
-  allow_failure: true
   extends: [.cache_gradle, .rules_test_back]
 
 # Ce job lance mon script Python qui vérifie la couverture de tests du back.
@@ -73,10 +73,12 @@ coverage-gate:
 # supprime un appel) et relance les tests qui couvrent la ligne : un mutant qui
 # survit désigne du code exécuté mais pas vérifié.
 #
-# Job séparé et non bloquant : PIT relance la suite une fois par mutant, il est
-# nettement plus lent que `test-back`, et son seuil ne doit pas arrêter une
-# livraison sur un mutant équivalent (une mutation qui ne change réellement
-# rien, comme la suppression d'un appel à une implémentation par défaut vide).
+# Job séparé, parce que PIT relance la suite une fois par mutant et qu'il est
+# nettement plus lent que `test-back`. Bloquant : sous MUTATION_MIN, le pipeline
+# s'arrête. Le mutant équivalent connu (une mutation qui ne change réellement
+# rien : la suppression d'un appel à une implémentation par défaut vide) est
+# absorbé par la marge du seuil. S'il en apparaît d'autres, c'est le seuil qu'on
+# rediscute, pas la tolérance qu'on rétablit.
 # Le rapport HTML est publié en artefact pour être lu à la revue.
 #
 # Même service PostgreSQL que `test-back` : sans lui, PIT mesurerait la solidité
@@ -97,7 +99,6 @@ mutation-back:
     paths:
       - back/build/reports/pitest/
     expire_in: 1 week
-  allow_failure: true
   extends: [.postgres_service, .cache_gradle, .rules_test_back]
 
 # Ce job lance mon script Python qui demande à SonarCloud si le Quality Gate
@@ -123,7 +124,6 @@ quality-gate:
       --host "$SONAR_HOST_URL"
       --project-key "$SONAR_PROJECT_KEY_FRONT"
       --branch "$CI_COMMIT_REF_NAME"
-  allow_failure: true
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
 

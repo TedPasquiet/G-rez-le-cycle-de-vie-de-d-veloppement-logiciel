@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Build et package — les artefacts, puis les images taguées par SHA — 4 job(s)
+# Build et package — les artefacts, les images par SHA, la version — 6 job(s)
 # ---------------------------------------------------------------------------
 # Inclus par `.gitlab-ci.yml`. Les gabarits que ces jobs étendent vivent dans
 # `.gitlab/ci/templates.yml` : `extends:` traverse un `include:`, une ancre YAML
@@ -39,9 +39,13 @@ package-back:
     IMAGE: '$CI_REGISTRY_IMAGE/$APP_BACK_NAME'
   script:
     - bash scripts/ci/build_and_push.sh --context ./back --image "$IMAGE" --tag "$CI_COMMIT_SHORT_SHA"
-    # On scanne l'image finale avec Trivy. Ici c'est juste pour info : avec
-    # --exit-code 0 ça n'arrête pas le pipeline même s'il trouve des soucis.
-    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY_IMAGE image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    # On scanne l'image finale avec Trivy, et le scan est BLOQUANT : une CVE
+    # HIGH ou CRITICAL dans l'image arrête le pipeline avant le déploiement.
+    # Les deux images sortent à 0 depuis la montée de version du 2026-09-19
+    # (Alpine 3.24, JRE 21, Caddy recompilé) — la porte se ferme sur du vide.
+    # Pas d'--ignorefile ici : aucun fichier du dépôt n'est monté dans ce
+    # conteneur, et aucune exclusion n'est nécessaire sur les images.
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY_IMAGE image --severity HIGH,CRITICAL --exit-code 1 "$IMAGE:$CI_COMMIT_SHORT_SHA"
 
 package-front:
   extends: .package_template
@@ -49,7 +53,43 @@ package-front:
     IMAGE: '$CI_REGISTRY_IMAGE/$APP_FRONT_NAME'
   script:
     - bash scripts/ci/build_and_push.sh --context ./front --image "$IMAGE" --tag "$CI_COMMIT_SHORT_SHA"
-    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY_IMAGE image --severity HIGH,CRITICAL --exit-code 0 "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY_IMAGE image --severity HIGH,CRITICAL --exit-code 1 "$IMAGE:$CI_COMMIT_SHORT_SHA"
+
+# ===========================================================================
+# PROMOTION : on pose le numéro de version SemVer sur l'image déjà construite.
+#
+# Ces deux jobs ne tournent QUE sur un pipeline de tag, et package-back /
+# package-front n'y tournent pas (`.rules_package`). Un pipeline de tag ne
+# reconstruit donc rien : il retague.
+#
+# C'est ce qui fait qu'une version est traçable. `back:1.4.0` et
+# `back:a1b2c3d` désignent le MÊME digest — celui que Trivy a scanné et que k6
+# a mis sous charge. Une image reconstruite au moment du tag aurait les mêmes
+# sources mais pas les mêmes couches, et « la version 1.4.0 » ne désignerait
+# plus rien de vérifiable.
+#
+# Si le commit taggué n'a jamais vu son image poussée (tag posé sur une branche
+# qui ne construit pas, ou pipeline en échec), le `docker pull` échoue et le job
+# le dit explicitement. C'est le comportement voulu : on ne publie pas un numéro
+# de version qui ne correspond à aucun artefact.
+# ===========================================================================
+promote-back:
+  extends: .package_template
+  variables:
+    IMAGE: '$CI_REGISTRY_IMAGE/$APP_BACK_NAME'
+  script:
+    - bash scripts/ci/promote_image.sh --image "$IMAGE" --from-tag "$CI_COMMIT_SHORT_SHA" --version "$CI_COMMIT_TAG"
+  rules:
+    - if: '$CI_COMMIT_TAG'
+
+promote-front:
+  extends: .package_template
+  variables:
+    IMAGE: '$CI_REGISTRY_IMAGE/$APP_FRONT_NAME'
+  script:
+    - bash scripts/ci/promote_image.sh --image "$IMAGE" --from-tag "$CI_COMMIT_SHORT_SHA" --version "$CI_COMMIT_TAG"
+  rules:
+    - if: '$CI_COMMIT_TAG'
 
 # ===========================================================================
 # PERF : tests de performance k6 (dossier tests/k6/).

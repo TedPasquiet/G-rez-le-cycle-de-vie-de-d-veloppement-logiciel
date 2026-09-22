@@ -40,8 +40,8 @@ pod front ┘            (sur le nœud)
 
 ## 3. Les logs applicatifs : deux formats, un profil
 
-Spring Boot 3.2.5 n'a pas le _structured logging_ natif — il est arrivé en 3.4.
-La bascule passe donc par un encodeur Logback,
+Le _structured logging_ natif de Spring Boot n'est arrivé qu'en 3.4, après le
+choix fait ici sur la 3.2.5. La bascule passe donc par un encodeur Logback,
 `co.elastic.logging:logback-ecs-encoder:1.7.0`, choisi plutôt que l'encodeur
 Logstash parce qu'il émet directement le schéma qu'attendent Elasticsearch et
 Kibana ; l'autre aurait imposé de renommer chaque champ, donc de maintenir une

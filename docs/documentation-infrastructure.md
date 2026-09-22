@@ -68,7 +68,7 @@ flowchart TB
     dev(["git push / merge"]) --> gh["GitHub<br/>dépôt de travail, Pull Requests"]
     gh -->|"GitHub Actions : mirror-to-gitlab.yaml"| gl["GitLab<br/>miroir en lecture seule"]
     gl --> pipe
-    subgraph pipe["Pipeline GitLab CI : 10 étapes, 33 jobs"]
+    subgraph pipe["Pipeline GitLab CI : 10 étapes, 36 jobs"]
         direction LR
         s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
     end
@@ -184,13 +184,14 @@ Chaque Dockerfile compile dans une image outillée (Gradle, Node) puis ne copie
 que l'artefact dans une image d'exécution minimale. Ni le JDK, ni npm, ni les
 sources ne se retrouvent dans l'image livrée.
 
-| Image   | Taille livrée | Base                     | Dont l'application |
-| ------- | ------------- | ------------------------ | ------------------ |
-| `back`  | **377 Mo**    | `alpine:3.19` (11,9 Mo)  | ~365 Mo (le JRE)   |
-| `front` | **85 Mo**     | `caddy:2-alpine` (85 Mo) | ~0,2 Mo            |
+| Image   | Taille livrée | Base                    | Dont l'application            |
+| ------- | ------------- | ----------------------- | ----------------------------- |
+| `back`  | **399 Mo**    | `alpine:3.24` (13,6 Mo) | ~385 Mo (le JRE)              |
+| `front` | **86 Mo**     | `alpine:3.24` (13,6 Mo) | ~72 Mo (Caddy, bundle 0,2 Mo) |
 
-Le front est à quelques centaines de kilo-octets près sa propre image de base :
-un bundle Angular optimisé pèse peu, et Caddy est un binaire unique. Le back est
+Le front tient presque entier dans le binaire Caddy, recompilé par
+`front/Dockerfile` pour corriger les CVE de sa chaîne Go ; le bundle Angular
+optimisé pèse quelques centaines de kilo-octets. Le back est
 dominé par `openjdk21-jre-headless` — c'est le prix d'un JRE complet. Un runtime
 taillé avec `jlink` ramènerait l'image autour de 150 Mo ; la complexité ajoutée
 ne se justifie pas encore, mais c'est la première optimisation à envisager si la
@@ -214,7 +215,7 @@ Côté front, l'essentiel venait du cache de compilation Angular (920 Mo) et de
 ### 3.4 Des versions figées, jamais `latest`
 
 Les images de base sont épinglées (`gradle:8.14.5-jdk21`, `node:22-alpine`,
-`caddy:2-alpine`, `alpine:3.19`) et **alignées sur les variables du
+`caddy:2.11.4-builder-alpine`, `alpine:3.24`) et **alignées sur les variables du
 `.gitlab-ci.yml`** : le code est compilé avec la version exacte qui a servi à le
 tester. Elles restent surchargeables au build par `--build-arg`. Cette exigence
 d'alignement a corrigé un défaut réel : le back se construisait en `jdk17`,
@@ -229,7 +230,8 @@ sous Kubernetes. Deux points ont demandé une vérification plutôt qu'une
 supposition :
 
 - **le back** crée son utilisateur avec `adduser -D -H app`, sans UID explicite.
-  La commande a été exécutée dans `alpine:3.19` pour lever le doute : `adduser`
+  La commande a été exécutée dans `alpine:3.19`, puis dans `alpine:3.24`, pour
+  lever le doute : `adduser`
   attribue le premier UID libre à partir de 1000. C'est cette valeur qui est
   figée dans le manifeste ;
 - **Caddy** ne démarre pas du tout en non-root avec toutes les capabilities

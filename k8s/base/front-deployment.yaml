@@ -29,10 +29,9 @@ spec:
       imagePullSecrets:
         - name: gitlab-registry
       securityContext:
-        # L'image caddy:2-alpine tourne en root par défaut. Rien dans Caddy ne
-        # l'exige ici : on lui impose donc un UID non privilégié. 1000 n'existe
-        # pas dans /etc/passwd de l'image, ce qui est sans conséquence — Caddy
-        # n'a pas besoin de résoudre son propre utilisateur.
+        # UID 1000 : celui de l'utilisateur `app` que crée front/Dockerfile
+        # (`adduser -u 1000`). Figé ici pour que `runAsNonRoot` puisse être
+        # contrôlé par le kubelet avant même de démarrer le conteneur.
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000

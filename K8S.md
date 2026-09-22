@@ -357,8 +357,8 @@ n'attend le front ni ne le ramène en arrière s'il échoue. _(Cette dernière
 conséquence est déduite du mécanisme, elle n'a pas été rejouée en provoquant un
 échec du back.)_
 
-`deploy-staging` porte en outre `allow_failure: true` : en staging, cette
-situation ne fait pas échouer le pipeline.
+`deploy-staging` n'a plus d'`allow_failure` : un échec du déploiement en staging
+fait échouer le pipeline, comme en production.
 
 ## 7. Ce qui varie entre les environnements
 
@@ -626,7 +626,8 @@ Trois points ont demandé une vérification plutôt qu'une supposition.
 **L'UID du back.** `back/Dockerfile` crée son utilisateur avec `adduser -D -H
 app`, sans UID explicite. Les manifestes doivent pourtant en déclarer un
 numérique : `runAsNonRoot` seul laisse le kubelet vérifier trop tard. La commande
-a été exécutée dans `alpine:3.19` pour lever le doute — `adduser` attribue le
+a été exécutée dans `alpine:3.19`, puis dans `alpine:3.24` à la montée de version,
+pour lever le doute — `adduser` attribue le
 premier UID libre à partir de 1000, donc `app` vaut **1000:1000**. C'est cette
 valeur qui est figée dans `back-deployment.yaml`. Elle reste couplée au
 Dockerfile : y ajouter un utilisateur avant `app` la ferait glisser. Un `USER

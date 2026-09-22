@@ -220,7 +220,7 @@ kilo-octets.
 #### Des versions figées, jamais `latest`
 
 Les images de base sont épinglées (`gradle:8.14.5-jdk21`, `node:22-alpine`,
-`caddy:2-alpine`, `alpine:3.19`) et alignées sur les variables du
+`caddy:2.11.4-builder-alpine`, `alpine:3.24`) et alignées sur les variables du
 [`.gitlab-ci.yml`](./.gitlab-ci.yml) : le code est compilé avec la version
 exacte qui a servi à le tester. Un tag flottant fait casser une construction
 sans qu'aucun commit ne l'explique, et rend deux analyses incomparables. Les

@@ -11,6 +11,9 @@
 #   FAKE_DOCKER_LOG        Fichier où sont écrites les commandes reçues.
 #   FAKE_DOCKER_LOGIN_FAIL Si "1" : `docker login` échoue.
 #   FAKE_DOCKER_BUILD_FAIL Si "1" : `docker build` échoue.
+#   FAKE_DOCKER_PULL_FAIL  Si "1" : `docker pull` échoue (image absente du
+#                          registry), ce qui est le cas nominal d'échec de
+#                          promote_image.sh.
 
 args="$*"
 
@@ -27,6 +30,9 @@ case "${1:-}" in
     ;;
   build)
     [[ "${FAKE_DOCKER_BUILD_FAIL:-0}" == "1" ]] && exit 1
+    ;;
+  pull)
+    [[ "${FAKE_DOCKER_PULL_FAIL:-0}" == "1" ]] && exit 1
     ;;
 esac
 

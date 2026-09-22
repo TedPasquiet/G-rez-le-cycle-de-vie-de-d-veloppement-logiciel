@@ -24,22 +24,16 @@ local.
 Le pipeline complet compte 8 stages : `lint` → `test` → `quality` → `security` →
 `build` → `package` → `perf` → `deploy`. Voir [ARCHITECTURE.md](ARCHITECTURE.md) §4.
 
-> ⚠️ **Une partie de ces contrôles ne sont pas bloquants.** Les jobs `sonar-back`,
-> `sonar-front`, `spotbugs-back`, `quality-gate`, `trivy-fs` et `mutation-back`
-> sont en `allow_failure: true`, et les scans Trivy tournent en `--exit-code 0`.
-> `dependency-check-back`, lui, est devenu bloquant. Ils **informent** sans arrêter le pipeline. C'est un
-> choix de démarrage assumé, à lever contrôle par contrôle une fois le processus de
-> traitement des vulnérabilités rodé.
+> ⚠️ **Tous ces contrôles sont bloquants, sauf un.**
 >
-> Deux exceptions, pour la même raison : elles ne mesurent pas une tendance mais un
-> fait binaire.
+> - **`k6-load`** (§5) : ses mesures varient d'une exécution à l'autre sur les
+>   runners partagés, et un seuil dur y produirait des échecs sans rapport avec le
+>   code.
 >
-> - **`k6-smoke`** (§5) : l'image qu'on s'apprête à déployer répond, ou elle ne
->   répond pas.
-> - **`coverage-gate`** (§7) : la couverture du back est au-dessus de son seuil, ou
->   elle est passée dessous. Le seuil étant calé sous la valeur réellement tenue et
->   vérifié aussi en local avant le push, un échec ici désigne une régression, pas un
->   réglage à ajuster.
+> Pour tout le reste, un échec arrête le pipeline : analyse Sonar qui n'a pas eu
+> lieu, Quality Gate non franchie, défaut SpotBugs, CVE de score CVSS 7 ou plus dans
+> les dépendances Java, misconfiguration ou CVE système relevée par Trivy, couverture
+> ou score de mutation sous leur seuil, image qui ne répond pas au smoke test.
 
 ---
 
@@ -81,8 +75,8 @@ sonar-scanner -Dsonar.host.url=http://localhost:9000 -Dsonar.token=<votre-token>
 
 **En CI.** Deux jobs envoient l'analyse au stage `quality` : `sonar-back` (plugin
 Gradle) et `sonar-front` (`sonar-scanner-cli`). Ils ont besoin des variables CI/CD
-`SONAR_HOST_URL` et `SONAR_TOKEN` ; sans elles ils échouent, mais comme ils sont en
-`allow_failure: true`, le pipeline reste vert et l'échec est simplement toléré.
+`SONAR_HOST_URL` et `SONAR_TOKEN` ; sans elles ils échouent, et le pipeline avec
+eux : les deux jobs sont bloquants.
 
 Le verdict de la Quality Gate est récupéré séparément par le job **`quality-gate`**,
 qui appelle le script [`scripts/ci/quality_gate.py`](scripts/ci/quality_gate.py). Ce
@@ -139,9 +133,9 @@ open build/reports/dependency-check/dependency-check-report.html
 > (et en variable CI/CD masquée dans GitLab).
 
 **Seuil.** `failBuildOnCVSS = 7.0` : la tâche échoue dès qu'une dépendance porte une
-vulnérabilité de sévérité HIGH ou CRITICAL. Le job CI est en `allow_failure: true`
-pour qu'une CVE publiée pendant la nuit ne bloque pas une livraison sans arbitrage
-humain — à retirer une fois le processus de traitement rodé.
+vulnérabilité de sévérité HIGH ou CRITICAL. Le job CI est bloquant : une CVE publiée
+pendant la nuit arrête la livraison suivante, et c'est un arbitrage humain (mise à
+jour, ou suppression justifiée et datée) qui la débloque.
 
 **Faux positifs.** À documenter et dater dans
 `back/config/dependency-check/suppressions.xml`, jamais à ignorer silencieusement.
@@ -160,8 +154,11 @@ contient aussi un OS (Alpine), une JRE, un serveur web (Caddy) — chacun avec s
 propres CVE. Trivy scanne les **couches système** de l'image finale. Il détecte en
 prime les **secrets commités** et les **mauvaises configurations** de Dockerfile.
 
-> Exemples concrets sur ce projet : `front/Dockerfile` tourne en `root` (DS-0002),
-> et plusieurs CVE HIGH sont ouvertes sur les paquets `@angular/*`.
+> Exemple concret sur ce projet : le scan du dépôt relève 5 misconfigurations HIGH
+> sur les manifestes Kubernetes et le RBAC de l'agent GitLab. Toutes sont justifiées
+> et bornées à leur fichier dans `.trivyignore.yaml`. Les deux défauts que cette
+> section citait auparavant — image front en `root`, CVE ouvertes sur `@angular/*` —
+> sont fermés depuis la montée d'Angular 20 et celle des images du 2026-09-19.
 
 **Deux jobs, deux portées.**
 
@@ -171,12 +168,15 @@ prime les **secrets commités** et les **mauvaises configurations** de Dockerfil
   `package-back` et `package-front`, juste après la construction de l'image, via un
   `docker run aquasec/trivy image`.
 
-Les deux tournent aujourd'hui avec `--exit-code 0` : ils **publient** les
-vulnérabilités sans jamais bloquer le pipeline. Le script
-[`scripts/ci/build_and_push.sh`](scripts/ci/build_and_push.sh) sait pourtant refuser
-de pousser une image porteuse d'une CVE CRITICAL (option `--scan`, code de sortie 2) —
-il suffirait d'activer cette option dans les jobs `package-*` pour rendre le contrôle
-bloquant.
+**Les deux sont bloquants** (`--exit-code 1`) depuis le 2026-09-19. `trivy-fs`
+passe en plus `--ignorefile .trivyignore.yaml` : Trivy ne lit que `.trivyignore`
+par défaut, et sans ce drapeau les exclusions justifiées ne s'appliquent pas.
+
+La porte se ferme sur du vide, et c'est voulu : le scan du dépôt sort en 0 une
+fois les exclusions appliquées, et les deux images ne portent plus aucune CVE
+HIGH ou CRITICAL depuis la montée de version (Alpine 3.24, Spring Boot 3.5.16,
+Caddy recompilé). Ce qui arrêtera le pipeline, c'est donc ce qui sera introduit
+**après**.
 
 **Utilisation locale** (sans installer Trivy) :
 
@@ -192,7 +192,8 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:lates
   image --severity HIGH,CRITICAL --ignore-unfixed back-p6
 ```
 
-Les exceptions assumées se déclarent dans `.trivyignore`.
+Les exceptions assumées se déclarent dans `.trivyignore.yaml` — une entrée par
+identifiant **et** par chemin, avec sa justification et sa date de revue.
 
 ---
 
@@ -266,18 +267,25 @@ Le job tient en une ligne (`k6 run tests/k6/smoke.js`) : c'est GitLab qui gère 
 cycle de vie du conteneur applicatif. Pas de Docker-in-Docker, pas de conteneur à
 démarrer et nettoyer soi-même.
 
-| Job         | Scénario    | Bloquant ?                   |
-| ----------- | ----------- | ---------------------------- |
-| `k6-smoke`  | `smoke.js`  | **oui**                      |
-| `k6-load`   | `load.js`   | non (`allow_failure: true`)  |
-| `k6-stress` | `stress.js` | non, déclenché **à la main** |
+| Job         | Scénario    | Bloquant ?                  |
+| ----------- | ----------- | --------------------------- |
+| `k6-smoke`  | `smoke.js`  | **oui**                     |
+| `k6-load`   | `load.js`   | non (`allow_failure: true`) |
+| `k6-stress` | `stress.js` | **oui**, lancé sur demande  |
 
 `k6-load` n'est pas bloquant pour une raison précise : les runners GitLab partagés
 sont mutualisés, leurs mesures varient d'une exécution à l'autre, et un seuil dur y
 produirait des échecs aléatoires sans rapport avec le code — le meilleur moyen de
 faire perdre confiance dans un gate. Sur un runner dédié, il suffit de passer
 `allow_failure` à `false` pour en faire un vrai gate. `k6-stress`, lui, cherche
-volontairement la rupture : il n'a rien à faire dans un pipeline automatique.
+volontairement la rupture : il n'a rien à faire dans un pipeline automatique. Il ne
+tourne que si le pipeline est lancé à la main (« New pipeline ») avec la variable
+`K6_STRESS=true`. Prérequis hors dépôt : dans Settings → CI/CD → Variables,
+« Minimum role to use pipeline variables » doit être réglé sur Developer ; sur
+« No one allowed », le défaut des projets récents, le formulaire n'affiche pas la
+section Variables. Il n'est pas en `when: manual` : sans `allow_failure`, un job
+manuel bloquerait le pipeline enfant, et le déploiement derrière lui. Conséquence à
+connaître : s'il franchit ses seuils de rupture, ce pipeline-là passe au rouge.
 
 L'attente du démarrage de l'application est gérée par les scénarios eux-mêmes
 (fonction `setup`, jusqu'à `K6_READY_TIMEOUT_S` secondes), et non par un `sleep` au
@@ -473,10 +481,10 @@ cd back && ./gradlew pitest          # rapport dans build/reports/pitest/
 MUTATION_MIN=90 ./gradlew pitest     # seuil surchargé, comme en CI
 ```
 
-Job séparé et non bloquant, pour deux raisons : PIT relance la suite une fois par
-mutant, il est nettement plus lent que `test-back` ; et un **mutant équivalent** —
-une mutation qui ne change réellement rien — ne doit pas arrêter une livraison. Il
-en reste un, connu et documenté : la suppression de l'appel
+Job séparé, parce que PIT relance la suite une fois par mutant et qu'il est
+nettement plus lent que `test-back`. Il est bloquant : sous `MUTATION_MIN`, le
+pipeline s'arrête. Un **mutant équivalent** — une mutation qui ne change réellement
+rien — est absorbé par la marge du seuil. Il en reste un, connu et documenté : la suppression de l'appel
 `RepositoryRestConfigurer.super.configureRepositoryRestConfiguration(...)`, dont
 l'implémentation par défaut est vide. Aucun test ne peut le tuer.
 
@@ -522,8 +530,8 @@ tests y écrivent. En faire une variable masquée laisserait croire à un secret
 là où il n'y en a pas — et le vrai risque des secrets est qu'on cesse de
 distinguer ceux qui en sont.
 
-Sans `SONAR_TOKEN`, les jobs Sonar échouent mais le pipeline reste vert, puisqu'ils
-sont en `allow_failure: true`. Le détail des variables de déploiement est dans
+Sans `SONAR_TOKEN`, les jobs Sonar échouent, et le pipeline avec eux : ils sont
+bloquants. Le détail des variables de déploiement est dans
 [RELEASE.md](RELEASE.md) §6.
 
 L'inventaire des valeurs encore codées en dur dans le dépôt, et le plan pour les
