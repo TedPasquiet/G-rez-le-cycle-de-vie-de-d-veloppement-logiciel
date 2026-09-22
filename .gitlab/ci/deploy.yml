@@ -9,6 +9,10 @@ deploy-staging:
   environment:
     name: staging
   script:
+    # 0. Le namespace de destination doit exister en tant que VALEUR. Voir le
+    #    garde-fou de .deploy_template : une variable absente ferait déployer
+    #    dans `default` sans rien dire.
+    - exige_namespace "$STAGING_NAMESPACE"
     # 1. Le Secret d'accès au registry, que les deux Deployments référencent en
     #    imagePullSecrets. Sans lui, un cluster vierge ne peut pas tirer les
     #    images d'un registry privé et tous les pods restent en
@@ -70,6 +74,9 @@ deploy-production:
   environment:
     name: production
   script:
+    # 0. Garde-fou du namespace — sans lui, une variable absente ferait
+    #    déployer dans `default` sans rien signaler.
+    - exige_namespace "$PROD_NAMESPACE"
     # Même ordonnancement qu'en staging : le Secret du registry, l'overlay
     # éphémère qui porte déjà la bonne image, l'apply, puis deploy.sh pour
     # l'attente de rollout et le retour arrière. Voir deploy-staging pour le
@@ -111,6 +118,7 @@ rollback-production:
   environment:
     name: production
   script:
+    - exige_namespace "$PROD_NAMESPACE"
     - bash scripts/deploy/rollback.sh -n "$PROD_NAMESPACE" -d "$APP_BACK_NAME" -t "$DEPLOY_TIMEOUT"
     - bash scripts/deploy/rollback.sh -n "$PROD_NAMESPACE" -d "$APP_FRONT_NAME" -t "$DEPLOY_TIMEOUT"
   rules:
