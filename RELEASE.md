@@ -19,8 +19,10 @@ arrière si ça se passe mal. Tout ça est mis en place dans le pipeline
   qu'après les tests, Sonar, et les scans de sécurité.
 - **On peut revenir en arrière vite.** Kubernetes garde l'historique des versions,
   donc on peut remettre la version d'avant sans rien reconstruire.
-- **On sait ce qui a été livré.** On utilise des tags de version (SemVer) et des
-  messages de commit propres (Conventional Commits, vérifiés par commitlint).
+- **On sait ce qui a été livré.** Une release est un tag Git SemVer (`vX.Y.Z`),
+  et ce numéro se retrouve **sur l'image** : `back:1.4.0` et `back:a1b2c3d`
+  désignent le même digest. Les messages de commit suivent Conventional
+  Commits, vérifiés par commitlint. Le détail est en §2.1.
 
 ---
 
@@ -36,7 +38,9 @@ flowchart LR
     F --> P[perf<br/>k6 sur l'image construite]
     P --> G{Quelle branche ?}
     G -- develop --> H[deploy-staging<br/>manuel]
-    G -- main / tag --> I[deploy-production<br/>manuel]
+    G -- main --> I[deploy-production<br/>manuel]
+    G -- tag --> V[promote<br/>retag :X.Y.Z, sans rebuild]
+    V --> I
     I -. si problème .-> J[rollback-production<br/>manuel]
 ```
 
@@ -46,6 +50,60 @@ flowchart LR
 - **`develop`** → on construit l'image et on peut déployer sur **staging**.
 - **`main` / tag** → on peut déployer sur **production** (avec validation à la main).
 - **En cas de souci en prod** → on lance le job **`rollback-production`**.
+
+---
+
+## 2.1 Le numéro de version, et comment il atteint l'image
+
+**La source de vérité est le tag Git.** `git tag v1.4.0` déclare la version.
+
+Trois fichiers la répètent — `front/package.json`, `back/build.gradle` et
+l'`appVersion` de `helm/microcrm/Chart.yaml` — pour qu'un artefact puisse dire
+sa propre version sans qu'on aille interroger Git. Répéter une valeur, c'est
+accepter qu'elle diverge : le job `version-consistency` la contrôle **dès la
+première étape** d'un pipeline de tag, avant qu'on ait construit ou scanné quoi
+que ce soit (`scripts/ci/check_version.sh`).
+
+Restent volontairement à l'écart le `package.json` de la racine, qui décrit
+l'outillage du dépôt et non l'application, et le champ `version` du chart, que
+la convention Helm distingue de l'`appVersion`.
+
+**Un pipeline de tag ne reconstruit rien.** `package-back` et `package-front`
+n'y tournent pas (`.rules_package` dans `.gitlab/ci/templates.yml`). Ce sont
+`promote-back` et `promote-front` qui prennent le relais : ils tirent l'image
+déjà publiée pour ce commit, lui ajoutent le tag de version, et la repoussent.
+`scripts/ci/promote_image.sh` fait ce travail.
+
+C'est la seule façon d'avoir une version qui veut dire quelque chose. Deux
+builds du même commit ne produisent pas les mêmes couches — horodatages,
+résolution de paquets. Une image reconstruite au moment du tag aurait les mêmes
+sources, mais ne serait plus celle que Trivy a scannée ni celle que k6 a mise
+sous charge. En retaguant, `1.4.0` **est** l'artefact éprouvé, pas un jumeau.
+
+**Ce qui est refusé, et pourquoi :**
+
+| Forme                               | Verdict  | Raison                                                                                                                          |
+| ----------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `v1.4.0`, `1.4.0`, `v1.4.0-alpha.1` | acceptée | SemVer valide                                                                                                                   |
+| `v1.4`, `v1.4.0.1`, `latest`        | refusée  | ce n'est pas du SemVer                                                                                                          |
+| `v01.4.0`                           | refusée  | SemVer interdit les zéros de tête : `01.4.0` et `1.4.0` seraient la même version sous deux tags différents                      |
+| `v1.4.0+exp.sha.5114f85`            | refusée  | un tag Docker n'accepte pas le `+`. Le traduire en `_` casserait l'égalité entre tag Git et tag d'image, qui est tout l'intérêt |
+| tag sur un commit jamais construit  | refusée  | le `docker pull` échoue : on ne publie pas un numéro de version qui ne désigne aucun artefact                                   |
+
+**Le tag d'image ne porte pas le « v ».** Le tag Git est `v1.4.0`, l'image est
+`back:1.4.0` — la convention des registries (`node:22-alpine`,
+`postgres:16-alpine`).
+
+**Le déploiement suit.** Les jobs de déploiement résolvent `DEPLOY_IMAGE_TAG` :
+le numéro de version sur un pipeline de tag, le SHA du commit partout ailleurs.
+C'est ce tag que l'overlay éphémère pose sur les deux Deployments. Comme la
+promotion est un retag, ça ne change pas ce qui tourne — ça change ce que le
+cluster affiche : un `kubectl describe pod` en production nomme la version
+annoncée, sans table de correspondance entre un SHA et une release.
+
+Les règles de refus ci-dessus sont couvertes par `scripts/tests/run_tests.sh`
+(bloc `ci/promote_image.sh`), y compris l'assertion qui échoue si une promotion
+se met à construire.
 
 ---
 
@@ -129,10 +187,14 @@ seul dès que l'étape `package` réussit sur `develop`.
 
 ## 7. Étapes pour une mise en prod
 
-1. Merger sur `main` (via une MR avec le pipeline vert).
+1. Merger sur `main` (via une MR avec le pipeline vert). **C'est ce pipeline
+   qui construit l'image** et la pousse sous le SHA du commit.
 2. Créer un tag de version : `git tag vX.Y.Z && git push origin vX.Y.Z`.
-3. Le pipeline construit l'image et l'envoie sur le registry.
-4. Lancer le job `deploy-production` à la main et valider.
+3. Le pipeline de tag ne reconstruit rien : `promote-back` et `promote-front`
+   posent `X.Y.Z` sur l'image déjà publiée (§2.1). Si l'étape 1 n'a pas abouti,
+   ce job échoue — c'est voulu.
+4. Lancer le job `deploy-production` à la main et valider. Il déploie
+   `:X.Y.Z`.
 5. Vérifier que l'appli fonctionne bien.
 6. **Si problème** : lancer `rollback-production`.
 

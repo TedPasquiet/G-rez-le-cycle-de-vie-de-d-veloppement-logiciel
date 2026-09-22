@@ -29,6 +29,8 @@ scripts/
 │   └── common.sh            # fonctions communes (logs, vérifs, retry)
 ├── ci/
 │   ├── build_and_push.sh    # construit une image Docker et l'envoie au registry
+│   ├── promote_image.sh     # pose le numéro de version SemVer sur une image déjà construite
+│   ├── check_version.sh     # vérifie que les versions du dépôt suivent le tag de release
 │   ├── quality_gate.py      # vérifie le Quality Gate SonarCloud
 │   └── check_coverage.py    # vérifie le taux de couverture des tests
 ├── deploy/
@@ -73,6 +75,66 @@ scripts/ci/build_and_push.sh -c ./back -i "$CI_REGISTRY_IMAGE/back" -t "$CI_COMM
 ```
 
 Utilisé par les jobs `package-back` et `package-front`.
+
+---
+
+## `ci/promote_image.sh`
+
+Il pose un numéro de version SemVer sur une image **déjà construite et déjà
+poussée** : il la tire du registry, lui ajoute le tag de version, la repousse.
+Il ne construit rien.
+
+C'est ce qui fait qu'une version est traçable. Deux builds du même commit ne
+produisent pas les mêmes couches, donc reconstruire au moment du tag donnerait
+une image qui n'est plus celle que les scans et k6 ont éprouvée. En retaguant,
+`back:1.4.0` et `back:a1b2c3d` sont le même digest.
+
+Il refuse ce qui n'est pas du SemVer (`v1.4`, `latest`, `v01.4.0` — zéro de
+tête), et refuse aussi les métadonnées de build `+…`, qu'un tag Docker
+n'accepte pas. Si l'image source est absente du registry, il échoue en le
+disant : on ne publie pas un numéro de version qui ne désigne aucun artefact.
+
+Options : `--image`, `--from-tag`, `--version` (toutes obligatoires).
+Il a besoin des variables `REGISTRY_HOST`, `REGISTRY_USER`, `REGISTRY_PASSWORD`.
+
+```bash
+REGISTRY_HOST=$CI_REGISTRY REGISTRY_USER=$CI_REGISTRY_USER \
+REGISTRY_PASSWORD=$CI_REGISTRY_PASSWORD \
+scripts/ci/promote_image.sh -i "$CI_REGISTRY_IMAGE/back" \
+  -f "$CI_COMMIT_SHORT_SHA" -v "$CI_COMMIT_TAG"
+```
+
+Utilisé par les jobs `promote-back` et `promote-front`, qui ne tournent que sur
+un pipeline de tag. Voir [RELEASE.md](RELEASE.md) §2.1.
+
+---
+
+## `ci/check_version.sh`
+
+Il vérifie que le numéro de version déclaré dans le dépôt correspond au tag de
+release qu'on pose. Trois fichiers sont contrôlés : `front/package.json`
+(version du front), `back/build.gradle` (version du jar) et l'`appVersion` de
+`helm/microcrm/Chart.yaml` (version de l'application déployée).
+
+Deux versions sont **hors périmètre, et c'est délibéré** : le `package.json` de
+la racine décrit l'outillage du dépôt (hooks, commitlint, Prettier) et porte
+d'ailleurs un autre nom, `microcrm-tooling` ; et le champ `version` du chart est
+la version du CHART, que la convention Helm distingue de celle de
+l'application — le chart peut changer sans que l'application bouge.
+
+Il rapporte **toutes** les divergences, pas seulement la première, et un champ
+renommé le fait échouer au lieu de passer sur une chaîne vide.
+
+Option : `--version` (obligatoire). Codes : `0` concordance, `1` erreur de
+configuration, `2` au moins une divergence.
+
+```bash
+scripts/ci/check_version.sh --version "$CI_COMMIT_TAG"
+```
+
+Utilisé par le job `version-consistency`, qui ne tourne que sur un pipeline de
+tag et dans la première étape : inutile de construire et de scanner pour
+découvrir la divergence au moment de déployer.
 
 ---
 
