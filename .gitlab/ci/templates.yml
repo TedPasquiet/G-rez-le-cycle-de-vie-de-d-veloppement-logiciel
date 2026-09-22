@@ -308,6 +308,29 @@
     # `<chemin du projet>:<nom de l'agent>`. On le recompose, on ne l'écrit pas.
     - kubectl config use-context "$CI_PROJECT_PATH:$KUBE_AGENT_NAME"
     - kubectl version --output=yaml | head -20
+    # Garde-fou : un namespace de destination VIDE.
+    #
+    # Ce n'est pas théorique, c'est arrivé le 2026-09-22. `$STAGING_NAMESPACE`
+    # n'était pas définie côté GitLab ; `kubectl apply -k … -n ""` est alors
+    # retombé sur le namespace par défaut du contexte, et l'application a été
+    # déployée dans `default` — ConfigMap, Services et les deux Deployments —
+    # sans qu'aucune ligne du journal ne le signale. Le job n'a échoué qu'à
+    # l'Ingress, par accident, sur un conflit d'hôte avec le vrai namespace.
+    #
+    # Une variable absente doit arrêter le job, pas le faire viser ailleurs.
+    - |
+      exige_namespace() {
+        if [ -z "${1:-}" ]; then
+          echo "ERREUR : le namespace de destination est vide." >&2
+          echo "  La variable attendue n'est pas définie dans GitLab" >&2
+          echo "  (Settings > CI/CD > Variables) : STAGING_NAMESPACE pour staging," >&2
+          echo "  PROD_NAMESPACE pour la production. Elles doivent valoir le nom" >&2
+          echo "  que Terraform donne au namespace (terraform.tfvars, clé namespace)." >&2
+          echo "  Sans ce contrôle, kubectl déploierait dans 'default' en silence." >&2
+          exit 1
+        fi
+        echo "Namespace de destination : $1"
+      }
     # Le tag d'image que ce déploiement doit poser.
     #
     # Sur un pipeline de tag, c'est le numéro de version — celui que
