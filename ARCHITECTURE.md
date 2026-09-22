@@ -139,7 +139,7 @@ de port, qui oblige à conserver `NET_BIND_SERVICE` dans le conteneur même avec
 
 ## 4. Pipeline CI/CD (GitLab)
 
-Le pipeline compte **10 étapes et 33 jobs**, répartis sur **13 fichiers** : une
+Le pipeline compte **10 étapes et 36 jobs**, répartis sur **13 fichiers** : une
 racine qui ne contient aucun job, un fichier par domaine, et un pipeline enfant
 pour la performance (voir `docs/pipeline-ci.md`).
 
@@ -193,7 +193,7 @@ deux sont reliés par un workflow GitHub Actions,
 flowchart LR
     dev([git push]) --> gh[GitHub<br/>dépôt de travail, Pull Requests]
     gh -->|GitHub Actions<br/>miroir automatique| gl[GitLab<br/>miroir + exécution du pipeline]
-    gl --> ci[".gitlab-ci.yml<br/>10 étapes, 33 jobs<br/>13 fichiers"]
+    gl --> ci[".gitlab-ci.yml<br/>10 étapes, 36 jobs<br/>13 fichiers"]
 ```
 
 À chaque push sur n'importe quelle branche ou tag, le workflow recopie toutes les
@@ -285,7 +285,7 @@ flowchart TB
     gh -->|"GitHub Actions : mirror-to-gitlab.yaml<br/>push --prune de toutes les refs"| gl["GitLab<br/>miroir en lecture seule"]
     gl --> pipe
 
-    subgraph pipe["Pipeline GitLab CI : 10 étapes, 33 jobs"]
+    subgraph pipe["Pipeline GitLab CI : 10 étapes, 36 jobs"]
         direction LR
         s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
     end

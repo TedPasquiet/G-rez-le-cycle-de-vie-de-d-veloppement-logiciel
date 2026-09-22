@@ -282,6 +282,149 @@ verifie_code 0 '--scan : image saine -> le push a bien lieu' \
 verifie_fichier_contient "$journal" 'push registry.test/app:abc1234' 'le push est fait après un scan sans faille'
 
 # ==========================================================================
+# ci/check_version.sh
+# ==========================================================================
+titre 'ci/check_version.sh'
+
+verifie_code 1 'sans paramètre -> erreur de configuration (1)' \
+  bash "$ROOT_DIR/scripts/ci/check_version.sh"
+verifie_contient '--version' 'le message dit quel paramètre manque'
+
+verifie_code 1 'option inconnue -> erreur de configuration (1)' \
+  bash "$ROOT_DIR/scripts/ci/check_version.sh" --option-bidon
+
+verifie_code 0 '--help fonctionne' \
+  bash "$ROOT_DIR/scripts/ci/check_version.sh" --help
+verifie_contient 'microcrm-tooling' "l'aide explique ce qui est hors périmètre"
+verifie_contient_pas 'source "$(cd' "l'aide ne laisse pas fuiter le code source"
+
+# Le script lit les fichiers du dépôt réel : ce sont eux qui doivent concorder
+# avec le tag qu'on pose. On relit donc la version du dépôt et on la confronte.
+version_depot="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT_DIR/front/package.json" | head -n 1)"
+
+verifie_code 0 "le dépôt concorde avec son propre numéro ($version_depot)" \
+  bash "$ROOT_DIR/scripts/ci/check_version.sh" --version "v$version_depot"
+verifie_contient 'concordent' 'le script le dit explicitement'
+
+verifie_code 0 'le « v » de tête est optionnel' \
+  bash "$ROOT_DIR/scripts/ci/check_version.sh" --version "$version_depot"
+
+verifie_code 2 'un tag qui ne correspond pas -> divergence (2)' \
+  bash "$ROOT_DIR/scripts/ci/check_version.sh" --version 'v99.99.99'
+verifie_contient 'front/package.json' 'le rapport nomme le fichier fautif'
+verifie_contient 'back/build.gradle' 'le rapport nomme TOUS les fichiers fautifs, pas seulement le premier'
+verifie_contient 'helm/microcrm/Chart.yaml' "l'appVersion du chart est contrôlée elle aussi"
+verifie_contient '3 divergence(s)' 'le nombre de divergences est annoncé'
+
+# Un champ renommé doit faire ÉCHOUER le contrôle, jamais le faire passer en
+# silence sur une chaîne vide. C'est la différence entre un garde-fou et un
+# ornement.
+faux_depot="$WORK_DIR/faux-depot"
+mkdir -p "$faux_depot/scripts/ci" "$faux_depot/scripts/lib" "$faux_depot/front" \
+  "$faux_depot/back" "$faux_depot/helm/microcrm"
+cp "$ROOT_DIR/scripts/lib/common.sh" "$faux_depot/scripts/lib/"
+cp "$ROOT_DIR/scripts/ci/check_version.sh" "$faux_depot/scripts/ci/"
+printf '{\n  "name": "microcrm",\n  "revision": "1.0.0"\n}\n' >"$faux_depot/front/package.json"
+printf "version = '1.0.0'\n" >"$faux_depot/back/build.gradle"
+printf "appVersion: '1.0.0'\n" >"$faux_depot/helm/microcrm/Chart.yaml"
+
+verifie_code 2 'champ "version" renommé -> divergence (2), pas un succès silencieux' \
+  bash "$faux_depot/scripts/ci/check_version.sh" --version 'v1.0.0'
+verifie_contient 'aucune version trouvée' 'le message distingue un champ absent d une version différente'
+
+rm -f "$faux_depot/back/build.gradle"
+verifie_code 2 'fichier absent -> divergence (2)' \
+  bash "$faux_depot/scripts/ci/check_version.sh" --version 'v1.0.0'
+verifie_contient 'fichier introuvable' 'le message dit que le fichier manque'
+
+# ==========================================================================
+# ci/promote_image.sh
+# ==========================================================================
+titre 'ci/promote_image.sh'
+
+verifie_code 1 'sans paramètre -> erreur de configuration (1)' \
+  bash "$ROOT_DIR/scripts/ci/promote_image.sh"
+verifie_contient '--image' 'le message dit quel paramètre manque'
+
+verifie_code 1 'option inconnue -> erreur de configuration (1)' \
+  bash "$ROOT_DIR/scripts/ci/promote_image.sh" --option-bidon
+
+verifie_code 0 '--help fonctionne' \
+  bash "$ROOT_DIR/scripts/ci/promote_image.sh" --help
+verifie_contient '--from-tag' "l'aide liste bien les options"
+verifie_contient_pas 'source "$(cd' "l'aide ne laisse pas fuiter le code source"
+
+# --- Le contrôle SemVer, qui est la raison d'être du script ----------------
+# Chaque forme refusée l'est pour une raison distincte : c'est ce qui fait la
+# différence entre un contrôle et une expression régulière posée au hasard.
+for version_invalide in '1.2' 'v1.2' 'latest' 'release-1.2.3' '1.2.3.4' 'v01.2.3' 'v1.2.3+exp.sha.5114f85' ''; do
+  journal="$(nouveau_journal docker)"
+  verifie_code 1 "version refusée : '${version_invalide:-<vide>}'" \
+    env FAKE_DOCKER_LOG="$journal" \
+    REGISTRY_HOST='registry.test' REGISTRY_USER='ci' REGISTRY_PASSWORD='secret-bidon' \
+    bash "$ROOT_DIR/scripts/ci/promote_image.sh" -i 'registry.test/app' -f 'abc1234' -v "$version_invalide"
+  verifie_fichier_contient_pas "$journal" 'push' "aucun push pour une version invalide ('${version_invalide:-<vide>}')"
+done
+
+# `01.2.3` mérite son mot : SemVer interdit les zéros de tête, parce que `01.2.3`
+# et `1.2.3` désigneraient la même version sous deux noms de tag différents.
+verifie_code 1 'zéro de tête refusé (v01.2.3)' \
+  env REGISTRY_HOST='registry.test' REGISTRY_USER='ci' REGISTRY_PASSWORD='secret-bidon' \
+  bash "$ROOT_DIR/scripts/ci/promote_image.sh" -i 'registry.test/app' -f 'abc1234' -v 'v01.2.3'
+verifie_contient "n'est pas du SemVer" 'le message nomme la règle enfreinte'
+
+# Le `+` des métadonnées de build a son propre message : la version est du
+# SemVer valide, c'est le tag Docker qui n'en veut pas.
+verifie_code 1 'métadonnées de build refusées (v1.2.3+exp.sha.5114f85)' \
+  env REGISTRY_HOST='registry.test' REGISTRY_USER='ci' REGISTRY_PASSWORD='secret-bidon' \
+  bash "$ROOT_DIR/scripts/ci/promote_image.sh" -i 'registry.test/app' -f 'abc1234' -v 'v1.2.3+exp.sha.5114f85'
+verifie_contient "n'accepte pas le caractère '+'" 'le message distingue la cause (tag Docker) de la règle SemVer'
+
+for version_valide in 'v1.2.3' '1.2.3' 'v0.0.1' 'v1.2.3-alpha.1' 'v10.20.30'; do
+  journal="$(nouveau_journal docker)"
+  verifie_code 0 "version acceptée : '$version_valide'" \
+    env FAKE_DOCKER_LOG="$journal" \
+    REGISTRY_HOST='registry.test' REGISTRY_USER='ci' REGISTRY_PASSWORD='secret-bidon' \
+    bash "$ROOT_DIR/scripts/ci/promote_image.sh" -i 'registry.test/app' -f 'abc1234' -v "$version_valide"
+  verifie_fichier_contient "$journal" "push registry.test/app:${version_valide#v}" \
+    "le tag poussé est la version sans le « v » ('$version_valide')"
+done
+
+# --- Le cœur : on promeut, on ne reconstruit pas ---------------------------
+journal="$(nouveau_journal docker)"
+verifie_code 0 'cas nominal : login + pull + tag + push' \
+  env FAKE_DOCKER_LOG="$journal" \
+  REGISTRY_HOST='registry.test' REGISTRY_USER='ci' REGISTRY_PASSWORD='secret-bidon' \
+  bash "$ROOT_DIR/scripts/ci/promote_image.sh" -i 'registry.test/app' -f 'abc1234' -v 'v1.4.0'
+verifie_fichier_contient "$journal" '--password-stdin' 'le mot de passe passe par stdin (jamais en argument)'
+verifie_fichier_contient "$journal" 'pull registry.test/app:abc1234' "l'image promue est tirée du registry, pas du cache local"
+verifie_fichier_contient "$journal" 'tag registry.test/app:abc1234 registry.test/app:1.4.0' \
+  'la version est posée sur le digest déjà construit'
+verifie_fichier_contient "$journal" 'push registry.test/app:1.4.0' 'le tag de version est poussé'
+verifie_fichier_contient_pas "$journal" 'build' \
+  "INVARIANT : une promotion ne reconstruit jamais l'image (RELEASE.md §1)"
+verifie_contient_pas 'secret-bidon' "le mot de passe n'apparaît pas dans les logs"
+
+journal="$(nouveau_journal docker)"
+verifie_code 1 "image jamais construite -> erreur (1), rien n'est poussé" \
+  env FAKE_DOCKER_LOG="$journal" FAKE_DOCKER_PULL_FAIL=1 \
+  REGISTRY_HOST='registry.test' REGISTRY_USER='ci' REGISTRY_PASSWORD='secret-bidon' \
+  bash "$ROOT_DIR/scripts/ci/promote_image.sh" -i 'registry.test/app' -f 'abc1234' -v 'v1.4.0'
+verifie_contient 'Image introuvable au registry' "le message dit qu'on ne promeut que ce qui a été construit"
+verifie_fichier_contient_pas "$journal" 'push' "on ne publie pas une version qui ne correspond à aucune image"
+
+journal="$(nouveau_journal docker)"
+verifie_code 1 'échec du docker login -> erreur (1), pas de pull' \
+  env FAKE_DOCKER_LOG="$journal" FAKE_DOCKER_LOGIN_FAIL=1 \
+  REGISTRY_HOST='registry.test' REGISTRY_USER='ci' REGISTRY_PASSWORD='secret-bidon' \
+  bash "$ROOT_DIR/scripts/ci/promote_image.sh" -i 'registry.test/app' -f 'abc1234' -v 'v1.4.0'
+verifie_fichier_contient_pas "$journal" 'pull' "on ne tire rien si le login a raté"
+
+verifie_code 1 'identifiants du registry manquants -> erreur (1)' \
+  env -u REGISTRY_HOST -u REGISTRY_USER -u REGISTRY_PASSWORD \
+  bash "$ROOT_DIR/scripts/ci/promote_image.sh" -i 'registry.test/app' -f 'abc1234' -v 'v1.4.0'
+
+# ==========================================================================
 # deploy/deploy.sh
 # ==========================================================================
 titre 'deploy/deploy.sh'

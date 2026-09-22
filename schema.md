@@ -55,7 +55,7 @@ flowchart LR
 
 ## Table de normalisation — cycle → GitLab CI
 
-Dix étapes, 33 jobs (dont trois dans un pipeline enfant). La colonne « bloquant » dit ce qui arrête réellement le
+Dix étapes, 36 jobs (dont trois dans un pipeline enfant). La colonne « bloquant » dit ce qui arrête réellement le
 pipeline aujourd'hui, pas ce qui devrait l'arrêter.
 
 | Étape du cycle          | Stage       | Outils                                    | Bloquant                     |
