@@ -208,6 +208,48 @@ describe('PersonDetailsComponent', () => {
       personService.fetchById.and.resolveTo(aPerson({ id: 42 }));
     });
 
+    /**
+     * Ce test regarde le RENDU, pas seulement l'état du composant, et c'est
+     * délibéré : le défaut qu'il protège vivait uniquement dans le gabarit.
+     * La table des affiliations itérait `organizations` — le catalogue complet
+     * — au lieu de `person.organizations`. Toute personne paraissait alors
+     * affiliée à toutes les organisations, et la croix de suppression semblait
+     * sans effet : elle détachait une affiliation inexistante, et la ligne
+     * restait puisqu'elle venait d'une liste que le rechargement ne touche pas.
+     *
+     * Aucune assertion sur l'état du composant n'aurait vu ce défaut : les deux
+     * listes étaient correctement peuplées, c'est l'affichage qui se trompait
+     * de source.
+     */
+    it("n'affiche que les organisations de la personne, pas le catalogue", async () => {
+      const rattachee = anOrganization({ id: 10, name: 'Orion Inc.' });
+      const autre = anOrganization({ id: 11, name: 'Organisation tierce' });
+      organizationService.fetchAll.and.resolveTo([rattachee, autre]);
+      personService.fetchById.and.resolveTo(aPerson({ id: 42, organizations: [rattachee] }));
+
+      await monterAvecRoute('42');
+      fixture.detectChanges();
+
+      const lignes = fixture.nativeElement.querySelectorAll('tbody tr');
+      expect(lignes.length).withContext('une seule affiliation, donc une seule ligne').toBe(1);
+      expect(lignes[0].textContent).toContain('Orion Inc.');
+      expect(fixture.nativeElement.querySelector('tbody')?.textContent)
+        .withContext('le catalogue ne doit pas apparaître dans les affiliations')
+        .not.toContain('Organisation tierce');
+    });
+
+    it('retire une affiliation par le côté propriétaire de la relation', async () => {
+      const rattachee = anOrganization({ id: 10 });
+      personService.fetchById.and.resolveTo(aPerson({ id: 42, organizations: [rattachee] }));
+      await monterAvecRoute('42');
+
+      await component.removeOrganization(rattachee);
+
+      // L'ordre des arguments compte : (organisation, personne). L'API passe
+      // par /organizations/{orgId}/persons/{personId}, côté propriétaire.
+      expect(organizationService.removePerson).toHaveBeenCalledWith(10, 42);
+    });
+
     it("rattache l'organisation sélectionnée à la personne courante", async () => {
       await monterAvecRoute('42');
       personService.fetchById.calls.reset();
