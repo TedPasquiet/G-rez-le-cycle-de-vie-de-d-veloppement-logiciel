@@ -239,40 +239,126 @@ miroite vers un projet GitLab **public**, où le pipeline tourne réellement.
 
 ### 9.1 Ce que les chiffres disent, et il faut l'entendre
 
-Mesuré sur les 44 pipelines de l'historique :
+Mesuré le 2026-09-23, sur les 50 pipelines des 30 derniers jours :
 
-| Indicateur                   | Valeur           | Observations |
-| ---------------------------- | ---------------- | ------------ |
-| Fréquence de déploiement     | **0,0** par jour | 0            |
-| Délai de mise en production  | **`null`**       | 0            |
-| Temps de rétablissement      | **`null`**       | 0            |
-| Taux d'échec des changements | **100 %**        | 7            |
+| Indicateur                            | Valeur                           | Observations |
+| ------------------------------------- | -------------------------------- | ------------ |
+| Fréquence de déploiement              | **0,1667** par jour              | 5            |
+| Délai de mise en production (médiane) | **1,38 h** (min 0,64 / max 4,87) | 5            |
+| Temps de rétablissement (médiane)     | **2,14 h** (min 0,09 / max 4,18) | 2            |
+| Taux d'échec des changements          | **66,67 %**                      | 9            |
 
-**Sept déploiements ont été déclenchés dans toute l'histoire du projet. Les sept
-ont échoué.** `deploy-production` et `rollback-production` n'ont jamais été
-lancés. Il n'existe aucun déploiement réussi.
+**La chaîne aboutit depuis le 2026-09-22.** Neuf jobs de déploiement ont
+réellement tourné sur la fenêtre, cinq ont réussi, et deux rollbacks ont été
+joués. Staging et production tournent aujourd'hui avec des images du registry
+GitLab, posées par la CI et non à la main depuis le poste.
 
-C'est un résultat, pas une panne du collecteur. Le projet a une chaîne de
-déploiement complète, éprouvée sur un cluster local (`K8S.md` §14), mais qui n'a
-jamais abouti depuis la CI — le dernier pipeline s'est arrêté sur
-`ci_quota_exceeded`, les minutes du Free Tier étant épuisées.
+Ce n'est pas le mécanisme qui a changé — il n'a pas bougé — mais une contrainte
+et trois défauts :
+
+- **Un runner auto-hébergé** a été enregistré sur le poste. Le Free Tier n'est
+  plus consommé du tout, donc `ci_quota_exceeded` ne peut plus arrêter un
+  pipeline. C'est ce qui a rendu les trois défauts suivants observables : ils
+  étaient là avant, aucun job n'allait assez loin pour les rencontrer.
+- **`deploy-*` recevait un kubeconfig par variable de projet**
+  (`KUBECONFIG: $KUBE_CONFIG`), lequel désigne le serveur d'API en `127.0.0.1` —
+  dans un conteneur de job, c'est le conteneur lui-même, donc une adresse
+  structurellement injoignable. Ces jobs passent maintenant par le tunnel de
+  l'agent GitLab, comme `terraform-apply-*` le faisait déjà.
+- **Le RBAC de l'agent ne couvrait pas les objets applicatifs.** Il a été élargi
+  aux Deployments, Services, Ingress, ConfigMaps et Secrets, avec un
+  resserrement volontaire sur les Secrets : ni `list`, ni `watch`, ni `delete`.
+- **`$STAGING_NAMESPACE` n'était pas définie côté GitLab**, et le job déployait
+  dans `default` en silence. Le garde-fou `exige_namespace` fait désormais
+  échouer le job — un déploiement qui atterrit ailleurs qu'annoncé est pire
+  qu'un déploiement qui n'a pas lieu.
+
+⚠️ **Ces chiffres n'ont pas de valeur statistique, et il faut le dire avant de
+les commenter.** Un taux d'échec sur 9 tentatives, un MTTR sur 2 observations :
+ce sont des faits, pas des tendances. Les cinq déploiements réussis — un tous
+les six jours en moyenne — sont en réalité concentrés sur deux journées
+consécutives, celles où la chaîne a été débloquée. Quant au délai de mise en
+production de 1,38 h, il mesure surtout l'intervalle entre un commit et le clic
+qui déclenche le déploiement : les deux jobs restent `when: manual`.
+
+Les onze jobs retenus, dans l'ordre :
+
+```
+2026-09-22T14:36:39  deploy-production    failed   main
+2026-09-22T18:01:37  deploy-staging       failed   develop
+2026-09-22T18:37:05  deploy-staging       failed   develop
+2026-09-22T18:47:39  deploy-staging       success  develop
+2026-09-23T07:20:59  deploy-production    failed   main
+2026-09-23T07:26:31  deploy-production    success  main
+2026-09-23T09:28:52  deploy-production    success  main
+2026-09-23T13:01:30  rollback-production  failed   main
+2026-09-23T13:29:06  deploy-staging       success  develop
+2026-09-23T13:34:44  rollback-production  success  main
+2026-09-23T13:42:13  deploy-production    success  main
+```
+
+Le rollback de production a donc été exercé pour de bon, puis suivi d'un
+redéploiement : la production est en révision 4, sur l'image `9f4168b3`.
 
 ### 9.2 ⚠️ Zéro mesuré et absence de donnée ne sont pas la même chose
 
 C'est la règle qui gouverne tout le collecteur, et la seule qui puisse le rendre
-utile plutôt que décoratif.
+utile plutôt que décoratif. Elle ne se voit plus dans la sortie d'aujourd'hui —
+les quatre indicateurs ont une valeur — mais c'est elle qui a tenu pendant les
+deux mois où le projet n'avait rien déployé :
 
-- `deployment_frequency` vaut **`0.0`** : c'est une mesure. Zéro déploiement
-  a bien eu lieu, sur une fenêtre connue, après sept tentatives.
-- `lead_time_for_changes` vaut **`null`**, accompagné de sa raison : il n'existe
-  aucune arrivée en production vers laquelle mesurer un délai.
+- `deployment_frequency` valait alors **`0.0`** : c'était une mesure. Zéro
+  déploiement avait bien eu lieu, sur une fenêtre connue, après sept tentatives.
+- `lead_time_for_changes` valait **`null`**, accompagné de sa raison : il
+  n'existait aucune arrivée en production vers laquelle mesurer un délai.
 
-Rendre le second en `0` afficherait un délai de mise en production de zéro
-heure, c'est-à-dire **la performance parfaite** — là où il n'y a simplement
+Rendre le second en `0` aurait affiché un délai de mise en production de zéro
+heure, c'est-à-dire **la performance parfaite** — là où il n'y avait simplement
 jamais eu de mise en production. Un test de `run_tests.sh` échoue si un
-indicateur sans donnée se met à ressortir en `0`.
+indicateur sans donnée se met à ressortir en `0`, et il n'a aucune raison de
+partir : le cas se reproduit dès qu'on interroge une fenêtre sans déploiement.
 
-### 9.3 Comment il est testé
+### 9.3 Comment un rollback est compté, et la limite qu'on assume
+
+Un déploiement réussi puis annulé par un rollback compte comme un **échec**.
+C'est la définition DORA du taux d'échec des changements : un changement qui a
+dégradé la production. Ces cas sont comptés à part dans la sortie, pour qu'on
+puisse les distinguer d'un job simplement rouge :
+
+```json
+"details": { "tentatives": 9, "echecs_directs": 4, "reussites_annulees": 2 }
+```
+
+Le collecteur retient par ailleurs les jobs en `success` **et** en `failed`
+(`STATUTS_EXECUTES`, ligne 103 de `scripts/ci/collect_dora.py`) : un job qui a
+tourné compte, quel que soit son verdict. `manual`, `skipped`, `created` et
+`canceled` sont exclus — ils décrivent des déploiements qui n'ont pas eu lieu.
+
+⚠️ **La limite est dans l'appariement, et elle est purement chronologique.** Un
+rollback est rattaché au dernier déploiement réussi qui le précède, sans que son
+issue ni son environnement n'entrent en ligne de compte. Les deux
+`reussites_annulees` du 2026-09-23 en sont l'illustration :
+
+- Le rollback de 13:01:30 a **échoué** sur un timeout du tunnel de l'agent. Il
+  n'a donc rien annulé, et il compte quand même comme l'annulation du
+  déploiement de 09:28:52.
+- Le rollback de 13:34:44, joué en **production**, est rattaché au déploiement
+  de 13:29:06 — qui visait **staging**. Il a bien annulé quelque chose, mais
+  pas celui-là : il a ramené en arrière la production déployée à 09:28:52.
+
+Une seule annulation a donc réellement eu lieu, là où le collecteur en compte
+deux. Un appariement exact — rollback abouti, et même environnement — ramènerait
+le taux d'échec de **66,67 % à 55,56 %** (5 échecs sur 9).
+
+**Ce comptage est assumé, pas corrigé**, et le choix se justifie dans un seul
+sens. Un collecteur pessimiste surévalue le taux d'échec ; l'erreur inverse
+produirait un chiffre flatteur que personne n'aurait les moyens de contredire.
+Entre les deux, on garde celui qui ne se vante pas — à la condition stricte
+d'écrire ce qu'il rate, ce que fait ce paragraphe. Le corriger reste possible et
+demanderait deux choses : lire l'`environment:name` du job de rollback, et ne
+retenir que les rollbacks en `success`.
+
+### 9.4 Comment il est testé
 
 Sur des **fixtures**, c'est-à-dire des réponses d'API enregistrées, et pas contre
 le réseau : un test qui dépend d'un service tiers échoue les jours où ce service
@@ -283,12 +369,19 @@ Deux jeux, et la distinction est délibérée :
 - `scripts/tests/fixtures/` — **réel**, enregistré verbatim depuis l'API : les
   44 pipelines et les jobs des 7 pipelines ayant déclenché un déploiement ;
 - `scripts/tests/fixtures/dora-scenario-fabrique/` — **fabriqué**, et nommé pour
-  qu'on ne s'y trompe pas. Il contient ce que le réel n'offre pas — des
+  qu'on ne s'y trompe pas. Il contient ce que le jeu réel n'offre pas — des
   déploiements réussis — sans quoi les formules du délai et du MTTR ne seraient
   empruntées par aucun test. On ne vérifierait alors qu'une chose : la capacité
   du collecteur à dire « je n'ai rien ».
 
-### 9.4 Rejouer
+⚠️ **Les fixtures réelles datent d'avant le 2026-09-22** : rejouées, elles
+rendent encore `0,0` déploiement par jour et 100 % d'échec, ce qui est correct
+pour la fenêtre qu'elles décrivent. Elles n'ont pas été réenregistrées, et le
+jeu fabriqué reste donc nécessaire. Le jour où on les rafraîchira, la sortie de
+référence des tests changera avec elles — c'est le prix d'une fixture verbatim,
+et il est préférable à celui d'un test qui appelle le réseau.
+
+### 9.5 Rejouer
 
 ```shell
 # Contre la vraie API, sans jeton (le projet miroir est public)
@@ -303,9 +396,11 @@ python3 scripts/ci/collect_dora.py --project 84606666 --days 0 \
   --elasticsearch http://127.0.0.1:9200 --es-index microcrm-dora
 ```
 
-⚠️ **Aucun job de CI n'exécute ce collecteur.** Il se lance à la main. L'y
-ajouter appartiendrait à une évolution du pipeline, et se heurterait de toute
-façon au quota épuisé qui empêche aujourd'hui tout job de démarrer.
+⚠️ **Aucun job de CI n'exécute ce collecteur** — vérifié : aucun fichier de
+`.gitlab/ci/` n'appelle `collect_dora.py`. Il se lance à la main. L'obstacle
+n'est plus le quota, qui ne s'applique plus depuis que le runner est
+auto-hébergé : c'est une évolution du pipeline qui n'a simplement pas été faite.
+Elle est inscrite au plan sous A3.3 (`docs/plan-optimisation-release.md`).
 
 ## 10. Ce qui n'est pas fait
 

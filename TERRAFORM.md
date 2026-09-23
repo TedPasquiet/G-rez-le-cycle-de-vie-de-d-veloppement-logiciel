@@ -160,15 +160,30 @@ faux `terraform` qui journalise `TF_HTTP_ADDRESS`.
 Le jeton de job n'est pas un secret à gérer : il est émis pour un job, expire
 avec lui, et ne donne accès qu'à ce projet. Rien à créer, rien à faire tourner.
 
-⚠️ **Ce que le premier plan affichera, et pourquoi ce n'est pas le défaut
-d'avant.** L'`apply` n'a jamais été joué (§9.4) : l'état partagé démarre donc
-vide, et le plan annoncera « 6 to add » sur chaque environnement. La sortie
-ressemble à celle d'avant la bascule, la différence est entière — avant, l'état
-repartait de zéro **à chaque exécution** et aucun apply n'aurait pu y changer
-quoi que ce soit ; maintenant, l'état persiste, et le premier
-`terraform-apply-<env>` le remplit une fois pour toutes. C'est à partir de là
-que « 0 to add » devient une information, et qu'une modification faite à la main
-dans le cluster apparaît en dérive dans le plan de la merge request suivante.
+**Où en est chaque état — mise à jour du 2026-09-23.** Le paragraphe qui suivait
+annonçait « l'`apply` n'a jamais été joué » ; ce n'est plus vrai, et les trois
+environnements ne sont pas arrivés au même point par le même chemin.
+
+| Environnement | Comment son état a été rempli                                                                  |
+| ------------- | ---------------------------------------------------------------------------------------------- |
+| `production`  | `terraform-apply-production` **depuis la CI**, le 2026-09-23 à 07:25:32                        |
+| `staging`     | appliqué depuis un poste, puis **migré** vers l'état partagé (`terraform init -migrate-state`) |
+| `logging`     | même chemin que staging, migré le 2026-09-23                                                   |
+
+Conséquence directe : `terraform-apply-staging` et `terraform-apply-logging`
+n'ont **jamais** été joués depuis la CI. Ils le seront sans rien créer — leur
+plan sort désormais à « No changes », puisque l'état partagé décrit déjà des
+ressources qui existent.
+
+Ce que la migration a évité mérite d'être écrit, parce que c'est le piège que ce
+paragraphe annonçait dans l'autre sens : tant qu'un environnement avait son état
+en local et ses ressources dans le cluster, l'état partagé le croyait vide. Un
+`apply` depuis la CI aurait planifié « 6 to add » puis échoué sur
+`already exists` (§10.1). C'est exactement ce qui serait arrivé à `logging`.
+
+C'est à partir de maintenant que « 0 to add » devient une information, et qu'une
+modification faite à la main dans le cluster apparaît en dérive dans le plan de
+la merge request suivante.
 
 **Le verrou, et qui le prend.** `apply` le prend, `plan` ne le prend pas
 (`-lock=false`, posé par le script). Un plan ne persiste aucun état, il n'a rien

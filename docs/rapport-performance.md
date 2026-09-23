@@ -20,25 +20,37 @@ décrite en Terraform et le poste provisionné par Ansible, une stack ELK qui
 collecte réellement les logs de l'application, et un collecteur d'indicateurs
 DORA écrit pour ce projet.
 
-**Cette chaîne n'a jamais abouti en déploiement depuis la CI.** Sur les 44
-pipelines de l'histoire du projet, sept déploiements ont été déclenchés et les
-sept ont échoué. `deploy-production` et `rollback-production` n'ont **jamais**
-été lancés une seule fois. Le dernier pipeline ne s'est pas arrêté sur un test
-rouge mais sur `ci_quota_exceeded` : les minutes du Free Tier GitLab sont
-épuisées et aucun job ne démarre plus.
+**Cette chaîne a abouti pour la première fois le 22 septembre 2026, après sept
+échecs.** Jusque-là, aucun déploiement n'était parti de la CI, et le dernier
+pipeline ne s'était pas arrêté sur un test rouge mais sur `ci_quota_exceeded`.
+Le déblocage tient à un **runner auto-hébergé** — qui ne consomme plus une
+minute du Free Tier — et à trois correctifs que rien n'avait révélés jusque-là,
+faute de job allant assez loin : un kubeconfig désignant `127.0.0.1` depuis un
+conteneur, un RBAC d'agent qui ne couvrait pas les objets applicatifs, et une
+variable de namespace absente qui faisait déployer dans `default` en silence.
 
-**L'application a bien été déployée, mais sur un cluster local et à la main.**
+**Sur les trente derniers jours, cinq déploiements ont abouti sur neuf
+tentatives.** Staging et production sont posés par la CI avec des images du
+registry GitLab, et un rollback de production a été joué pour de bon, puis suivi
+d'un redéploiement. Le taux d'échec des changements reste à **66,67 %** : le
+chemin automatisé existe désormais, il n'est pas encore fiable, et deux journées
+d'observations ne font pas une cadence de livraison.
+
+**L'application avait d'abord été déployée à la main, sur un cluster local.**
 Le 10 août 2026, l'overlay `staging` a été appliqué sur minikube : les deux
 Deployments ont atteint `rollout status` en `0`, les sondes ont été observées
 sous kubelet, l'Ingress a routé ses deux hôtes, le rollback automatique a été
 déclenché sur un échec réel, et un défaut sérieux de la séquence de déploiement
 a été trouvé puis corrigé. Le compte rendu est dans `K8S.md` §14.
 
-La distinction entre ces deux phrases est le sujet même de ce rapport, et elle
-est développée au §2.3. Elle se résume ainsi : **le mécanisme est éprouvé, le
-chemin de livraison automatisé ne l'est pas.** Ce qui manque est le runner, pas
-la mécanique — mais tant qu'aucun pipeline ne l'a parcouru, c'est une conviction
-argumentée et non une preuve.
+La distinction entre ces deux manières de déployer reste le sujet du §2.3, mais
+elle a changé de nature. Ce qui était une conviction argumentée — « ce qui
+manque est le runner, pas la mécanique » — s'est vérifié le jour où le runner
+est arrivé : le mécanisme n'a pas eu à être réécrit, seuls son accès au cluster
+et ses droits l'ont été. Ce que la campagne manuelle porte encore seule, c'est
+le **détail du comportement en exploitation** — rollback sur image
+volontairement cassée, sondes sous kubelet, perte d'un pod — qu'aucun
+déploiement de CI ne réexerce.
 
 ### Tableau de bord du projet
 
@@ -54,7 +66,7 @@ argumentée et non une preuve.
 | Latence du front               | p50 **0,14 ms** · p95 **1,60 ms** · p99 **3,11 ms** (105 req.)  | `MONITORING.md` §5         |
 | Logs collectés                 | 50 documents, dont 36 du conteneur back, **100 %** du namespace | `MONITORING.md`            |
 | Disponibilité en déploiement   | **99,75 %** sur 1 615 requêtes, coupure ≤ 0,20 s                | `K8S.md` §14.10            |
-| **Déploiements réussis en CI** | **0** sur 7 tentatives                                          | `MONITORING.md` §9         |
+| **Déploiements réussis en CI** | **5** sur 9 tentatives (30 j)                                   | `MONITORING.md` §9         |
 
 ## 2. Les indicateurs DORA
 
@@ -71,38 +83,73 @@ Le collecteur est testé sur des **fixtures**, c'est-à-dire des réponses d'API
 enregistrées, et non contre le réseau : un test qui dépend d'un service tiers
 échoue les jours où ce service est lent, et on finit par ne plus le croire. Deux
 jeux coexistent, et la distinction est délibérée — un jeu réel, enregistré
-verbatim (les 44 pipelines et les jobs des 7 pipelines ayant déclenché un
-déploiement), et un jeu explicitement nommé `dora-scenario-fabrique`, qui
-contient ce que le réel n'offre pas : des déploiements réussis. Sans lui, les
-formules du délai et du temps de rétablissement ne seraient empruntées par aucun
-test, et on ne vérifierait qu'une chose — la capacité du collecteur à dire
-« je n'ai rien ».
+verbatim avant le déblocage du 22 septembre (les 44 pipelines d'alors et les
+jobs des 7 pipelines ayant déclenché un déploiement), et un jeu explicitement
+nommé `dora-scenario-fabrique`, qui contient ce que ce jeu enregistré n'offre
+pas : des déploiements réussis. Sans lui, les formules du délai et du temps de
+rétablissement ne seraient empruntées par aucun test, et on ne vérifierait
+qu'une chose — la capacité du collecteur à dire « je n'ai rien ». Les fixtures
+réelles n'ont pas été réenregistrées depuis ; elles décrivent toujours
+correctement la fenêtre qui est la leur.
 
-### 2.2 Les valeurs, mesurées sur 44 pipelines réels
+### 2.2 Les valeurs, mesurées le 23 septembre 2026 sur 50 pipelines réels
 
-| Indicateur                     | Valeur           | Observations |
-| ------------------------------ | ---------------- | ------------ |
-| Fréquence de déploiement       | **0,0** par jour | 0            |
-| Délai de mise en production    | **`null`**       | 0            |
-| Temps de rétablissement (MTTR) | **`null`**       | 0            |
-| Taux d'échec des changements   | **100 %**        | 7            |
+| Indicateur                              | Valeur                           | Observations |
+| --------------------------------------- | -------------------------------- | ------------ |
+| Fréquence de déploiement                | **0,1667** par jour              | 5            |
+| Délai de mise en production (médiane)   | **1,38 h** (min 0,64 / max 4,87) | 5            |
+| Temps de rétablissement (MTTR, médiane) | **2,14 h** (min 0,09 / max 4,18) | 2            |
+| Taux d'échec des changements            | **66,67 %**                      | 9            |
+
+Neuf jobs de déploiement ont réellement tourné sur la fenêtre, cinq ont réussi,
+et deux rollbacks ont été joués. Une lecture honnête de ces quatre lignes tient
+en trois remarques.
+
+**Le recul est de deux jours, pas de trente.** Les cinq déploiements réussis
+sont concentrés sur les 22 et 23 septembre ; la fréquence de 0,1667 par jour est
+donc une moyenne sur une fenêtre dont l'essentiel est vide. Un taux d'échec
+calculé sur 9 tentatives et un MTTR sur 2 observations décrivent des faits, pas
+des tendances.
+
+**Le délai de mise en production mesure surtout un geste humain.** Les deux jobs
+de déploiement restent `when: manual` : la médiane de 1,38 h entre le commit de
+tête et la fin du déploiement contient l'attente du clic, pas seulement la durée
+du pipeline.
 
 **Zéro mesuré et absence de donnée ne sont pas la même chose.** C'est la règle
 qui gouverne tout le collecteur, et la seule qui le rende utile plutôt que
-décoratif. `deployment_frequency` vaut `0.0` : c'est une mesure — zéro
-déploiement a bien eu lieu, sur une fenêtre connue, après sept tentatives. En
-revanche `lead_time_for_changes` vaut `null`, accompagné de sa raison : il
-n'existe aucune arrivée en production vers laquelle mesurer un délai. Le rendre
-en `0` afficherait un délai de mise en production nul, c'est-à-dire **la
-performance parfaite**, là où il n'y a simplement jamais eu de mise en
+décoratif. Elle ne se voit plus dans la sortie d'aujourd'hui, mais c'est elle
+qui a tenu pendant les deux mois sans déploiement : `deployment_frequency`
+valait `0.0` — une mesure — tandis que `lead_time_for_changes` valait `null`,
+accompagné de sa raison, parce qu'il n'existait aucune arrivée en production vers
+laquelle mesurer un délai. Le rendre en `0` aurait affiché un délai nul,
+c'est-à-dire **la performance parfaite**, là où il n'y avait jamais eu de mise en
 production. Un test de `run_tests.sh` échoue si un indicateur sans donnée se met
 à ressortir en `0`.
 
-Deux limites à connaître sur cette collecte : **aucun job de CI ne l'exécute**
-— elle se lance à la main, et l'automatiser se heurterait de toute façon au
-quota épuisé — et le taux d'échec de 100 % porte sur 7 observations seulement,
-ce qui est un effectif trop faible pour parler de tendance. Il décrit un fait,
-pas une statistique.
+⚠️ **Deux limites à connaître sur cette collecte.** La première : **aucun job de
+CI ne l'exécute**, elle se lance à la main — l'obstacle n'est plus le quota, qui
+ne s'applique plus, c'est une évolution du pipeline qui n'a pas été faite. La
+seconde tient au comptage des rollbacks, et elle est assumée telle quelle : un
+déploiement réussi puis annulé compte comme un échec, conformément à la
+définition DORA, **mais le rattachement d'un rollback à un déploiement est
+purement chronologique**. Le rollback du 23 septembre à 13:01:30 a échoué sur un
+timeout et n'a donc rien annulé ; il est quand même compté comme une annulation.
+Le détail, et ce qu'il faudrait pour le corriger, sont dans `MONITORING.md` §9.3.
+
+La liste des pipelines, le 23 septembre 2026, après les déploiements :
+
+![Liste des pipelines du projet sur GitLab : les trois pipelines du haut portent les déploiements du 23 septembre, toutes leurs pastilles d'étape au vert, en statut « Blocked ».](captures/pipelines-liste-apres-deploiements-2026-09-23.png)
+
+⚠️ **« Blocked » n'est pas un échec, et c'est la première chose à lire sur cette
+capture.** C'est le statut d'un pipeline dont tous les jobs automatiques ont
+réussi et qui attend une action manuelle — ici les `terraform-apply-*` et les
+jobs de déploiement, qui sont des portes volontaires (§2.3). Un pipeline en
+échec porte « Failed » et une pastille rouge — deux d'entre eux sont visibles
+plus bas dans la liste. Les trois pipelines du haut — `#2874278876` (`main`,
+`9f4168b3`), `#2874277560` (`develop`, `bf272532`) et `#2873813689` (`main`,
+`819da793`) — sont ceux qui portent toute l'activité du 23 septembre : quatre
+déploiements réussis, un échec et les deux rollbacks.
 
 ### 2.3 « Ça marche sur un cluster local » n'est pas « ça arrive en production »
 
@@ -115,20 +162,27 @@ route par hôte, le CORS discrimine, un déploiement vers une image inexistante
 déclenche bien le rollback automatique, et un rollback ramène la version
 précédente réellement déployée. Tout cela a été observé, commande par commande.
 
-Ce qui n'a **jamais eu lieu** : qu'un commit poussé sur `develop` ou `main`
-traverse le pipeline et se retrouve en marche sur un cluster sans intervention
-humaine. Entre les deux se trouve tout ce qu'un déploiement local ne peut pas
-exercer : un runner GitLab, un registry privé authentifié — le tirage d'image
-avec `imagePullSecrets` reste **non testé**, les images ayant été chargées par
-`minikube image load` —, des variables protégées, un `KUBE_CONFIG` injecté, et
-un enchaînement qui n'est piloté par personne.
+Ce qu'un déploiement local ne pouvait pas exercer a depuis été exercé : un
+runner, un registry privé authentifié — le tirage d'image par `imagePullSecrets`
+fonctionne, les pods de staging et de production tirent leurs images du registry
+GitLab —, des variables protégées, l'accès au cluster par le tunnel de l'agent,
+et un enchaînement que personne ne pilote entre le clic et le rollout.
 
-La différence n'est donc pas de degré mais de nature. Un mécanisme qui
-fonctionne quand un humain le lance dans le bon ordre, sur sa machine, avec son
-kubeconfig, ne dit rien de sa capacité à fonctionner sans lui. **Les indicateurs
-DORA sont précisément l'instrument qui refuse de confondre les deux**, et c'est
-la raison pour laquelle ils sont présentés ici tels quels, sans correctif ni
-explication de rattrapage.
+Ce qui **n'a toujours pas lieu** : qu'un commit poussé sur `develop` ou `main`
+se retrouve en marche sans intervention humaine. Les deux jobs de déploiement
+sont `when: manual`, et c'est un choix pour la production (`A3.1` du plan
+d'optimisation propose de le lever sur staging seulement).
+
+Ce que la campagne locale porte encore seule : le comportement sous incident.
+Les quatre déploiements de CI qui ont échoué l'ont fait sur l'accès au cluster —
+kubeconfig, droits, namespace — et non sur l'application ; aucun n'a donc exercé
+une image cassée, la perte d'un pod ou une sonde en échec. La différence entre
+les deux registres s'est donc
+réduite, elle n'a pas disparu — et **les indicateurs DORA restent l'instrument
+qui refuse de confondre « le mécanisme fonctionne » et « les changements
+arrivent en production sans casse »**. C'est la raison pour laquelle ils sont
+présentés ici tels quels, sans correctif ni explication de rattrapage : à
+66,67 % d'échec, ils ne flattent personne.
 
 ## 3. Tests et couverture
 
@@ -441,6 +495,11 @@ Les deux tableaux de bord, capturés le 19 septembre 2026 sur une fenêtre de
 À la date de ces captures, l'index porte **28 271 documents** ; les 50 du
 tableau ci-dessus sont ceux de la vérification initiale du 16 août 2026.
 
+⚠️ **La capture DORA date du 19 septembre, soit avant le déblocage de la
+chaîne** : elle montre les quatre indicateurs de l'époque — `0,0` déploiement
+par jour, deux `null` et 100 % d'échec. Ce sont les panneaux qu'il faut y lire,
+pas les valeurs ; les valeurs à jour sont au §2.2.
+
 Le dimensionnement de la stack a été confronté à une charge réelle, ce qui n'est
 pas la même chose qu'un plan validé. Pendant le rollout de Kibana, le quota du
 namespace affichait `limits.memory 5376Mi/6Gi`, `requests.memory 3200Mi/4Gi`,
@@ -494,7 +553,7 @@ vérifié — pas une amélioration théorique.
 | Prérequis du poste             | deux phrases dans deux documents                           | playbook Ansible idempotent (`ok=23 changed=0`)                                     |
 | Capacité de retour arrière     | `rollback-production` ramenait un _placeholder_ inexistant | ramène la version précédente réellement déployée, vérifié sur cluster               |
 | Lecture des logs               | `kubectl logs`, un pod à la fois, sans historique          | data stream Elasticsearch + 6 panneaux Kibana versionnés                            |
-| Mesure de la livraison         | aucune                                                     | 4 indicateurs DORA calculés sur 44 pipelines                                        |
+| Mesure de la livraison         | aucune                                                     | 4 indicateurs DORA calculés sur 50 pipelines, tous renseignés                       |
 
 Deux de ces gains valent plus que les autres, parce qu'ils changent une propriété
 et pas seulement un chiffre.
@@ -518,12 +577,13 @@ révèle.
 Cette liste est donnée sans enrobage : elle est ce qu'un jury est en droit
 d'attaquer, et il vaut mieux qu'elle vienne du rapport que de la lecture.
 
-- **Aucune capture d'un déploiement réussi.** Le brief demande des captures de
-  la chaîne de livraison : celles du pipeline et des deux tableaux de bord
-  figurent dans `docs/captures/` (§6.2), mais **aucune ne montre un déploiement
-  qui aboutit**, pour une raison simple : il n'en existe aucun. Sept
-  déploiements déclenchés, sept échecs, et un quota de minutes épuisé qui
-  empêche d'en tenter un huitième.
+- **La capture du tableau de bord DORA est antérieure au déblocage.** La liste
+  des pipelines après déploiement est à jour (§2.2), mais l'écran Kibana des
+  quatre indicateurs montre l'état d'avant le 22 septembre et n'a pas été
+  refait. Les chiffres à jour de ce rapport viennent d'une exécution du
+  collecteur, pas d'une capture — et deux titres du tableau de bord portent
+  encore la mention « aucun déploiement réussi »
+  (`k8s/elk/dashboards/README.md`).
 - **Aucune métrique système.** Ni CPU, ni mémoire, ni latence d'API. Le projet
   collecte des logs, pas des métriques.
 - **Aucun alerting.** Rien ne prévient personne.
@@ -537,9 +597,12 @@ d'attaquer, et il vaut mieux qu'elle vienne du rapport que de la lecture.
   étapes a été exécutée séparément, mais l'enchaînement complet à partir d'une
   destruction réelle reste à faire. Tant qu'il ne l'a pas été, la reconstruction
   est une conviction raisonnable, pas une preuve.
-- **Le tirage d'image depuis un registry privé n'est pas testé.** Les images ont
-  été chargées par `minikube image load` ; le chemin `imagePullSecrets` n'a
-  jamais été exercé face à un registry authentifié.
+- **Le comportement sous incident n'a été exercé qu'à la main.** Les échecs
+  mesurés en CI portent sur l'accès au cluster, pas sur l'application : le
+  rollback automatique de `deploy.sh` n'a donc été déclenché pour de vrai que
+  lors de la campagne locale de `K8S.md` §14. Le rollback joué en production le
+  23 septembre appelait `rollback.sh` depuis `rollback-production`, un job
+  manuel — ce n'est pas le même chemin de code.
 - **Les `NetworkPolicy` sont décrites, pas prouvées.** Le CNI par défaut de
   minikube ne les implémente pas et les ignore sans rien signaler : l'API les
   accepte, `kubectl get networkpolicy` les affiche, et aucun paquet n'est
@@ -557,12 +620,12 @@ Classées par ce qu'elles débloquent, et non par leur difficulté.
 
 ### 9.1 Ce qui débloque la mesure elle-même
 
-| Piste                                                              | Effort | Ce que ça change                                                                                                             |
-| ------------------------------------------------------------------ | ------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| Un runner disponible (Free Tier renouvelé, ou runner auto-hébergé) | S      | **Prérequis de tout le reste** : sans minutes, aucun job ne démarre.                                                         |
-| Un premier `deploy-staging` mené à son terme                       | M      | Fait passer la fréquence de déploiement de `0,0` à une valeur, et donne au délai de mise en production une donnée à mesurer. |
-| Un job exécutant `collect_dora.py`                                 | S      | Les indicateurs cessent d'être un geste manuel.                                                                              |
-| `metrics-server`, puis Prometheus + Micrometer                     | M      | Donne CPU, mémoire et latence d'API — et donc de quoi vérifier les `resources`, aujourd'hui estimées.                        |
+| Piste                                          | Effort | Ce que ça change                                                                                                           |
+| ---------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------- |
+| Un runner disponible                           | S      | **Fait le 2026-09-22** — runner auto-hébergé. C'était le prérequis de tout le reste, et plus aucune minute n'est facturée. |
+| Un premier `deploy-staging` mené à son terme   | M      | **Fait le 2026-09-22.** Les quatre indicateurs sont renseignés ; reste à leur donner plus que deux journées à décrire.     |
+| Un job exécutant `collect_dora.py`             | S      | Les indicateurs cessent d'être un geste manuel. Seule piste de ce tableau qui reste entière.                               |
+| `metrics-server`, puis Prometheus + Micrometer | M      | Donne CPU, mémoire et latence d'API — et donc de quoi vérifier les `resources`, aujourd'hui estimées.                      |
 
 ### 9.2 Ce qui rend les contrôles réellement bloquants
 
@@ -602,3 +665,12 @@ sortie observée.
 | `ARCHITECTURE.md` §9 à §11              | Pourquoi l'option locale, sa transposition au cloud, et ses angles morts |
 | `RELEASE.md` §9                         | Sauvegarde, restauration, et reconstruction depuis le dépôt              |
 | `documentation-infrastructure.md`       | Le document jumeau : architecture et procédures                          |
+| `docs/captures/`                        | Les captures d'écran : pipelines, jobs, et les deux tableaux de bord     |
+
+**Sur `docs/captures/`.** Neuf fichiers s'y trouvent, dont trois seulement sont
+repris dans ce rapport — la liste des pipelines (§2.2) et les deux tableaux de
+bord (§6.2). Les six autres montrent le détail des graphes de jobs de deux
+pipelines antérieurs ; ils ne sont cités nulle part parce qu'aucun passage du
+texte n'en avait besoin, et qu'une galerie d'images sans propos ne prouve rien.
+Ils restent versionnés pour qui voudrait vérifier le détail d'un pipeline
+étape par étape.

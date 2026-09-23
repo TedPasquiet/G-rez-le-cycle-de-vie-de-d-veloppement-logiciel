@@ -12,12 +12,16 @@ ce qui est ici résumé y est détaillé, avec les commandes et les sorties
 observées. Le document jumeau, `rapport-performance.md`, porte les mesures et
 les résultats.
 
-⚠️ **À lire avant tout le reste.** L'application a été déployée et exercée sur un
-cluster Kubernetes local, à la main, depuis un poste. **Elle n'a jamais été
-déployée depuis la CI** : sept déploiements déclenchés, sept échecs, aucun
-`deploy-production` lancé, et un quota de minutes GitLab épuisé. Tout ce qui
-suit décrit donc un dispositif dont le mécanisme est éprouvé et dont le chemin
-automatisé ne l'est pas. Le détail est dans `rapport-performance.md` §2.3.
+⚠️ **À lire avant tout le reste.** L'application a d'abord été déployée et
+exercée sur un cluster Kubernetes local, à la main, depuis un poste. **Elle est
+déployée depuis la CI depuis le 22 septembre 2026** — après sept échecs, un
+quota GitLab épuisé, puis un runner auto-hébergé et trois correctifs d'accès au
+cluster. Staging et production sont aujourd'hui posés par le pipeline, et un
+rollback de production a été joué. Le recul est de deux jours, et le taux
+d'échec des changements est de **66,67 % sur 9 tentatives** : le chemin
+automatisé existe, il n'est pas encore éprouvé. Ce que la campagne manuelle
+porte encore seule — le comportement sous incident — est détaillé dans
+`rapport-performance.md` §2.3.
 
 ## 1. L'application et ses composants
 
@@ -75,7 +79,7 @@ flowchart TB
     s7 -->|"docker push, tag = SHA court"| reg[("Registry GitLab privé")]
     s5 -.->|"terraform plan / apply"| tf["Namespace, quota,<br/>limites, policies"]
     s9 == "déclenchement MANUEL" ==> jobs
-    subgraph jobs["Étape deploy : 3 jobs, aucun n'a jamais abouti"]
+    subgraph jobs["Étape deploy : 3 jobs, aboutis depuis le 2026-09-22"]
         direction TB
         j1["1. kubectl create secret docker-registry"]
         j2["2. overlay éphémère Kustomize"]
@@ -83,9 +87,9 @@ flowchart TB
         j4["4. deploy.sh : rollout + rollback auto"]
         j1 --> j2 --> j3 --> j4
     end
-    reg -.->|"imagePullSecrets"| j3
+    reg -->|"imagePullSecrets"| j3
     tf -.-> ns
-    j4 -.-> ns
+    j4 --> ns
     subgraph ns["Namespace microcrm-staging ou microcrm-prod"]
         direction LR
         ing["Ingress, 2 hôtes"]
@@ -94,17 +98,18 @@ flowchart TB
         ing --> pb
         ing --> pf
     end
-    poste(["Poste : docker build<br/>+ minikube image load"]) ==>|"le seul chemin<br/>réellement déployé"| ns
+    poste(["Poste : docker build<br/>+ minikube image load"]) ==>|"chemin manuel,<br/>campagne K8S.md §14"| ns
     classDef jamais stroke-dasharray: 5 5;
-    class jobs,tf jamais;
+    class tf jamais;
 ```
 
 _Source versionnée : `docs/schemas/plateforme-deploiement.mmd`, reprise dans
 `ARCHITECTURE.md` §8.1._
 
-**Les cadres en tirets ne sont pas une coquetterie graphique** : ils marquent ce
-qui est écrit, testé, et jamais mené à son terme. Le trait épais du bas est le
-seul chemin qui a réellement produit des pods en marche.
+**Le cadre en tirets qui reste n'est pas une coquetterie graphique** : il marque
+ce qui est écrit, testé, et jamais mené à son terme — ici l'`apply` Terraform,
+qui demeure un geste manuel. L'étape `deploy` en est sortie le 22 septembre 2026. Le trait épais du bas n'est plus le seul chemin qui produit des pods en
+marche, mais il reste celui de la campagne de vérification (`K8S.md` §14).
 
 ### 2.1 Du dépôt au pipeline
 
@@ -838,10 +843,12 @@ dry-run présenté comme une preuve : ce qui manque est le fournisseur, pas la
 mécanique.
 
 ⚠️ **Une nuance, et elle s'est vérifiée : gratuit ne veut pas dire sans limite.**
-Le dernier pipeline du projet s'est arrêté sur `ci_quota_exceeded`. L'option
-locale supprime la facture, pas la contrainte de ressource — elle la déplace
-vers le poste et vers les quotas gratuits, où elle finit par se manifester
-aussi.
+Pendant deux mois, les pipelines du projet se sont arrêtés sur
+`ci_quota_exceeded`. La sortie a été un **runner auto-hébergé**, qui ne consomme
+plus aucune minute du Free Tier — ce qui confirme la nuance plutôt que de la
+lever : l'option locale supprime la facture, pas la contrainte de ressource, elle
+la déplace vers le poste, qui porte désormais l'exécution des jobs en plus du
+cluster.
 
 ### 9.2 Ce qui bougerait chez un fournisseur
 

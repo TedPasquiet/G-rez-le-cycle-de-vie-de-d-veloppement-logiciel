@@ -130,17 +130,33 @@ curl -s -X POST 'http://127.0.0.1:5601/api/saved_objects/_import?overwrite=true'
 
 ### ⚠️ Ce que ces écrans affichent, et qu'il faut lire avant de conclure
 
-**Ce projet n'a jamais réussi un seul déploiement.** Sept ont été déclenchés,
-sept ont échoué ; `deploy-production` et `rollback-production` n'ont jamais été
-lancés. Les chiffres ne sont donc pas mauvais par accident de mesure : ils
-disent ce que le projet a fait.
+**La chaîne déploie depuis le 2026-09-22**, après sept échecs et deux mois de
+quota épuisé. Les quatre indicateurs ont donc une valeur, et celle du taux
+d'échec n'est pas flatteuse — ce qui est le sujet : ces chiffres disent ce que
+le projet a fait, pas ce qu'on voudrait montrer.
 
-| Indicateur                   | Valeur     | Ce que ça veut dire                                                                           |
-| ---------------------------- | ---------- | --------------------------------------------------------------------------------------------- |
-| Fréquence de déploiement     | `0,0`/jour | **mesuré** — sept tentatives, aucune aboutie                                                  |
-| Délai de mise en production  | `null`     | **pas de donnée** — aucune arrivée en production vers laquelle mesurer                        |
-| Temps de rétablissement      | `null`     | **pas de donnée** — le MTTR se mesure d'un échec au succès suivant, et ce succès n'existe pas |
-| Taux d'échec des changements | `100 %`    | mesuré sur 7 observations                                                                     |
+Mesuré le 2026-09-23 sur 30 jours :
+
+| Indicateur                   | Valeur        | Ce que ça veut dire                                                               |
+| ---------------------------- | ------------- | --------------------------------------------------------------------------------- |
+| Fréquence de déploiement     | `0,1667`/jour | 5 déploiements réussis, tous sur deux journées consécutives                       |
+| Délai de mise en production  | `1,38 h`      | médiane sur 5 observations ; le déclenchement est manuel, l'attente du clic y est |
+| Temps de rétablissement      | `2,14 h`      | médiane sur 2 observations seulement                                              |
+| Taux d'échec des changements | `66,67 %`     | 6 échecs sur 9 tentatives, dont 2 comptés comme annulés par un rollback           |
+
+⚠️ **Deux titres de ce tableau de bord datent d'avant le déblocage** et doivent
+être refaits à la prochaine régénération : celui du tableau lui-même
+(« MicroCRM — métriques DORA (aucun déploiement réussi) ») et celui de la
+recherche sauvegardée « Les sept tentatives de déploiement, une par ligne ».
+Ils se corrigent **dans Kibana, puis par export** — voir la mise en garde de la
+section suivante ; les modifier à la main dans le NDJSON casserait l'import.
+
+⚠️ **Le comptage des rollbacks est volontairement pessimiste.** Un déploiement
+réussi puis annulé compte comme un échec, et le rattachement du rollback au
+déploiement est purement chronologique : le rollback du 2026-09-23 à 13:01:30 a
+échoué sur un timeout, n'a donc rien annulé, et compte quand même comme une
+annulation. C'est assumé et non corrigé ; le détail est dans `MONITORING.md`
+§9.3.
 
 ### Pourquoi deux indicateurs ne sont pas des métriques
 
@@ -148,7 +164,9 @@ disent ce que le projet a fait.
 de **texte**, pas par des panneaux de métrique. Ce n'est pas un détour
 esthétique : Kibana affiche `0` ou `-` pour une métrique vide, et un délai de
 mise en production de zéro heure se lit comme la performance parfaite — là où
-il n'y a simplement jamais eu de mise en production.
+il n'y a parfois simplement pas eu de mise en production. Ces deux indicateurs
+ont aujourd'hui une valeur, mais le choix reste le bon : il suffit d'une fenêtre
+sans déploiement pour que le cas revienne.
 
 Confondre « zéro mesuré » et « pas de donnée » est le pire défaut qu'un tableau
 de bord puisse avoir, parce que le second se lit comme un exploit. Le panneau
@@ -170,5 +188,8 @@ curl -s -X POST 'http://127.0.0.1:5601/api/saved_objects/_export' \
 
 Vérifié le 2026-08-18, objets préalablement supprimés pour que le test soit
 froid : `{"success": true, "successCount": 13}`, aucune erreur. Et les quatre
-valeurs lues dans l'index correspondent exactement à ce que rend le collecteur,
-`null` compris.
+valeurs lues dans l'index correspondaient exactement à ce que rendait alors le
+collecteur, `null` compris. Les objets n'ont pas été réexportés depuis le
+déblocage du 2026-09-22 : les panneaux, eux, lisent l'index et suivent donc les
+nouvelles valeurs — ce sont les deux titres signalés plus haut qui ne suivent
+pas.
