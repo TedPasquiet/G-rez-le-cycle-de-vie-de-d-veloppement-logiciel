@@ -26,6 +26,14 @@
         </div>
       </div>
     </div>
+    <!-- Sans ces deux lignes, une fiche en cours de chargement et une fiche
+         dont le chargement a échoué s'affichent toutes deux comme un
+         formulaire vide — indiscernable d'une création. On a édité des
+         champs vides en croyant modifier une personne existante. -->
+    <p *ngIf="personState === 'loading'" class="is-italic">Loading person…</p>
+    <p *ngIf="personState === 'failed'" class="is-italic has-text-danger">
+      This person could not be loaded. The fields below are empty because nothing was received.
+    </p>
     <div class="columns">
       <div class="column">
         <div class="field">
