@@ -273,13 +273,64 @@
     name: $KUBECTL_IMAGE
     entrypoint: ['']
   stage: deploy
-  variables:
-    KUBECONFIG: '$KUBE_CONFIG'
   before_script:
     # alpine/kubectl est basée sur Alpine : elle n'a que sh, alors que mes
     # scripts de déploiement sont en bash. On l'installe, puis on vérifie.
     - apk add --no-cache bash
     - command -v bash
+    # ⚠️ ACCÈS AU CLUSTER — par l'agent, comme les jobs Terraform.
+    #
+    # Ce gabarit portait `KUBECONFIG: $KUBE_CONFIG` dans un bloc `variables:`,
+    # c'est-à-dire un kubeconfig stocké en variable de projet. Deux défauts, et
+    # le second est fatal :
+    #
+    #   1. Un bloc `variables:` est résolu AVANT le démarrage du job. Il écrase
+    #      donc le $KUBECONFIG que GitLab injecte à l'exécution pour les projets
+    #      autorisés par l'agent — exactement ce que le gabarit Terraform prend
+    #      soin de ne pas faire (voir .terraform_template).
+    #   2. Le kubeconfig d'un poste désigne le serveur d'API en `127.0.0.1:<port>`.
+    #      Dans un conteneur de job, `127.0.0.1` est le conteneur lui-même :
+    #      l'adresse est structurellement injoignable. Vérifié le 2026-09-22 —
+    #      une requête vers cette adresse depuis un conteneur ne reçoit rien.
+    #
+    # L'agent n'a pas ce problème : il tourne DANS le cluster et ouvre une
+    # connexion sortante vers GitLab, ce qui rend joignable un cluster sans
+    # adresse publique. C'est déjà ce qui fait marcher `terraform-apply-*`.
+    - |
+      if [ -z "${KUBECONFIG:-}" ]; then
+        echo "ERREUR : ce job n'a reçu aucun kubeconfig de l'agent Kubernetes." >&2
+        echo "  Attendu : l'agent '$KUBE_AGENT_NAME' autorise ce projet et son pod est connecté." >&2
+        echo "  À vérifier : .gitlab/agents/$KUBE_AGENT_NAME/config.yaml (clé ci_access)," >&2
+        echo "  puis Operate > Kubernetes clusters, qui doit afficher l'agent « connected »." >&2
+        exit 1
+      fi
+    # Le contexte que l'agent fabrique porte un nom imposé par GitLab :
+    # `<chemin du projet>:<nom de l'agent>`. On le recompose, on ne l'écrit pas.
+    - kubectl config use-context "$CI_PROJECT_PATH:$KUBE_AGENT_NAME"
+    - kubectl version --output=yaml | head -20
+    # Garde-fou : un namespace de destination VIDE.
+    #
+    # Ce n'est pas théorique, c'est arrivé le 2026-09-22. `$STAGING_NAMESPACE`
+    # n'était pas définie côté GitLab ; `kubectl apply -k … -n ""` est alors
+    # retombé sur le namespace par défaut du contexte, et l'application a été
+    # déployée dans `default` — ConfigMap, Services et les deux Deployments —
+    # sans qu'aucune ligne du journal ne le signale. Le job n'a échoué qu'à
+    # l'Ingress, par accident, sur un conflit d'hôte avec le vrai namespace.
+    #
+    # Une variable absente doit arrêter le job, pas le faire viser ailleurs.
+    - |
+      exige_namespace() {
+        if [ -z "${1:-}" ]; then
+          echo "ERREUR : le namespace de destination est vide." >&2
+          echo "  La variable attendue n'est pas définie dans GitLab" >&2
+          echo "  (Settings > CI/CD > Variables) : STAGING_NAMESPACE pour staging," >&2
+          echo "  PROD_NAMESPACE pour la production. Elles doivent valoir le nom" >&2
+          echo "  que Terraform donne au namespace (terraform.tfvars, clé namespace)." >&2
+          echo "  Sans ce contrôle, kubectl déploierait dans 'default' en silence." >&2
+          exit 1
+        fi
+        echo "Namespace de destination : $1"
+      }
     # Le tag d'image que ce déploiement doit poser.
     #
     # Sur un pipeline de tag, c'est le numéro de version — celui que

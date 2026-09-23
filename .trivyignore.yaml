@@ -10,9 +10,15 @@
 # Chaque entrée porte une justification et une date de revue. Ce fichier est
 # relu à chaque release, ce n'est pas une décharge permanente.
 #
-# Scan de référence : trivy 0.69.3, `fs --scanners misconfig --severity
-# HIGH,CRITICAL`, exécuté le 2026-09-19 — 5 misconfigurations, toutes reprises
-# ci-dessous.
+# Scan de référence : trivy 0.69.3, la commande exacte du job `trivy-fs`
+# (`fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL`), rejouée le
+# 2026-09-22 — 5 entrées ci-dessous, et le scan sort à 0 avec elles.
+#
+# La dernière ajoutée, KSV-0041, l'a été le jour où les jobs de déploiement sont
+# passés sur le tunnel de l'agent : le rôle a dû recevoir de quoi écrire le
+# Secret du registry, et la règle l'a signalé aussitôt. C'est le comportement
+# attendu d'une porte bloquante — elle a vu le changement de privilège le jour
+# même, pas trois mois plus tard.
 
 misconfigurations:
   - id: KSV-0056
@@ -24,8 +30,44 @@ misconfigurations:
       crée et met à jour les NetworkPolicy du namespace, et l'agent est le seul
       chemin d'accès au cluster depuis la CI (TERRAFORM.md §4.1). Restreindre
       aux verbes get/list/watch, comme le demande la règle, casserait le job
-      terraform-apply. Le périmètre reste borné par le RoleBinding, limité aux
-      namespaces du projet.
+      terraform-apply.
+
+      ⚠️ Correction du 2026-09-22 : cette justification affirmait que « le
+      périmètre reste borné par le RoleBinding, limité aux namespaces du
+      projet ». C'est FAUX — le rôle est lié par un ClusterRoleBinding, donc à
+      l'échelle du cluster (vérifié sur le cluster). Le rôle a par ailleurs été
+      élargi aux objets applicatifs le même jour, les jobs de déploiement étant
+      passés sur le tunnel de l'agent. L'exception reste assumée, mais pour ce
+      qu'elle est : un agent unique, cluster-wide, qui porte l'infrastructure et
+      l'application. La forme correcte resterait un agent par périmètre.
+    expiredAt: 2026-12-31
+
+  - id: KSV-0041
+    paths:
+      - .gitlab/agents/microcrm/rbac.yaml
+    statement: >-
+      Gestion des Secrets accordée à l'agent GitLab, et la règle a raison de le
+      signaler : un rôle qui écrit des Secrets à l'échelle du cluster est un
+      privilège sérieux.
+
+      Le besoin est précis et unique. Les jobs `deploy-*` (re)créent le Secret
+      `imagePullSecrets` du registry, sans lequel un cluster vierge laisse tous
+      les pods en ImagePullBackOff. C'est le partage de responsabilités écrit
+      dans ANSIBLE.md §2 : Kustomize possède l'application, la CI possède les
+      secrets. Aucun autre Secret n'est touché.
+
+      Ce qui borne le risque, et qui est vérifiable dans le rôle : les verbes
+      accordés sont `get`, `create`, `update`, `patch` — PAS `list`, PAS
+      `watch`, PAS `delete`. Le rôle peut donc écrire un Secret dont il connaît
+      le nom, mais il ne peut pas ÉNUMÉRER les secrets du cluster, qui est le
+      risque R3 de AUDIT.md §7.1. Contrôlé par `kubectl auth can-i` le
+      2026-09-22 : `list secrets` répond `no`.
+
+      Deux façons de faire tomber cette exception, le jour où on la reprend :
+      un agent par périmètre, avec un rôle applicatif borné aux namespaces du
+      projet par un RoleBinding ; ou un Secret de registry provisionné une fois
+      hors CI, ce qui retirerait tout droit sur les Secrets aux jobs — au prix
+      d'un objet qui n'est plus reconstructible depuis le dépôt.
     expiredAt: 2026-12-31
 
   - id: KSV-0014

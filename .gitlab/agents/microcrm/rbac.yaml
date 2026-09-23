@@ -87,17 +87,67 @@ rules:
   # tout compte authentifié (ClusterRole `system:discovery`), mais un cluster
   # peut l'avoir resserré — et l'échec se présenterait alors comme une erreur
   # de provider incompréhensible, pas comme un refus de droits.
+  # --- Objets applicatifs — ajoutés le 2026-09-22 -------------------------
+  #
+  # POURQUOI ILS ARRIVENT ICI. Les jobs `deploy-*` passaient par un kubeconfig
+  # stocké en variable (`$KUBE_CONFIG`). Ça ne pouvait pas marcher contre un
+  # cluster local : ce kubeconfig désigne le serveur d'API en `127.0.0.1`, or
+  # dans un conteneur de job `127.0.0.1` est le conteneur lui-même. Les jobs
+  # sont donc passés sur le tunnel de l'agent, comme `terraform-apply-*` — ce
+  # que le bloc « ce que ce rôle ne couvre pas » appelait de ses vœux.
+  #
+  # ⚠️ PORTÉE RÉELLE : ce ClusterRole est lié par un **ClusterRoleBinding**, donc
+  # à l'échelle du cluster. Ces droits ne sont PAS bornés aux namespaces du
+  # projet, contrairement à ce que laissait entendre la justification KSV-0056
+  # de `.trivyignore.yaml`. C'est l'inconvénient assumé du choix « un seul agent
+  # qui grossit » plutôt que « un agent par périmètre ».
+  - apiGroups: ['apps']
+    resources: ['deployments']
+    verbs: ['get', 'list', 'watch', 'create', 'update', 'patch']
+
+  # `rollout history` et `rollout undo` lisent les ReplicaSets pour retrouver la
+  # révision précédente. En LECTURE seule : c'est le Deployment qu'on modifie,
+  # jamais le ReplicaSet directement.
+  - apiGroups: ['apps']
+    resources: ['replicasets']
+    verbs: ['get', 'list', 'watch']
+
+  - apiGroups: ['']
+    resources: ['services', 'configmaps']
+    verbs: ['get', 'list', 'watch', 'create', 'update', 'patch']
+
+  - apiGroups: ['networking.k8s.io']
+    resources: ['ingresses']
+    verbs: ['get', 'list', 'watch', 'create', 'update', 'patch']
+
+  # Les Secrets sont volontairement PLUS ÉTROITS que le reste : ni `list`, ni
+  # `watch`.
+  #
+  # Le besoin réel est précis — les jobs de déploiement (re)créent le Secret
+  # `imagePullSecrets` du registry, rien d'autre. `create`, `update`, `patch` le
+  # couvrent, et `get` sert au `apply` qui lit avant d'écrire.
+  #
+  # `list` est ce qui transformerait ce droit en capacité d'ÉNUMÉRER tous les
+  # secrets du cluster — le risque R3 de AUDIT.md §7.1. Un rôle cluster-wide qui
+  # peut lire un secret dont il connaît déjà le nom est une chose ; un rôle qui
+  # peut tous les parcourir en est une autre.
+  - apiGroups: ['']
+    resources: ['secrets']
+    verbs: ['get', 'create', 'update', 'patch']
+
   - nonResourceURLs: ['/version', '/api', '/api/*', '/apis', '/apis/*', '/openapi/v2']
     verbs: ['get']
 # ⚠️ CE QUE CE RÔLE NE COUVRE PAS, volontairement :
 #
-#   - les objets applicatifs (Deployment, Service, Ingress, ConfigMap, Secret).
-#     Ils sont déployés par `kubectl apply -k` dans les jobs de déploiement, qui
-#     passent encore par la variable $KUBE_CONFIG et NON par l'agent. Le jour où
-#     ces jobs basculeront sur le tunnel — ce qui serait une bonne chose, pour la
-#     même raison qu'ici — ce rôle devra s'élargir, ou mieux : recevoir un second
-#     rôle, lié à un second agent. Un agent par périmètre vaut mieux qu'un rôle
-#     qui grossit.
+#   - la SUPPRESSION des objets applicatifs. `kubectl apply -k` et
+#     `rollout undo` n'en ont pas besoin ; un job de déploiement qui peut
+#     détruire est un job qui peut détruire par erreur.
+#   - l'énumération des Secrets (`list`, `watch`) — voir le commentaire de la
+#     règle correspondante.
+#   - la dette assumée : ce rôle a grossi au lieu d'être doublé par un second
+#     agent. Un agent par périmètre resterait la bonne forme, et le reste : ici
+#     un seul agent porte l'infrastructure ET l'application, à l'échelle du
+#     cluster.
 #   - les modules GitOps et `user_access` de l'agent. Ils ne sont pas activés
 #     dans config.yaml ; les activer demanderait d'autres droits.
 ---
