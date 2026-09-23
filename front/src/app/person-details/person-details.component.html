@@ -157,7 +157,14 @@
             </tr>
           </thead>
           <tbody>
-            <tr *ngFor="let org of organizations">
+            <!-- `person.organizations` et NON `organizations` : cette table liste
+                 les affiliations de CETTE personne, pas le catalogue complet.
+                 Avec `organizations`, toute personne paraissait affiliée à tout,
+                 et la croix de suppression semblait sans effet — elle tentait de
+                 détacher une affiliation qui n'existait pas, et la ligne restait
+                 puisqu'elle venait d'une liste que le rechargement ne change pas.
+                 Le composant des organisations, lui, itère bien `org.persons`. -->
+            <tr *ngFor="let org of person.organizations">
               <td>
                 <a class="is-size-4" [routerLink]="['/organizations', org.id]">{{ org.name }}</a>
               </td>
