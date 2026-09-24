@@ -1,0 +1,14 @@
+<!-- `role="alert"` et non un simple bloc coloré : la bannière apparaît sans
+     action de l'utilisateur, souvent loin du point de regard. Sans ce rôle,
+     un lecteur d'écran ne l'annonce pas et le message reste aussi invisible
+     qu'une trace de console. -->
+<div class="notification is-danger" role="alert" *ngIf="failure() as echec">
+  <button class="delete" type="button" aria-label="Dismiss error" (click)="dismiss()"></button>
+  <p class="has-text-weight-bold">{{ echec.title }}</p>
+  <p>{{ echec.detail }}</p>
+  <!-- Le verbe et l'URL sont affichés tels quels : c'est ce qu'on recopie dans
+       un ticket, et ce qui distingue une lecture perdue d'une écriture perdue. -->
+  <p class="is-size-7 mt-2">
+    <code>{{ echec.method }} {{ echec.url }}</code>
+  </p>
+</div>

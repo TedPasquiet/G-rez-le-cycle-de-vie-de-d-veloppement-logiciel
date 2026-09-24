@@ -4,6 +4,7 @@ import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { Person, PersonService } from '../person.service';
 import { Organization, OrganizationService } from '../organization.service';
+import { LoadingState } from '../loading-state';
 
 @Component({
   selector: 'app-organization-details',
@@ -26,6 +27,10 @@ export class OrganizationDetailsComponent implements OnInit {
 
   isNew: boolean = false;
 
+  // 'loaded' au départ : en création, rien n'est chargé. Voir la même remarque
+  // dans PersonDetailsComponent.
+  orgState: LoadingState = 'loaded';
+
   ngOnInit(): void {
     const routeParams = this.route.snapshot.paramMap;
     const orgIdParam = routeParams.get('orgId');
@@ -34,10 +39,17 @@ export class OrganizationDetailsComponent implements OnInit {
       this.isNew = true;
     } else if (typeof orgIdParam === 'string') {
       const orgId = Number.parseInt(orgIdParam);
-      this.organizationService.fetchById(orgId).then((org) => {
-        this.org = org;
-        this.isNew = false;
-      });
+      this.orgState = 'loading';
+      this.organizationService
+        .fetchById(orgId)
+        .then((org) => {
+          this.org = org;
+          this.isNew = false;
+          this.orgState = 'loaded';
+        })
+        // Le message revient à l'intercepteur ; ici on retient seulement que
+        // la fiche est perdue, pour ne pas l'afficher comme vide.
+        .catch(() => (this.orgState = 'failed'));
     }
   }
 
@@ -51,13 +63,19 @@ export class OrganizationDetailsComponent implements OnInit {
         if (this.isNew) {
           this.router.navigate(['organizations', o.id]);
         }
-      });
+      })
+      // Pas de navigation sur échec : rediriger vers la fiche d'une
+      // organisation jamais créée ferait passer l'échec pour un succès.
+      .catch(() => undefined);
   }
 
   deleteOrg() {
     if (this.org.id === undefined) return;
-    this.organizationService.deleteById(this.org.id).then(() => {
-      this.router.navigate(['']);
-    });
+    this.organizationService
+      .deleteById(this.org.id)
+      .then(() => {
+        this.router.navigate(['']);
+      })
+      .catch(() => undefined);
   }
 }

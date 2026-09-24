@@ -89,4 +89,63 @@ describe('MainDashboardComponent', () => {
     expect(texte).toContain('No person yet.');
     expect(texte).toContain('No organization yet.');
   });
+
+  describe('échec de chargement', () => {
+    const texte = () => (fixture.nativeElement as HTMLElement).textContent ?? '';
+
+    /**
+     * Le défaut historique : `fetchAll()` rejetait, le `.then()` ne s'exécutait
+     * pas, `persons` restait à `[]` et l'écran affichait « No person yet. ».
+     * L'utilisateur lisait donc une affirmation — il n'y a aucune personne —
+     * alors que rien n'avait été reçu. Ce test regarde le rendu, parce que
+     * c'est là que le mensonge se produisait.
+     */
+    it("n'affirme pas que la liste est vide quand son chargement a échoué", async () => {
+      personService.fetchAll.and.rejectWith(new Error('réseau'));
+
+      await monter();
+
+      expect(component.personsState).toBe('failed');
+      expect(texte())
+        .withContext('« vide » et « échec » doivent cesser d’être indiscernables')
+        .not.toContain('No person yet.');
+      expect(texte()).toContain('Persons could not be loaded.');
+    });
+
+    /**
+     * Les deux listes sont chargées par deux requêtes indépendantes : l'échec
+     * de l'une ne doit pas condamner l'affichage de l'autre.
+     */
+    it("n'étend pas l'échec d'une liste à l'autre", async () => {
+      organizationService.fetchAll.and.rejectWith(new Error('réseau'));
+      personService.fetchAll.and.resolveTo([aPerson({ firstName: 'Jane', lastName: 'Roe' })]);
+
+      await monter();
+
+      expect(component.organizationsState).toBe('failed');
+      expect(component.personsState).toBe('loaded');
+      expect(texte()).toContain('Organizations could not be loaded.');
+      expect(texte()).not.toContain('No organization yet.');
+      expect(texte()).toContain('Jane Roe');
+    });
+  });
+
+  /**
+   * Troisième état, distinct des deux autres : tant que la réponse n'est pas
+   * revenue, on ne sait pas encore si la liste est vide.
+   */
+  it('annonce le chargement en cours plutôt qu’une liste vide', () => {
+    personService.fetchAll.and.returnValue(new Promise(() => undefined));
+    organizationService.fetchAll.and.returnValue(new Promise(() => undefined));
+
+    fixture = TestBed.createComponent(MainDashboardComponent);
+    component = fixture.componentInstance;
+    fixture.detectChanges(); // ngOnInit, mais aucune promesse résolue
+
+    const texte = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(component.personsState).toBe('loading');
+    expect(texte).toContain('Loading persons…');
+    expect(texte).toContain('Loading organizations…');
+    expect(texte).not.toContain('No person yet.');
+  });
 });
