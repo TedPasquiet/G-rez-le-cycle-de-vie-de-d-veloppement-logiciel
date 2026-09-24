@@ -295,7 +295,7 @@ flowchart TB
 
     s9 == "déclenchement MANUEL<br/>develop, main ou tag" ==> jobs
 
-    subgraph jobs["Étape deploy : 3 jobs, aucun n'a jamais abouti"]
+    subgraph jobs["Étape deploy : 3 jobs, aboutis depuis le 2026-09-22"]
         direction TB
         j1["1. kubectl create secret docker-registry"]
         j2["2. overlay éphémère Kustomize<br/>images: newName + newTag"]
@@ -304,9 +304,9 @@ flowchart TB
         j1 --> j2 --> j3 --> j4
     end
 
-    reg -.->|"imagePullSecrets"| j3
+    reg -->|"imagePullSecrets"| j3
     tf -.-> ns
-    j4 -.-> ns
+    j4 --> ns
 
     subgraph ns["Namespace microcrm-staging ou microcrm-prod"]
         direction LR
@@ -317,37 +317,49 @@ flowchart TB
         ing --> pf
     end
 
-    poste(["Poste : docker build<br/>+ minikube image load"]) ==>|"le seul chemin<br/>réellement déployé<br/>K8S.md §14"| ns
+    poste(["Poste : docker build<br/>+ minikube image load"]) ==>|"chemin manuel,<br/>campagne K8S.md §14"| ns
 
     classDef jamais stroke-dasharray: 5 5;
-    class jobs,tf jamais;
+    class tf jamais;
 ```
 
-**Ce que le trait pointillé veut dire.** Les cadres en tirets ne sont pas une
-coquetterie graphique : ils marquent ce qui est écrit, testé, et **jamais mené à
-son terme**. Sur les 44 pipelines de l'historique du projet, **sept déploiements
-ont été déclenchés et les sept ont échoué** ; `deploy-production` et
-`rollback-production` n'ont jamais été lancés une seule fois ; il n'existe aucun
-déploiement réussi depuis la CI. Le dernier pipeline s'est arrêté sur
-`ci_quota_exceeded` — les minutes du Free Tier GitLab sont épuisées et aucun job
-n'a démarré. C'est ce que mesurent les indicateurs DORA du projet
-([MONITORING.md](MONITORING.md) §9), et c'est le résultat qu'il faut savoir
-présenter plutôt que masquer.
+**Ce que le trait plein de l'étape deploy veut dire, depuis peu.** Ce cadre
+était en tirets, avec le reste de la convention : écrit, testé, jamais mené à son
+terme. **Il ne l'est plus depuis le 2026-09-22.** Un runner auto-hébergé a été
+enregistré sur le poste, ce qui a supprimé la contrainte de quota et rendu
+visibles trois défauts qu'aucun job n'allait assez loin pour rencontrer — un
+kubeconfig pointant sur `127.0.0.1` depuis un conteneur, un RBAC d'agent qui ne
+couvrait pas les objets applicatifs, un `$STAGING_NAMESPACE` absent qui faisait
+déployer dans `default` en silence. Les trois sont corrigés ; staging et
+production tournent aujourd'hui sur des images tirées du registry GitLab par ces
+jobs, `imagePullSecrets` compris.
 
-**Le trait épais du bas est donc le seul chemin qui a réellement produit des pods
-en marche** : images construites sur le poste, chargées par `minikube image
-load` (décision D3), overlay appliqué à la main. Le rollout, le rollback
-automatique sur une image volontairement cassée, la résilience à la suppression
-d'un pod et le comportement des sondes sous kubelet ont tous été observés — la
-campagne est consignée dans [K8S.md](K8S.md) §14.
+Ce que les indicateurs DORA en disent est à lire en entier
+([MONITORING.md](MONITORING.md) §9) : **5 déploiements réussis sur 30 jours,
+66,67 % de taux d'échec sur 9 tentatives**, deux rollbacks dont un qui a échoué.
+La chaîne aboutit ; elle n'est pas pour autant une chaîne de livraison régulière,
+et ces chiffres portent sur trop peu d'observations pour décrire autre chose que
+deux journées de mise au point.
 
-**Pourquoi garder le schéma d'une chaîne qui n'a jamais abouti.** Parce que
-l'échec n'est pas dans sa description. Les quatre étapes du job de déploiement
-sont couvertes par les 151 assertions de `scripts/tests/run_tests.sh`, l'overlay
-éphémère a un garde-fou qui échoue si la substitution d'image ne mord plus
-([K8S.md](K8S.md) §6), et c'est précisément cet overlay qui a supprimé la
-révision « placeholder » qui rendait `rollback-production` destructeur. Ce qui
-manque est le runner, pas le mécanisme.
+**Le trait pointillé qui reste** est celui de Terraform, dont l'`apply` demeure
+un geste manuel (§8.2).
+
+**Le trait épais du bas n'est plus le seul chemin qui produit des pods en
+marche**, mais il reste celui de la campagne de vérification : images construites
+sur le poste, chargées par `minikube image load` (décision D3), overlay appliqué
+à la main. Le rollout, le rollback automatique sur une image volontairement
+cassée, la résilience à la suppression d'un pod et le comportement des sondes
+sous kubelet y ont été observés un par un — c'est consigné dans
+[K8S.md](K8S.md) §14, et aucun déploiement de CI ne réexerce ce détail.
+
+**Ce que le mécanisme devait à sa description.** Les quatre étapes du job de
+déploiement sont couvertes par les 151 assertions de
+`scripts/tests/run_tests.sh`, l'overlay éphémère a un garde-fou qui échoue si la
+substitution d'image ne mord plus ([K8S.md](K8S.md) §6), et c'est précisément cet
+overlay qui a supprimé la révision « placeholder » qui rendait
+`rollback-production` destructeur. Quand l'exécution est enfin devenue possible,
+rien de tout cela n'a eu à être réécrit : ce qui manquait était bien le runner,
+pas le mécanisme.
 
 ### 8.2 L'infrastructure comme code, et sa frontière
 
@@ -422,6 +434,14 @@ Trois conséquences se lisent directement sur le schéma :
 > namespace, la CI y déploie, et les deux ne se parlent pas. En cas de
 > divergence, le job échoue sur un namespace inexistant, ou pire en crée un
 > second, sans quota ni policy.
+>
+> **Le cas s'est produit le 2026-09-22, en pire que prévu.** `$STAGING_NAMESPACE`
+> n'était pas définie du tout côté GitLab : `kubectl -n ""` ne proteste pas, il
+> vise `default`. Le déploiement a donc réussi — dans le mauvais namespace, sans
+> quota ni policy, et sans rien signaler. Le garde-fou `exige_namespace` de
+> `.deploy_template` couvre désormais ce cas : une variable vide fait échouer le
+> job. Il ne couvre toujours pas la divergence entre deux noms tous les deux
+> renseignés, qui reste à la charge de la relecture.
 
 ### 8.3 Le flux des logs
 
@@ -533,12 +553,15 @@ ni plan simulé, ni dry-run présenté comme une preuve. Ce qui manque est le
 fournisseur, pas la mécanique — et c'est exactement ce que la table du §10 sert à
 montrer.
 
-**5. Une nuance, et elle s'est vérifiée : gratuit ne veut pas dire sans
-limite.** Le dernier pipeline du projet ne s'est pas arrêté sur un test rouge
-mais sur `ci_quota_exceeded` : les minutes du Free Tier GitLab étaient épuisées
-et aucun job n'a démarré. L'option locale supprime la facture, pas la contrainte
-de ressource — elle la déplace vers le poste et vers les quotas gratuits, où elle
-finit par se manifester aussi.
+**5. Une nuance, et elle s'est vérifiée dans les deux sens : gratuit ne veut pas
+dire sans limite.** Pendant deux mois, aucun pipeline du projet ne s'est arrêté
+sur un test rouge mais sur `ci_quota_exceeded` : les minutes du Free Tier GitLab
+étaient épuisées et aucun job ne démarrait. La sortie a été d'enregistrer un
+**runner auto-hébergé** sur le poste — depuis le 2026-09-22, les jobs n'y
+consomment plus une minute de quota. Ce qui confirme la nuance plutôt que de la
+lever : l'option locale supprime la facture, pas la contrainte de ressource, elle
+la déplace vers le poste. Le quota gratuit s'est manifesté d'abord ; c'est
+maintenant la machine qui porte la charge des jobs.
 
 ---
 
@@ -666,12 +689,15 @@ aujourd'hui.
    qu'aucune erreur ne soit levée. Une base externe (PostgreSQL) avec un
    `PersistentVolumeClaim` lèverait les deux d'un coup.
 
-2. **La chaîne de déploiement n'a jamais abouti depuis la CI.** Les manifestes,
-   eux, ont bien été appliqués sur un cluster : rollout, rollback automatique,
-   sondes sous kubelet et résilience ont été observés lors de la campagne de
-   [K8S.md](K8S.md) §14 — mais **à la main, depuis le poste**. Les sept
-   déploiements déclenchés dans l'histoire du projet ont tous échoué, et le
-   quota de minutes du Free Tier GitLab est épuisé (§8.1).
+2. **La chaîne de déploiement aboutit depuis la CI, mais depuis deux jours
+   seulement.** Elle a échoué sept fois avant le 2026-09-22 ; elle a depuis posé
+   staging et production, et exercé un rollback de production suivi d'un
+   redéploiement (§8.1). Le recul est donc faible et les indicateurs le disent :
+   **66,67 % d'échec sur 9 tentatives** ([MONITORING.md](MONITORING.md) §9). Le
+   détail du comportement en exploitation — rollback automatique sur image
+   cassée, sondes sous kubelet, résilience à la perte d'un pod — reste établi par
+   la campagne manuelle de [K8S.md](K8S.md) §14, qu'aucun déploiement de CI ne
+   réexerce.
 
 3. **L'image du back pèse 377 Mo**, dont ~365 pour le JRE. Voir §3 pour la piste
    `jlink`.
