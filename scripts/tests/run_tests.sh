@@ -937,6 +937,60 @@ verifie_fichier_contient "$WORK_DIR/dora-fab.txt" 'mean_time_to_restore defini' 
 verifie_fichier_contient "$WORK_DIR/dora-fab.txt" 'deployment_frequency defini' 'la fréquence se calcule sur des succès'
 
 # ==========================================================================
+# ci/notify.py
+# ==========================================================================
+titre 'ci/notify.py'
+
+verifie_code 2 'sans option obligatoire -> erreur d usage (2)' \
+  python3 "$ROOT_DIR/scripts/ci/notify.py"
+
+verifie_code 0 '--help fonctionne' \
+  python3 "$ROOT_DIR/scripts/ci/notify.py" --help
+verifie_contient 'NOTIFY_WEBHOOK_URL' "l'aide nomme la variable attendue"
+
+# --- La composition du message -------------------------------------------
+verifie_code 0 'le message reprend le statut et le sujet' \
+  env -u NOTIFY_WEBHOOK_URL \
+  CI_PROJECT_PATH='orion/microcrm' CI_COMMIT_REF_NAME='main' \
+  CI_COMMIT_SHORT_SHA='abc1234' CI_JOB_URL='https://gitlab.test/job/7' \
+  python3 "$ROOT_DIR/scripts/ci/notify.py" --statut success --sujet 'Deploiement production' --dry-run
+verifie_contient 'Deploiement production' 'le sujet est repris'
+verifie_contient 'success' 'le statut est repris'
+verifie_contient 'orion/microcrm' 'le projet apparaît dans le contexte'
+verifie_contient 'abc1234' 'le commit apparaît dans le contexte'
+verifie_contient 'https://gitlab.test/job/7' 'le lien du job est joint — c est lui qui porte le journal'
+
+# Le lien du JOB prime sur celui du pipeline : c'est le journal de l'échec
+# qu'on veut ouvrir, pas la vue d'ensemble.
+verifie_code 0 'le lien du pipeline sert de repli' \
+  env -u NOTIFY_WEBHOOK_URL -u CI_JOB_URL \
+  CI_PIPELINE_URL='https://gitlab.test/pipeline/9' \
+  python3 "$ROOT_DIR/scripts/ci/notify.py" --statut failed --sujet 'Pipeline' --dry-run
+verifie_contient 'https://gitlab.test/pipeline/9' 'à défaut de job, le pipeline'
+
+verifie_code 0 'un statut inconnu ne fait pas échouer la composition' \
+  env -u NOTIFY_WEBHOOK_URL \
+  python3 "$ROOT_DIR/scripts/ci/notify.py" --statut bizarre --sujet 'Cas limite' --dry-run
+verifie_contient 'bizarre' 'le statut inconnu est tout de même annoncé'
+
+# --- Les deux partis pris qui protègent le pipeline ------------------------
+# 1. Webhook absent : ce n'est pas une erreur, c'est une absence de
+#    configuration. Un dépôt cloné sans la variable ne doit pas voir tous ses
+#    pipelines rougir sur une notification non configurée.
+verifie_code 0 'webhook absent -> code 0, et le message reste dans le journal' \
+  env -u NOTIFY_WEBHOOK_URL \
+  python3 "$ROOT_DIR/scripts/ci/notify.py" --statut failed --sujet 'Deploiement production'
+verifie_contient 'aucune notification envoyée' "l'absence de configuration est dite explicitement"
+verifie_contient 'Deploiement production' 'le message est tout de même consultable dans le journal'
+
+# 2. Canal injoignable : un déploiement réussi ne doit pas rougir parce que
+#    Slack est en panne. L'adresse ci-dessous ne résout pas.
+verifie_code 0 'webhook injoignable -> code 0, le pipeline n est pas affecté' \
+  env NOTIFY_WEBHOOK_URL='http://webhook.invalide.test/hook' \
+  python3 "$ROOT_DIR/scripts/ci/notify.py" --statut success --sujet 'Deploiement production'
+verifie_contient "n'en est pas affecté" "l'échec d'envoi est journalisé sans faire échouer le job"
+
+# ==========================================================================
 # Bilan
 # ==========================================================================
 printf '\n---------------------------------------------\n'

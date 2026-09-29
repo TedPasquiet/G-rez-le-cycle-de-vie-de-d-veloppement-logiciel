@@ -1,0 +1,44 @@
+# ---------------------------------------------------------------------------
+# Notification — prévenir l'équipe quand le pipeline tombe — 1 job
+# ---------------------------------------------------------------------------
+# Inclus par `.gitlab-ci.yml`. Un fichier à part plutôt qu'un job glissé dans
+# `deploy.yml` : la notification n'appartient à aucun domaine, elle les observe
+# tous. C'est aussi ce que dit son étape — la dernière.
+#
+# CE QUI EST NOTIFIÉ, ET CE QUI NE L'EST PAS.
+#
+# Ce job ne se déclenche que sur ÉCHEC (`when: on_failure`), et c'est délibéré.
+# Un canal qui annonce chaque pipeline vert devient un canal qu'on n'ouvre plus,
+# et le jour où il annonce un échec, personne ne le lit. La règle retenue est
+# celle des alertes utiles : on ne prévient que lorsqu'il y a quelque chose à
+# faire.
+#
+# Les déploiements font exception et sont annoncés dans les DEUX cas — succès
+# comme échec — par l'`after_script` de `.deploy_template`. La différence se
+# justifie : une mise en production réussie est une information que l'équipe
+# attend, pas du bruit.
+#
+# ⚠️ `when: on_failure` sur un job de la DERNIÈRE étape attrape l'échec de
+# n'importe quelle étape précédente. Le placer plus tôt ne verrait que ce qui
+# le précède, et un déploiement raté passerait sous silence.
+notify-echec:
+  image: $PYTHON_IMAGE
+  stage: infra-apply
+  # `needs: []` est volontairement ABSENT : ce job doit attendre tout le reste,
+  # puisque son rôle est de constater le verdict global.
+  script:
+    - |
+      python3 scripts/ci/notify.py \
+        --statut failed \
+        --sujet "Pipeline $CI_PIPELINE_ID" \
+        --detail "Au moins un job a echoue sur $CI_COMMIT_REF_NAME."
+  when: on_failure
+  # Sans `allow_failure: true`, un canal injoignable ferait échouer ce job et
+  # ajouterait un second rouge au pipeline — celui de la notification, qui
+  # masquerait le premier. Le script sort déjà en 0 quoi qu'il arrive ; ceci
+  # est la ceinture en plus des bretelles.
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'
