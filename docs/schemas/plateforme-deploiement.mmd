@@ -10,7 +10,7 @@ flowchart TB
     gh -->|"GitHub Actions : mirror-to-gitlab.yaml<br/>push --prune de toutes les refs"| gl["GitLab<br/>miroir en lecture seule"]
     gl --> pipe
 
-    subgraph pipe["Pipeline GitLab CI : 10 étapes, 36 jobs"]
+    subgraph pipe["Pipeline GitLab CI : 10 étapes, 37 jobs"]
         direction LR
         s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
     end
@@ -33,7 +33,7 @@ flowchart TB
     tf -.-> ns
     j4 --> ns
 
-    subgraph ns["Namespace microcrm-staging ou microcrm-prod"]
+    subgraph ns["Namespace microcrm-staging ou microcrm-production"]
         direction LR
         ing["Ingress<br/>2 hôtes"]
         pb["pod back<br/>1 replica imposé"]

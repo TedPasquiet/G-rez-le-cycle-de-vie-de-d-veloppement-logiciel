@@ -46,7 +46,7 @@ part vers SonarCloud, dont le verdict n'est relu que sur `main`. Le message
 
 ## 4. Les tests des scripts d'automatisation
 
-151 assertions qui vérifient les scripts du pipeline **avant** qu'ils ne servent
+266 assertions qui vérifient les scripts du pipeline **avant** qu'ils ne servent
 en production. Le principe : `kubectl`, `docker`, `trivy` et `k6` sont remplacés
 par de faux programmes placés en tête du `PATH`, qui journalisent ce qu'on leur
 demande et renvoient le code de sortie voulu. On peut ainsi tester les chemins
@@ -75,7 +75,7 @@ faute de `kubeconform` dans l'image.
 
 ## 6. Le pipeline CI/CD
 
-36 jobs répartis en 10 étapes : `lint`, `test`, `quality`, `security`, `infra`,
+37 jobs répartis en 10 étapes : `lint`, `test`, `quality`, `security`, `infra`,
 `build`, `package`, `perf`, `deploy`. Deux jeux de règles pilotent l'ensemble : les jobs
 de contrôle tournent sur toute branche `feature/*`, `release/*`, `hotfix/*`,
 `develop`, `main` et les tags ; les jobs qui produisent ou déploient un artefact

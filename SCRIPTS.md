@@ -31,6 +31,7 @@ scripts/
 │   ├── build_and_push.sh    # construit une image Docker et l'envoie au registry
 │   ├── promote_image.sh     # pose le numéro de version SemVer sur une image déjà construite
 │   ├── check_version.sh     # vérifie que les versions du dépôt suivent le tag de release
+│   ├── notify.py            # annonce le résultat d'une étape sur un webhook d'équipe
 │   ├── quality_gate.py      # vérifie le Quality Gate SonarCloud
 │   └── check_coverage.py    # vérifie le taux de couverture des tests
 ├── deploy/
@@ -231,6 +232,40 @@ scripts/ci/ansible_check.sh --collections   # installe d'abord les collections f
 ```
 
 Le périmètre des rôles est dans [ANSIBLE.md](ANSIBLE.md).
+
+## `ci/notify.py`
+
+Il annonce le résultat d'une étape du pipeline sur un canal d'équipe — tout ce
+qui accepte un webhook JSON (Slack, Mattermost, Discord). Le manque qu'il
+comble : un déploiement raté ne se voyait qu'en ouvrant GitLab.
+
+**Ce qui est notifié.** Les déploiements le sont dans les deux cas, succès comme
+échec, par l'`after_script` de `.deploy_template`. Le reste du pipeline n'est
+notifié qu'en cas d'échec, par le job `notify-echec`. Un canal qui annonce
+chaque pipeline vert devient un canal qu'on n'ouvre plus.
+
+**Deux partis pris qui protègent le pipeline**, et c'est l'essentiel de ce
+script :
+
+- **Webhook absent = rien à faire, et surtout pas un échec.** Le script sort en
+  0 et écrit le message dans le journal du job. Sans cela, un dépôt cloné sans
+  la variable verrait tous ses pipelines rougir sur une notification non
+  configurée — et on apprendrait à ignorer les jobs rouges.
+- **Un envoi qui échoue ne fait jamais échouer le pipeline.** Un canal
+  indisponible ne dit rien sur la qualité du déploiement. Faire rougir un
+  déploiement réussi parce que Slack est en panne serait une fausse alerte.
+
+Options : `--statut` et `--sujet` (obligatoires), `--detail`, `--dry-run`.
+Variable d'environnement : `NOTIFY_WEBHOOK_URL`, jamais dans le dépôt.
+
+```bash
+scripts/ci/notify.py --statut "$CI_JOB_STATUS" --sujet "Déploiement production"
+```
+
+Utilisé par l'`after_script` de `.deploy_template` et par le job
+`notify-echec` (`.gitlab/ci/notify.yml`).
+
+---
 
 ## `ci/quality_gate.py`
 
@@ -449,7 +484,7 @@ dont un XML cassé et un rapport vide pour vérifier les cas d'erreur. Et pour
 `run_k6.sh`, le faux `k6` permet de rejouer les cas qu'on ne peut pas provoquer
 à la demande avec un vrai serveur : seuils dépassés, API injoignable.
 
-Aujourd'hui : **151 tests**, tout passe. Le compte a suivi les lots successifs — 95 avant l'intégration de Terraform et d'Ansible au pipeline, 135 après, 151 depuis le collecteur DORA.
+Aujourd'hui : **266 tests**, tout passe. Le compte a suivi les lots successifs — 95 avant l'intégration de Terraform et d'Ansible au pipeline, 135 après, 151 avec le collecteur DORA, 266 depuis la promotion SemVer, le contrôle de versions et la notification.
 
 ```bash
 # Lancer toute la suite (rien n'est construit ni déployé)

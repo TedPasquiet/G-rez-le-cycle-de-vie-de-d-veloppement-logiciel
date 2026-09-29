@@ -14,7 +14,7 @@ les procédures. Celui-ci décrit les résultats.
 ## 1. L'essentiel, y compris ce qui fâche
 
 Le projet livre une chaîne complète : deux images Docker construites en
-multi-étapes, un pipeline GitLab CI de 10 étapes et 36 jobs, des manifestes
+multi-étapes, un pipeline GitLab CI de 10 étapes et 37 jobs, des manifestes
 Kubernetes en overlays Kustomize doublés d'un chart Helm, l'infrastructure
 décrite en Terraform et le poste provisionné par Ansible, une stack ELK qui
 collecte réellement les logs de l'application, et un collecteur d'indicateurs
@@ -56,10 +56,10 @@ déploiement de CI ne réexerce.
 
 | Domaine                        | Résultat mesuré                                                 | Où c'est établi            |
 | ------------------------------ | --------------------------------------------------------------- | -------------------------- |
-| Pipeline                       | 36 jobs, 10 étapes, toutes images d'outillage figées            | `ARCHITECTURE.md` §4       |
+| Pipeline                       | 37 jobs, 10 étapes, toutes images d'outillage figées            | `ARCHITECTURE.md` §4       |
 | Tests back                     | 115 tests · **97,40 %** lignes · 100 % branches                 | `back/`, job `test-back`   |
 | Tests front                    | 73 tests · **100 %** lignes · 88,6 % branches                   | `front/`, job `test-front` |
-| Tests des scripts              | 151 assertions, sans cluster ni registry                        | `SCRIPTS.md`               |
+| Tests des scripts              | 266 assertions, sans cluster ni registry                        | `SCRIPTS.md`               |
 | Validation des manifestes      | 108 assertions, dont l'équivalence Kustomize ↔ Helm             | `SCRIPTS.md`, `HELM.md` §6 |
 | Playbook Ansible               | `ok=23 changed=0` sur deux exécutions consécutives              | `ANSIBLE.md` §7            |
 | Terraform                      | 3 environnements, `validate` et `plan` en `0`                   | `TERRAFORM.md`             |
@@ -192,7 +192,7 @@ présentés ici tels quels, sans correctif ni explication de rattrapage : à
 | ------------------------ | ------------------ | ----------------------------------- | -------------------------------- |
 | Back (JUnit, JaCoCo)     | **115 tests**      | **97,40 %** lignes · 100 % branches | `test-back`                      |
 | Front (Karma, LCOV)      | **73 tests**       | **100 %** lignes · 88,6 % branches  | `test-front`                     |
-| Scripts d'automatisation | **151 assertions** | —                                   | `test-scripts`                   |
+| Scripts d'automatisation | **266 assertions** | —                                   | `test-scripts`                   |
 | Manifestes et chart      | **108 assertions** | —                                   | `lint-helm` (60 dans `lint-k8s`) |
 
 L'écart entre lignes et branches était le chiffre intéressant du back ; il est
@@ -210,7 +210,7 @@ chose ?
 Deux suites ne testent pas du code applicatif, et ce sont celles qui ont le plus
 de valeur ici.
 
-**Les 151 assertions de `run_tests.sh`** exercent les scripts de déploiement
+**Les 266 assertions de `run_tests.sh`** exercent les scripts de déploiement
 sans cluster ni registry : les vraies commandes `kubectl`, `docker`, `trivy` et
 `k6` sont remplacées par de faux programmes qui notent ce qu'on leur demande et
 renvoient le code de sortie voulu. On vérifie ainsi qu'un `rollout undo` est
@@ -646,7 +646,7 @@ Classées par ce qu'elles débloquent, et non par leur difficulté.
 | ILM sur le data stream                           | S      | Borne la croissance de l'index.                                                                                               |
 | Activer la sécurité d'Elasticsearch              | M      | Condition pour que la stack sorte d'un poste de développement.                                                                |
 | Jouer la reconstruction complète d'environnement | S      | Transforme une procédure écrite en résultat vérifié.                                                                          |
-| `jlink` sur l'image du back                      | M      | 377 Mo → ~150 Mo, en ne gardant que les modules réellement utilisés.                                                          |
+| `jlink` sur l'image du back                      | M      | 390 Mo → ~150 Mo, en ne gardant que les modules réellement utilisés.                                                          |
 | Un CNI qui implémente les NetworkPolicy          | S      | Le cloisonnement cesse d'être décrit pour devenir effectif.                                                                   |
 
 ## 10. Où retrouver les preuves

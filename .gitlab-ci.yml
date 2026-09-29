@@ -36,6 +36,10 @@ include:
   - local: '/.gitlab/ci/security.yml'
   - local: '/.gitlab/ci/infra.yml'
   - local: '/.gitlab/ci/package.yml'
+  # La notification observe tous les domaines sans appartenir à aucun : elle est
+  # dans son propre fichier, et son job vit dans la dernière étape pour voir
+  # l'échec de n'importe laquelle des précédentes.
+  - local: '/.gitlab/ci/notify.yml'
   # La performance n'est pas incluse : elle est DÉCLENCHÉE. Le fichier ci-dessous
   # ne porte qu'un job `trigger:`, qui crée un pipeline enfant — le raisonnement
   # et les deux candidats écartés y sont écrits.

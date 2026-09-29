@@ -85,7 +85,7 @@ flowchart LR
 
 | Image   | Taille     | Base                    | Dont l'application            |
 | ------- | ---------- | ----------------------- | ----------------------------- |
-| `back`  | **399 Mo** | `alpine:3.24` (13,6 Mo) | ~385 Mo (le JRE)              |
+| `back`  | **390 Mo** | `alpine:3.24` (13,6 Mo) | ~376 Mo (le JRE)              |
 | `front` | **86 Mo**  | `alpine:3.24` (13,6 Mo) | ~72 Mo (Caddy, bundle 0,2 Mo) |
 
 Le front tient presque entier dans le binaire Caddy : un bundle Angular optimisé
@@ -94,12 +94,20 @@ pèse quelques centaines de kilo-octets. Ce binaire est recompilé par
 nue — le copier par-dessus l'image Caddy officielle aurait laissé l'original
 dans sa couche et porté l'image à 158 Mo.
 
-Le back, lui, est dominé par `openjdk21-jre-headless` — environ 385 des 399 Mo.
-C'est le prix d'un JRE complet. Un runtime taillé sur mesure avec `jlink`, ne
-contenant que les modules réellement utilisés, ramènerait l'image autour de
-150 Mo. Ce n'est pas fait aujourd'hui : la complexité ajoutée au Dockerfile ne
-se justifie pas encore pour une application de démonstration, mais c'est la
-première optimisation à envisager si la taille devient un sujet.
+Le back, lui, est dominé par `openjdk21-jre-headless` — environ 376 des 390 Mo.
+
+> **Comment ce chiffre est mesuré, et pourquoi il a bougé.** `docker image ls`
+> sur l'image que la CI construit, relevé le 2026-09-24. Ce document a porté
+> successivement 399 puis 377 Mo : le premier venait d'une mesure antérieure à
+> la montée de version, le second de l'image `t2-*` d'avant Spring Boot 3.5.16,
+> encore présente dans le cache local. La taille dépend aussi de
+> l'architecture — les images sont aujourd'hui construites en arm64 par le
+> runner auto-hébergé, là où les runners partagés produisaient de l'amd64.
+> C'est le prix d'un JRE complet. Un runtime taillé sur mesure avec `jlink`, ne
+> contenant que les modules réellement utilisés, ramènerait l'image autour de
+> 150 Mo. Ce n'est pas fait aujourd'hui : la complexité ajoutée au Dockerfile ne
+> se justifie pas encore pour une application de démonstration, mais c'est la
+> première optimisation à envisager si la taille devient un sujet.
 
 ### Contexte de build
 
@@ -139,7 +147,7 @@ de port, qui oblige à conserver `NET_BIND_SERVICE` dans le conteneur même avec
 
 ## 4. Pipeline CI/CD (GitLab)
 
-Le pipeline compte **10 étapes et 36 jobs**, répartis sur **13 fichiers** : une
+Le pipeline compte **10 étapes et 37 jobs**, répartis sur **14 fichiers** : une
 racine qui ne contient aucun job, un fichier par domaine, et un pipeline enfant
 pour la performance (voir `docs/pipeline-ci.md`).
 
@@ -193,7 +201,7 @@ deux sont reliés par un workflow GitHub Actions,
 flowchart LR
     dev([git push]) --> gh[GitHub<br/>dépôt de travail, Pull Requests]
     gh -->|GitHub Actions<br/>miroir automatique| gl[GitLab<br/>miroir + exécution du pipeline]
-    gl --> ci[".gitlab-ci.yml<br/>10 étapes, 36 jobs<br/>13 fichiers"]
+    gl --> ci[".gitlab-ci.yml<br/>10 étapes, 37 jobs<br/>14 fichiers"]
 ```
 
 À chaque push sur n'importe quelle branche ou tag, le workflow recopie toutes les
@@ -285,7 +293,7 @@ flowchart TB
     gh -->|"GitHub Actions : mirror-to-gitlab.yaml<br/>push --prune de toutes les refs"| gl["GitLab<br/>miroir en lecture seule"]
     gl --> pipe
 
-    subgraph pipe["Pipeline GitLab CI : 10 étapes, 36 jobs"]
+    subgraph pipe["Pipeline GitLab CI : 10 étapes, 37 jobs"]
         direction LR
         s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
     end
@@ -308,7 +316,7 @@ flowchart TB
     tf -.-> ns
     j4 --> ns
 
-    subgraph ns["Namespace microcrm-staging ou microcrm-prod"]
+    subgraph ns["Namespace microcrm-staging ou microcrm-production"]
         direction LR
         ing["Ingress<br/>2 hôtes"]
         pb["pod back<br/>1 replica imposé"]
@@ -353,7 +361,7 @@ sous kubelet y ont été observés un par un — c'est consigné dans
 [K8S.md](K8S.md) §14, et aucun déploiement de CI ne réexerce ce détail.
 
 **Ce que le mécanisme devait à sa description.** Les quatre étapes du job de
-déploiement sont couvertes par les 151 assertions de
+déploiement sont couvertes par les 266 assertions de
 `scripts/tests/run_tests.sh`, l'overlay éphémère a un garde-fou qui échoue si la
 substitution d'image ne mord plus ([K8S.md](K8S.md) §6), et c'est précisément cet
 overlay qui a supprimé la révision « placeholder » qui rendait
@@ -699,7 +707,7 @@ aujourd'hui.
    la campagne manuelle de [K8S.md](K8S.md) §14, qu'aucun déploiement de CI ne
    réexerce.
 
-3. **L'image du back pèse 377 Mo**, dont ~365 pour le JRE. Voir §3 pour la piste
+3. **L'image du back pèse 390 Mo**, dont ~376 pour le JRE. Voir §3 pour la piste
    `jlink`.
 
 4. **Le front et l'API sont sur des origines différentes** (deux hôtes

@@ -21,8 +21,14 @@ côté back, **ESLint** et **Prettier** côté front, **ShellCheck** sur les scr
 Et avant même le push, les hooks **husky** (`lint-staged` et `commitlint`) filtrent en
 local.
 
-Le pipeline complet compte 8 stages : `lint` → `test` → `quality` → `security` →
-`build` → `package` → `perf` → `deploy`. Voir [ARCHITECTURE.md](ARCHITECTURE.md) §4.
+Le pipeline complet compte 10 stages : `lint` → `test` → `quality` → `security` →
+`infra` → `build` → `package` → `perf` → `deploy` → `infra-apply`. Voir
+[ARCHITECTURE.md](ARCHITECTURE.md) §4.
+
+L'ordre n'est pas alphabétique : `infra` valide Terraform et Ansible **avant**
+toute compilation — un plan cassé n'a pas besoin d'attendre Gradle pour être
+signalé — et `infra-apply` est en dernier parce que ses jobs manuels
+bloqueraient tout ce qui les suit.
 
 > ⚠️ **Tous ces contrôles sont bloquants, sauf un.**
 >
@@ -510,15 +516,34 @@ pas un motif large qui absorberait du code métier au passage.
 
 ## Récapitulatif des variables CI/CD à créer dans GitLab
 
-| Variable            | Type              | Obligatoire   | Rôle                              |
-| ------------------- | ----------------- | ------------- | --------------------------------- |
-| `SONAR_HOST_URL`    | Variable          | pour Sonar    | URL du serveur SonarQube          |
-| `SONAR_TOKEN`       | Variable (masked) | pour Sonar    | Token d'analyse                   |
-| `NVD_API_KEY`       | Variable (masked) | non           | Accélère Dependency-Check         |
-| `KUBE_CONFIG`       | **File**          | pour déployer | Connexion au cluster Kubernetes   |
-| `STAGING_NAMESPACE` | Variable          | pour déployer | Namespace de staging              |
-| `PROD_NAMESPACE`    | Variable          | pour déployer | Namespace de production           |
-| `CI_REGISTRY*`      | Automatiques      | —             | Fournies par GitLab, rien à faire |
+| Variable             | Type              | Obligatoire   | Rôle                                  |
+| -------------------- | ----------------- | ------------- | ------------------------------------- |
+| `SONAR_HOST_URL`     | Variable          | pour Sonar    | URL du serveur SonarQube              |
+| `SONAR_TOKEN`        | Variable (masked) | pour Sonar    | Token d'analyse                       |
+| `NVD_API_KEY`        | Variable (masked) | non           | Accélère Dependency-Check             |
+| `STAGING_NAMESPACE`  | Variable          | pour déployer | Namespace de staging                  |
+| `PROD_NAMESPACE`     | Variable          | pour déployer | Namespace de production               |
+| `NOTIFY_WEBHOOK_URL` | Variable (masked) | non           | Canal d'équipe pour les notifications |
+| `CI_REGISTRY*`       | Automatiques      | —             | Fournies par GitLab, rien à faire     |
+
+**`KUBE_CONFIG` a disparu de cette liste le 2026-09-23**, et ce n'est pas un
+oubli. Les jobs de déploiement passaient par un kubeconfig stocké en variable ;
+ils passent désormais par le tunnel de l'agent Kubernetes, comme les jobs
+Terraform. Un kubeconfig de poste désigne le serveur d'API en `127.0.0.1`, ce
+qui est structurellement injoignable depuis un conteneur de job. Si la variable
+existe encore dans votre projet, elle ne sert plus à rien et peut être
+supprimée.
+
+**Les deux namespaces sont OBLIGATOIRES dès qu'on déploie.** Sans eux,
+`kubectl apply -n ""` retombe silencieusement sur le namespace `default` du
+contexte : c'est arrivé, l'application a été déployée au mauvais endroit sans
+qu'aucune ligne du journal ne le signale. Le garde-fou `exige_namespace` de
+`.deploy_template` fait désormais échouer le job, mais la variable reste à
+créer.
+
+**`NOTIFY_WEBHOOK_URL` est facultative**, et son absence ne fait rien échouer :
+le message est alors simplement écrit dans le journal du job. Voir
+[SCRIPTS.md](SCRIPTS.md) pour les deux partis pris de `notify.py`.
 
 Côté GitHub, un secret `GITLAB_TOKEN` (scope `write_repository`) est nécessaire au
 workflow de miroir vers GitLab.
