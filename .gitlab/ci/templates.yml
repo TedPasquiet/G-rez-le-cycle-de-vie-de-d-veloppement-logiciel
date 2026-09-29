@@ -69,6 +69,30 @@
 # ce qui donne un résultat différent selon qu'on pousse un ou dix commits.
 # Comparer à `develop` rend le filtre stable — il répond « ce que cette branche
 # change », pas « ce que ce push change ».
+# ⚠️ LES PRÉFIXES DE BRANCHE SONT UNE INTERFACE, pas une préférence de style.
+#
+# Une branche dont le préfixe n'apparaît dans aucune règle ne déclenche AUCUN
+# job. Pas d'échec, pas d'avertissement : un pipeline qui n'existe pas. La
+# merge request passe alors au vert sans qu'un seul contrôle ait tourné, et le
+# défaut n'apparaît qu'une fois fusionné dans `develop`.
+#
+# Ce n'est pas théorique : sept branches créées les 22 et 23 septembre —
+# `fix/…`, `docs/…`, `feat/…` — n'ont jamais rien déclenché, et leurs
+# correctifs n'ont été éprouvés qu'APRÈS fusion. Vérifié sur l'historique des
+# pipelines : zéro pour ces préfixes, un au moins pour chaque `feature/…`.
+#
+# Les préfixes acceptés pour une branche de travail sont donc désormais :
+#
+#     feature/    une évolution
+#     fix/        un correctif
+#     docs/       de la documentation seule
+#
+# `hotfix/` et `release/` restent à part : eux construisent et packagent des
+# images (`.rules_build`, `.rules_package`), parce qu'ils mènent à une
+# livraison. Une branche de travail, elle, vérifie sans produire d'artefact.
+#
+# ⚠️ `feat/` n'est PAS accepté, délibérément : deux noms pour la même chose,
+# c'est la garantie qu'on hésitera. Le nom long fait foi.
 .rules_test_front:
   rules:
     - if: '$CI_MERGE_REQUEST_ID'
@@ -76,7 +100,7 @@
         - 'front/**/*'
         - '.gitlab-ci.yml'
         - '.gitlab/ci/**/*'
-    - if: '$CI_COMMIT_BRANCH =~ /^feature\//'
+    - if: '$CI_COMMIT_BRANCH =~ /^(feature|fix|docs)\//'
       changes:
         paths:
           - 'front/**/*'
@@ -98,7 +122,7 @@
         - 'back/**/*'
         - '.gitlab-ci.yml'
         - '.gitlab/ci/**/*'
-    - if: '$CI_COMMIT_BRANCH =~ /^feature\//'
+    - if: '$CI_COMMIT_BRANCH =~ /^(feature|fix|docs)\//'
       changes:
         paths:
           - 'back/**/*'
@@ -115,7 +139,7 @@
 .rules_test:
   rules:
     - if: '$CI_MERGE_REQUEST_ID'
-    - if: '$CI_COMMIT_BRANCH =~ /^feature\//'
+    - if: '$CI_COMMIT_BRANCH =~ /^(feature|fix|docs)\//'
     - if: '$CI_COMMIT_BRANCH =~ /^release\//'
     - if: '$CI_COMMIT_BRANCH =~ /^hotfix\//'
     - if: '$CI_COMMIT_BRANCH == "develop"'
