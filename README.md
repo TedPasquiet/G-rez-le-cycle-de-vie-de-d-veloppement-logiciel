@@ -11,6 +11,88 @@ L'application MicroCRM est une implémentation simplifiée d'un ["CRM" (Customer
 ![Page d'accueil](./misc/screenshots/screenshot_1.png)
 ![Édition de la fiche d'un individu](./misc/screenshots/screenshot_2.png)
 
+## La chaîne CI/CD, étape par étape
+
+Le pipeline compte **37 jobs répartis en 10 étapes**, définis dans
+[`.gitlab-ci.yml`](./.gitlab-ci.yml) et **14 fichiers** de `.gitlab/ci/`, un par
+domaine. Chaque étape ne laisse passer que ce qu'elle a vérifié.
+
+| Étape         | Ce qu'elle fait                                                                 | Bloquante       | Détail                                                     |
+| ------------- | ------------------------------------------------------------------------------- | --------------- | ---------------------------------------------------------- |
+| `lint`        | Mise en forme, ShellCheck, manifestes k8s, chart Helm, concordance des versions | oui             | [QUALITY.md](./QUALITY.md)                                 |
+| `test`        | Suites back (JUnit), front (Karma) et celle des scripts du dépôt                | oui             | [QUALITY.md](./QUALITY.md) §7                              |
+| `quality`     | SonarQube, SpotBugs, seuil de couverture, force des assertions (PIT)            | oui             | [QUALITY.md](./QUALITY.md) §1-2                            |
+| `security`    | CVE des dépendances, secrets et misconfigurations du dépôt                      | oui             | [QUALITY.md](./QUALITY.md) §3-4                            |
+| `infra`       | `terraform validate`, `terraform plan`, `ansible-lint`                          | oui             | [TERRAFORM.md](./TERRAFORM.md), [ANSIBLE.md](./ANSIBLE.md) |
+| `build`       | Artefacts back (jar) et front (bundle)                                          | oui             | —                                                          |
+| `package`     | Images Docker taguées par SHA, scannées, poussées au registry                   | oui             | [ARCHITECTURE.md](./ARCHITECTURE.md) §4                    |
+| `perf`        | k6 contre l'image qui vient d'être construite                                   | fumée seulement | [QUALITY.md](./QUALITY.md) §5                              |
+| `deploy`      | Déploiement staging et production, retour arrière                               | manuel          | [RELEASE.md](./RELEASE.md)                                 |
+| `infra-apply` | `terraform apply` par environnement, notification d'échec                       | manuel          | [TERRAFORM.md](./TERRAFORM.md) §4                          |
+
+Le raisonnement derrière ce découpage — pourquoi `infra` avant `build`, pourquoi
+`infra-apply` en dernier, pourquoi la performance est un pipeline enfant — est
+dans [docs/pipeline-ci.md](./docs/pipeline-ci.md).
+
+**Configuration, tests et déploiement du pipeline** :
+[VARIABILISATION.md](./VARIABILISATION.md) pour les valeurs externalisées,
+[QUALITY.md](./QUALITY.md) pour la liste des variables CI/CD à créer dans
+GitLab, [K8S.md](./K8S.md) et [HELM.md](./HELM.md) pour les manifestes.
+
+## Les scripts d'automatisation
+
+Toute la logique du pipeline vit dans `scripts/`, jamais dans des blocs YAML :
+un script est testable en local, relu par ShellCheck, et doublé de faux binaires
+qui permettent d'éprouver ses chemins d'échec. **Le but, le fonctionnement et
+les paramètres de chacun sont documentés dans [SCRIPTS.md](./SCRIPTS.md).**
+
+| Script                  | Ce qu'il fait                                                  |
+| ----------------------- | -------------------------------------------------------------- |
+| `lib/common.sh`         | Fonctions communes : journalisation, vérifications, `retry`    |
+| `ci/build_and_push.sh`  | Construit une image Docker et l'envoie au registry             |
+| `ci/promote_image.sh`   | Pose le numéro de version SemVer sur une image déjà construite |
+| `ci/check_version.sh`   | Vérifie que les versions du dépôt suivent le tag de release    |
+| `ci/terraform_check.sh` | `fmt`, `validate`, `plan` et `apply` par environnement         |
+| `ci/ansible_check.sh`   | Contrôle les playbooks et les rôles                            |
+| `ci/quality_gate.py`    | Vérifie le Quality Gate SonarCloud                             |
+| `ci/check_coverage.py`  | Vérifie le taux de couverture des tests du back                |
+| `ci/collect_dora.py`    | Calcule les quatre indicateurs DORA depuis l'API GitLab        |
+| `ci/notify.py`          | Annonce le résultat d'une étape sur un canal d'équipe          |
+| `deploy/deploy.sh`      | Déploie sur Kubernetes, avec retour arrière automatique        |
+| `deploy/rollback.sh`    | Revient à la révision précédente                               |
+| `tests/run_tests.sh`    | **266 assertions** sur tous les scripts ci-dessus              |
+| `tests/validate_k8s.sh` | **96 assertions** sur les manifestes et le chart, sans cluster |
+| `tests/run_k6.sh`       | Lance les scénarios de performance                             |
+
+```bash
+bash scripts/tests/run_tests.sh      # teste les scripts, sans cluster ni registry
+bash scripts/tests/validate_k8s.sh   # valide k8s/ et helm/, sans cluster
+```
+
+## Toute la documentation
+
+| Document                                                                 | Ce qu'on y trouve                                                                                                           |
+| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| [AUDIT.md](./AUDIT.md)                                                   | Audit du processus initial, SWOT, et le **plan de sécurité** (risques, objectifs, contrôles, traitement des vulnérabilités) |
+| [VEILLE.md](./VEILLE.md)                                                 | Veille technologique et justification de chaque outil retenu                                                                |
+| [QUALITY.md](./QUALITY.md)                                               | **Plan de tests et de sécurité** : Sonar, SpotBugs, Dependency-Check, Trivy, k6, supervision, couverture                    |
+| [ARCHITECTURE.md](./ARCHITECTURE.md)                                     | Architecture de l'application et de la plateforme, **schémas IaC**                                                          |
+| [RELEASE.md](./RELEASE.md)                                               | **Plan d'automatisation des releases** : versionnage SemVer, déploiement, rollback, sauvegarde et restauration              |
+| [K8S.md](./K8S.md)                                                       | Manifestes Kubernetes, overlays Kustomize, campagnes de déploiement                                                         |
+| [HELM.md](./HELM.md)                                                     | Le chart, et pourquoi il vient en plus de Kustomize                                                                         |
+| [TERRAFORM.md](./TERRAFORM.md)                                           | Namespaces, quotas, policies, état partagé                                                                                  |
+| [ANSIBLE.md](./ANSIBLE.md)                                               | Provisionnement du poste et du cluster                                                                                      |
+| [MONITORING.md](./MONITORING.md)                                         | Stack ELK, tableaux de bord, **indicateurs DORA**                                                                           |
+| [SCRIPTS.md](./SCRIPTS.md)                                               | Chaque script : son but, son fonctionnement, ses paramètres                                                                 |
+| [VARIABILISATION.md](./VARIABILISATION.md)                               | Ce qui est externalisé, et pourquoi                                                                                         |
+| [GUIDE.md](./GUIDE.md)                                                   | Prise en main rapide du dépôt                                                                                               |
+| [docs/pipeline-ci.md](./docs/pipeline-ci.md)                             | Le découpage du pipeline et les pièges de `include:`/`extends:`                                                             |
+| [docs/plan-optimisation-release.md](./docs/plan-optimisation-release.md) | Plan d'optimisation du cycle de release, par vagues                                                                         |
+
+**Livrables PDF** : [rapport de performance](./docs/rapport-performance.pdf) et
+[documentation d'infrastructure](./docs/documentation-infrastructure.pdf). Les
+captures qui les accompagnent sont dans [`docs/captures/`](./docs/captures/).
+
 ## Code source
 
 ### Organisation

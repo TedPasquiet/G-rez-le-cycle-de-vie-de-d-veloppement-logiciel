@@ -72,7 +72,7 @@ flowchart TB
     dev(["git push / merge"]) --> gh["GitHub<br/>dépôt de travail, Pull Requests"]
     gh -->|"GitHub Actions : mirror-to-gitlab.yaml"| gl["GitLab<br/>miroir en lecture seule"]
     gl --> pipe
-    subgraph pipe["Pipeline GitLab CI : 10 étapes, 36 jobs"]
+    subgraph pipe["Pipeline GitLab CI : 10 étapes, 37 jobs"]
         direction LR
         s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
     end
@@ -90,7 +90,7 @@ flowchart TB
     reg -->|"imagePullSecrets"| j3
     tf -.-> ns
     j4 --> ns
-    subgraph ns["Namespace microcrm-staging ou microcrm-prod"]
+    subgraph ns["Namespace microcrm-staging ou microcrm-production"]
         direction LR
         ing["Ingress, 2 hôtes"]
         pb["pod back, 1 replica imposé"]
@@ -191,7 +191,7 @@ sources ne se retrouvent dans l'image livrée.
 
 | Image   | Taille livrée | Base                    | Dont l'application            |
 | ------- | ------------- | ----------------------- | ----------------------------- |
-| `back`  | **399 Mo**    | `alpine:3.24` (13,6 Mo) | ~385 Mo (le JRE)              |
+| `back`  | **390 Mo**    | `alpine:3.24` (13,6 Mo) | ~376 Mo (le JRE)              |
 | `front` | **86 Mo**     | `alpine:3.24` (13,6 Mo) | ~72 Mo (Caddy, bundle 0,2 Mo) |
 
 Le front tient presque entier dans le binaire Caddy, recompilé par
