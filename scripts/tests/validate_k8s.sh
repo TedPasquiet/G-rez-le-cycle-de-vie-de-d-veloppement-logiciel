@@ -58,6 +58,15 @@
 #     ne signale quoi que ce soit ;
 #   - staging et production produisent des valeurs de ConfigMap différentes
 #     (preuve que les patches d'overlay mordent au lieu d'être silencieux) ;
+#   - le tracing OpenTelemetry du back est câblé : JAVA_TOOL_OPTIONS charge
+#     l'agent, les clés OTEL_* sont présentes, les logs ne sont pas exportés
+#     une seconde fois, chaque overlay étiquette ses traces de son propre
+#     environnement, et l'endpoint OTLP désigne EXACTEMENT le Service
+#     d'APM Server de k8s/elk (nom, namespace, port) — une adresse fausse ne
+#     fait échouer ni l'`apply` ni le démarrage, les traces se perdent en
+#     silence ;
+#   - la stack k8s/elk se construit, contient APM Server avec le socle de
+#     sécurité, et ses images Elastic sont TOUTES à la même version figée ;
 #   - le chart Helm passe les mêmes contrôles que les overlays, et surtout : son
 #     rendu est IDENTIQUE à celui de l'overlay correspondant, au seul label
 #     app.kubernetes.io/managed-by près. Deux descriptions de la même
@@ -76,6 +85,10 @@
 #   REGISTRY_SECRET_NAME  Nom attendu du pull secret (gitlab-registry)
 #   Ce sont les mêmes que celles du .gitlab-ci.yml : le script vérifie donc le
 #   contrat tel que la CI le déclare, pas une copie figée.
+#   K8S_ELK_DIR           Racine de la stack d'observabilité (k8s/elk)
+#   ELK_NAMESPACE         Namespace où elle est déployée (logging) — celui de
+#                         terraform/environments/logging/terraform.tfvars
+#   APM_SERVICE_NAME      Nom du Service d'APM Server (apm-server)
 #
 # Ce que renvoie le script :
 #   0 = toutes les assertions passent · 1 = au moins une a échoué
@@ -97,6 +110,23 @@ CHART_DIR="${HELM_CHART_DIR:-helm/microcrm}"
 NOM_BACK="${APP_BACK_NAME:-back}"
 NOM_FRONT="${APP_FRONT_NAME:-front}"
 NOM_SECRET="${REGISTRY_SECRET_NAME:-gitlab-registry}"
+ELK_DIR="${K8S_ELK_DIR:-k8s/elk}"
+ELK_NS="${ELK_NAMESPACE:-logging}"
+NOM_APM="${APM_SERVICE_NAME:-apm-server}"
+
+# Chemin de l'agent dans l'image du back (back/Dockerfile). Pas une variable
+# d'environnement : c'est un contrat entre deux fichiers du dépôt, pas une
+# coordonnée d'infrastructure.
+AGENT_OTEL='/app/opentelemetry-javaagent.jar'
+# Clés de tracing que la ConfigMap du back doit porter, dans les deux
+# descriptions (Kustomize et Helm). Une clé oubliée ne fait rien échouer : la
+# valeur par défaut de l'agent s'applique, et elle est rarement la bonne
+# (service `unknown_service:java`, export vers localhost:4318...).
+CLES_OTEL='JAVA_TOOL_OPTIONS OTEL_SERVICE_NAME OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_PROTOCOL OTEL_TRACES_EXPORTER OTEL_METRICS_EXPORTER OTEL_LOGS_EXPORTER OTEL_RESOURCE_ATTRIBUTES'
+# Endpoint OTLP attendu, calculé depuis le rendu de k8s/elk (Service d'APM
+# Server). Reste vide si la stack ne se construit pas : l'assertion qui s'en
+# sert échoue alors en le disant, plutôt que de comparer à une chaîne figée.
+otlp_attendu=''
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -152,6 +182,13 @@ verifie_egal() {
   else
     ko "$3" "attendu '$1', obtenu '$2'"
   fi
+}
+
+# valeur_cm <fichier de faits> <clé>
+# Valeur d'une clé de ConfigMap dans un rendu aplati (vide si absente). Le rendu
+# applicatif ne contient qu'une ConfigMap, microcrm-config.
+valeur_cm() {
+  sed -n "s|^ConfigMap/[^ ]* data\.$2 = ||p" "$1" | head -1
 }
 
 # verifie_different <valeur a> <valeur b> <description>
@@ -401,6 +438,174 @@ controles_rendu() {
     ko "$cr_libelle : tous les hôtes d'Ingress sont surchargés par l'overlay" \
       "$cr_invalides hôte(s) en '.invalid' subsistent — le patch d'Ingress ne mord pas"
   fi
+
+  # --- Tracing OpenTelemetry du back ------------------------------------
+  # Aucun de ces défauts ne se voit au déploiement. Sans l'interrupteur,
+  # l'agent embarqué dans l'image dort ; avec un endpoint faux, il échoue en
+  # silence (une ligne d'avertissement par minute) ; avec les logs exportés,
+  # chaque ligne est indexée deux fois. Le seul moment où on les attrape
+  # sans chercher une trace qui n'existe pas, c'est ici.
+  cr_jto="$(valeur_cm "$cr_faits" JAVA_TOOL_OPTIONS)"
+  case "$cr_jto" in
+    *"-javaagent:$AGENT_OTEL"*)
+      ok "$cr_libelle : JAVA_TOOL_OPTIONS charge l'agent OpenTelemetry ($AGENT_OTEL)" ;;
+    *)
+      ko "$cr_libelle : JAVA_TOOL_OPTIONS charge l'agent OpenTelemetry ($AGENT_OTEL)" \
+        "valeur '$cr_jto' — sans -javaagent, l'agent présent dans l'image ne se charge jamais" ;;
+  esac
+
+  cr_manquantes=''
+  for cr_cle in $CLES_OTEL; do
+    [ -n "$(valeur_cm "$cr_faits" "$cr_cle")" ] || cr_manquantes="$cr_manquantes $cr_cle"
+  done
+  if [ -z "$cr_manquantes" ]; then
+    ok "$cr_libelle : les clés de tracing OTEL_* sont toutes présentes dans la ConfigMap"
+  else
+    ko "$cr_libelle : les clés de tracing OTEL_* sont toutes présentes dans la ConfigMap" \
+      "absentes ou vides :$cr_manquantes — l'agent retomberait sur ses valeurs par défaut"
+  fi
+
+  # Les logs arrivent déjà par Filebeat : les exporter aussi en OTLP les
+  # indexerait deux fois, dans deux data streams différents.
+  verifie_egal 'none' "$(valeur_cm "$cr_faits" OTEL_LOGS_EXPORTER)" \
+    "$cr_libelle : OTEL_LOGS_EXPORTER=none (les logs passent déjà par Filebeat)"
+
+  # L'endpoint est comparé au Service réellement décrit dans k8s/elk, pas à une
+  # chaîne recopiée ici : renommer le Service, changer son port ou viser 4318
+  # par réflexe (APM Server multiplexe l'OTLP sur 8200) doit faire échouer ce
+  # contrôle, et seulement ce contrôle.
+  cr_endpoint="$(valeur_cm "$cr_faits" OTEL_EXPORTER_OTLP_ENDPOINT)"
+  if [ -z "$otlp_attendu" ]; then
+    ko "$cr_libelle : OTEL_EXPORTER_OTLP_ENDPOINT désigne le Service d'APM Server" \
+      "endpoint attendu inconnu : le rendu de $ELK_DIR n'a pas fourni le Service '$NOM_APM'"
+  else
+    verifie_egal "$otlp_attendu" "$cr_endpoint" \
+      "$cr_libelle : OTEL_EXPORTER_OTLP_ENDPOINT désigne le Service d'APM Server de $ELK_DIR"
+  fi
+
+  # La base porte une valeur volontairement fausse, comme les hôtes en
+  # `.invalid` de l'Ingress : si elle survit au rendu, le patch de
+  # l'environnement ne mord pas, et ses traces se mêlent à celles de l'autre.
+  cr_attr="$(valeur_cm "$cr_faits" OTEL_RESOURCE_ATTRIBUTES)"
+  case "$cr_attr" in
+    *deployment.environment=non-surcharge*)
+      ko "$cr_libelle : les traces portent l'environnement de l'overlay" \
+        "'$cr_attr' — la valeur de la base a survécu, le patch de ConfigMap ne mord pas" ;;
+    *deployment.environment=?*)
+      ok "$cr_libelle : les traces portent l'environnement de l'overlay ($cr_attr)" ;;
+    *)
+      ko "$cr_libelle : les traces portent l'environnement de l'overlay" \
+        "'$cr_attr' ne contient pas deployment.environment=<env> — Kibana ne distinguerait plus staging de production" ;;
+  esac
+
+  # Les clés MDC trace.id / span.id sont renommées par back/Dockerfile (ENV).
+  # Une ConfigMap qui les redéfinirait l'emporterait sur l'image (`envFrom`
+  # prime sur `ENV`) : une valeur divergente casse la corrélation trace -> logs
+  # sans aucune erreur.
+  if grep -q '^ConfigMap/[^ ]* data\.OTEL_INSTRUMENTATION_COMMON_LOGGING_' "$cr_faits"; then
+    ko "$cr_libelle : la ConfigMap ne redéfinit pas les clés MDC de l'image" \
+      "$(sed -n 's|^ConfigMap/[^ ]* data\.\(OTEL_INSTRUMENTATION_COMMON_LOGGING_[^ ]*\) = .*|\1|p' "$cr_faits" | tr '\n' ' ')— elles appartiennent à back/Dockerfile"
+  else
+    ok "$cr_libelle : la ConfigMap ne redéfinit pas les clés MDC de l'image"
+  fi
+}
+
+# --------------------------------------------------------------------------
+# Contrôles de la stack d'observabilité (k8s/elk), limités à ce qui touche le
+# tracing : APM Server, et la cohérence des versions Elastic.
+#
+# Fonction séparée de controles_rendu parce que le rendu n'a rien de commun :
+# pas de back, pas de front, pas de pull secret (images publiques). Même
+# principe en revanche — pouvoir la rejouer sur un rendu abîmé (--autotest).
+#
+# controles_elk <fichier de faits> <étiquette>
+# --------------------------------------------------------------------------
+controles_elk() {
+  ce_faits="$1"
+  ce_libelle="$2"
+
+  for ce_kind in Deployment Service; do
+    if grep -q "^$ce_kind/$NOM_APM " "$ce_faits"; then
+      ok "$ce_libelle : le $ce_kind '$NOM_APM' est produit"
+    else
+      ko "$ce_libelle : le $ce_kind '$NOM_APM' est produit" \
+        "absent du rendu — les traces du back n'auraient aucun destinataire"
+    fi
+  done
+
+  # Le Service doit viser un port que le conteneur déclare réellement : un
+  # targetPort mal nommé donne un Service sans endpoint, qui accepte la
+  # connexion TCP... et ne la transmet à personne.
+  ce_cible="$(sed -n "s|^Service/$NOM_APM spec\.ports\.0\.targetPort = ||p" "$ce_faits" | head -1)"
+  if [ -n "$ce_cible" ] && {
+    grep -q "^Deployment/$NOM_APM spec\.template\.spec\.containers\.0\.ports\.[0-9]*\.name = $ce_cible\$" "$ce_faits" ||
+      grep -q "^Deployment/$NOM_APM spec\.template\.spec\.containers\.0\.ports\.[0-9]*\.containerPort = $ce_cible\$" "$ce_faits"
+  }; then
+    ok "$ce_libelle : le Service '$NOM_APM' vise un port déclaré par le conteneur ($ce_cible)"
+  else
+    ko "$ce_libelle : le Service '$NOM_APM' vise un port déclaré par le conteneur" \
+      "targetPort '$ce_cible' n'est déclaré ni en ports[].name ni en ports[].containerPort"
+  fi
+
+  # Mêmes sondes que pour l'application : un port non déclaré, et le pod ne
+  # devient jamais Ready.
+  sed -n "s|^Deployment/$NOM_APM spec\.template\.spec\.containers\.0\.\([a-zA-Z]*Probe\)\.httpGet\.port = \(.*\)\$|\1 \2|p" \
+    "$ce_faits" >"$WORK_DIR/sondes-apm.txt"
+  if [ ! -s "$WORK_DIR/sondes-apm.txt" ]; then
+    ko "$ce_libelle : les sondes d'APM Server visent un port déclaré" "aucune sonde httpGet trouvée"
+  else
+    while read -r ce_sonde ce_port; do
+      [ -n "${ce_port:-}" ] || continue
+      if grep -q "^Deployment/$NOM_APM spec\.template\.spec\.containers\.0\.ports\.[0-9]*\.name = $ce_port\$" "$ce_faits"; then
+        ok "$ce_libelle : $NOM_APM/$ce_sonde vise le port '$ce_port', déclaré par le conteneur"
+      else
+        ko "$ce_libelle : $NOM_APM/$ce_sonde vise le port '$ce_port', déclaré par le conteneur" \
+          "ce port n'est pas déclaré en ports[].name"
+      fi
+    done <"$WORK_DIR/sondes-apm.txt"
+  fi
+
+  # Socle de sécurité du projet (K8S.md §11), y compris la racine en lecture
+  # seule : APM Server n'écrit que dans data/, monté en emptyDir. Seul
+  # Elasticsearch a une dérogation, et elle est écrite dans son manifeste.
+  ce_base="^Deployment/$NOM_APM spec\.template\.spec\.containers\.0\.securityContext"
+  for ce_regle in 'runAsNonRoot = true' 'allowPrivilegeEscalation = false' 'readOnlyRootFilesystem = true'; do
+    ce_cle="${ce_regle%% *}"
+    if grep -q "$ce_base\.$ce_regle\$" "$ce_faits"; then
+      ok "$ce_libelle : $NOM_APM a $ce_cle=${ce_regle##* }"
+    else
+      ko "$ce_libelle : $NOM_APM a $ce_cle=${ce_regle##* }" \
+        "absent ou différent au niveau du conteneur"
+    fi
+  done
+
+  # ⚠️ Toutes les images Elastic à la MÊME version, et figée. Kibana refuse
+  # un Elasticsearch d'une autre version ; Filebeat et APM Server écrivent
+  # selon des templates versionnés — un APM Server plus récent que le plugin
+  # `apm-data` d'Elasticsearch produirait des champs que le template ignore.
+  # Un seul tag mobile, ou une montée partielle, et les quatre divergent sans
+  # prévenir.
+  sed -n \
+    -e 's|^Deployment/[^ ]* spec\.template\.spec\.containers\.[0-9]*\.image = \(docker\.elastic\.co/.*\)$|\1|p' \
+    -e 's|^DaemonSet/[^ ]* spec\.template\.spec\.containers\.[0-9]*\.image = \(docker\.elastic\.co/.*\)$|\1|p' \
+    "$ce_faits" >"$WORK_DIR/images-elastic.txt"
+  ce_nb_images="$(wc -l <"$WORK_DIR/images-elastic.txt" | tr -d ' ')"
+  ce_tags="$(sed 's|.*:||' "$WORK_DIR/images-elastic.txt" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  if [ "$ce_nb_images" -lt 4 ]; then
+    ko "$ce_libelle : les 4 composants Elastic ont une image" \
+      "$ce_nb_images image(s) docker.elastic.co trouvée(s) : $(tr '\n' ' ' <"$WORK_DIR/images-elastic.txt")"
+  elif ! grep -q "/apm-server:" "$WORK_DIR/images-elastic.txt"; then
+    ko "$ce_libelle : l'image d'APM Server est une image Elastic officielle" \
+      "aucune image docker.elastic.co/apm/apm-server dans le rendu"
+  else
+    case "$ce_tags" in
+      *' '* | '' | latest | *[!0-9.]*)
+        ko "$ce_libelle : les $ce_nb_images images Elastic partagent une version figée" \
+          "tags trouvés : '$ce_tags' — une seule version numérotée est attendue" ;;
+      *)
+        ok "$ce_libelle : les $ce_nb_images images Elastic partagent une version figée ($ce_tags)" ;;
+    esac
+  fi
 }
 
 # --------------------------------------------------------------------------
@@ -486,6 +691,51 @@ for env in $environnements; do
 done
 
 # --------------------------------------------------------------------------
+# Stack d'observabilité (k8s/elk)
+#
+# Construite AVANT les contrôles par overlay, et pas par ordre d'importance :
+# c'est d'elle que sort l'endpoint OTLP attendu dans la ConfigMap du back. Le
+# nom du Service et son port sont lus dans le rendu, le namespace vient de
+# $ELK_NAMESPACE — le même que `terraform/environments/logging`. Ainsi, un
+# renommage d'un côté fait échouer la comparaison de l'autre.
+# --------------------------------------------------------------------------
+titre "Stack d'observabilité ($ELK_DIR)"
+
+rendu_elk="$WORK_DIR/rendu-elk.yaml"
+if kubectl kustomize "$ELK_DIR" >"$rendu_elk" 2>"$WORK_DIR/erreur-elk.txt"; then
+  ok "la stack $ELK_DIR se construit"
+  aplatis "$rendu_elk" >"$WORK_DIR/faits-elk.txt"
+  controles_elk "$WORK_DIR/faits-elk.txt" 'elk'
+
+  port_apm="$(sed -n "s|^Service/$NOM_APM spec\.ports\.0\.port = ||p" "$WORK_DIR/faits-elk.txt" | head -1)"
+  if [ -n "$port_apm" ]; then
+    # `.svc` sans `.cluster.local` : c'est la forme écrite dans la ConfigMap du
+    # back, portable quel que soit le domaine du cluster.
+    otlp_attendu="http://$NOM_APM.$ELK_NS.svc:$port_apm"
+    ok "endpoint OTLP attendu dans la ConfigMap du back : $otlp_attendu"
+  else
+    ko "le Service '$NOM_APM' expose un port" "aucun spec.ports.0.port dans le rendu"
+  fi
+
+  # La NetworkPolicy qui ouvre APM Server aux namespaces applicatifs est
+  # décrite par Terraform, pas par Kustomize (TERRAFORM.md §3). Son port ne
+  # peut donc être relu ici que dans le HCL — un grep sur la valeur par défaut
+  # de la variable, pas une évaluation. Sur un CNI qui applique la policy, un
+  # écart couperait les traces sans aucune erreur.
+  tf_variables='terraform/environments/logging/variables.tf'
+  port_conteneur="$(sed -n "s|^Deployment/$NOM_APM spec\.template\.spec\.containers\.0\.ports\.0\.containerPort = ||p" "$WORK_DIR/faits-elk.txt" | head -1)"
+  if [ ! -f "$tf_variables" ]; then
+    ignore_section 'port de la NetworkPolicy APM Server' "$tf_variables est absent"
+  else
+    port_tf="$(awk '/^variable "apm_server_port"/ { dans = 1 } dans && /^[[:space:]]*default[[:space:]]*=/ { gsub(/[^0-9]/, ""); print; exit }' "$tf_variables")"
+    verifie_egal "$port_conteneur" "$port_tf" \
+      "la NetworkPolicy Terraform ouvre le port du conteneur APM Server ($tf_variables)"
+  fi
+else
+  ko "la stack $ELK_DIR se construit" "$(cat "$WORK_DIR/erreur-elk.txt")"
+fi
+
+# --------------------------------------------------------------------------
 # Contrôles par overlay
 # --------------------------------------------------------------------------
 for env in $environnements; do
@@ -535,6 +785,15 @@ if [ -s "$WORK_DIR/faits-staging.txt" ] && [ -s "$WORK_DIR/faits-production.txt"
   for env in $environnements; do
     rep="$(sed -n 's|^Deployment/'"$NOM_BACK"' spec\.replicas = ||p' "$WORK_DIR/faits-$env.txt" | head -1)"
     verifie_egal '1' "$rep" "le back reste à 1 replica en $env (base HSQLDB en mémoire)"
+  done
+
+  # Staging et production écrivent dans le MÊME APM Server : seule cette
+  # étiquette les sépare dans Kibana. Plus strict que « différent » : chaque
+  # overlay doit porter SON nom, sans quoi un copier-coller du patch de staging
+  # vers la production étiquetterait les traces de production en staging.
+  for env in $environnements; do
+    verifie_egal "deployment.environment=$env" "$(valeur_cm "$WORK_DIR/faits-$env.txt" OTEL_RESOURCE_ATTRIBUTES)" \
+      "les traces de $env portent deployment.environment=$env"
   done
 else
   ko 'comparaison staging/production' 'un des deux rendus est absent'
@@ -620,6 +879,16 @@ else
   for env in $environnements; do
     if [ -s "$WORK_DIR/faits-$env.txt" ] && [ -s "$WORK_DIR/faits-helm-$env.txt" ]; then
       compare_faits "$WORK_DIR/faits-$env.txt" "$WORK_DIR/faits-helm-$env.txt" "$env"
+      # Redondant avec la comparaison globale, et c'est voulu : en cas d'écart,
+      # celle-ci n'en montre que dix lignes, noyées parmi les autres. Les clés
+      # de tracing sont celles qu'un portage oublie le plus facilement — elles
+      # sont écrites en dur dans le template, pas dans values.yaml — donc
+      # chacune est nommée dans sa propre assertion.
+      for cle in $CLES_OTEL; do
+        verifie_egal "$(valeur_cm "$WORK_DIR/faits-$env.txt" "$cle")" \
+          "$(valeur_cm "$WORK_DIR/faits-helm-$env.txt" "$cle")" \
+          "$env : $cle identique dans Kustomize et dans le chart"
+      done
     else
       ko "$env : équivalence des rendus Kustomize et Helm" \
         'un des deux rendus est absent, la comparaison ne prouverait rien'
@@ -656,6 +925,32 @@ autotest_defaut() {
     ok "auto-test : $ad_desc est bien détecté ($nb_ko_sim assertion(s) en échec)"
   else
     ko "auto-test : $ad_desc est bien détecté" \
+      "aucune assertion n'a échoué sur un rendu pourtant abîmé — l'assertion est décorative"
+  fi
+}
+
+# Même mécanique que autotest_defaut, sur le rendu de k8s/elk et ses contrôles.
+#
+# autotest_elk <description> <commande sed appliquée aux faits>
+autotest_elk() {
+  ae_desc="$1"
+  sed "$2" "$WORK_DIR/faits-elk.txt" >"$WORK_DIR/faits-elk-abimes.txt"
+
+  if cmp -s "$WORK_DIR/faits-elk.txt" "$WORK_DIR/faits-elk-abimes.txt"; then
+    ko "auto-test : $ae_desc" "le défaut n'a pas pu être injecté (les faits sont inchangés)"
+    return 0
+  fi
+
+  silencieux=1
+  nb_ko_sim=0
+  nb_ok_sim=0
+  controles_elk "$WORK_DIR/faits-elk-abimes.txt" 'auto-test'
+  silencieux=0
+
+  if [ "$nb_ko_sim" -gt 0 ]; then
+    ok "auto-test : $ae_desc est bien détecté ($nb_ko_sim assertion(s) en échec)"
+  else
+    ko "auto-test : $ae_desc est bien détecté" \
       "aucune assertion n'a échoué sur un rendu pourtant abîmé — l'assertion est décorative"
   fi
 }
@@ -717,8 +1012,36 @@ if [ "${1:-}" = '--autotest' ]; then
       "/spec\.template\.spec\.imagePullSecrets\.[0-9]*\.name = /d"
     autotest_defaut "un imagePullSecrets pointant sur un autre Secret que celui de la CI" \
       "s|\(spec\.template\.spec\.imagePullSecrets\.[0-9]*\.name\) = .*\$|\1 = autre-secret|"
+    autotest_defaut "un JAVA_TOOL_OPTIONS absent (agent OpenTelemetry jamais chargé)" \
+      "/data\.JAVA_TOOL_OPTIONS = /d"
+    autotest_defaut "une clé OTEL_* oubliée dans la ConfigMap" \
+      "/data\.OTEL_SERVICE_NAME = /d"
+    autotest_defaut "des logs exportés en OTLP en plus de Filebeat" \
+      "s|\(data\.OTEL_LOGS_EXPORTER\) = .*\$|\1 = otlp|"
+    autotest_defaut "un endpoint OTLP sur le port 4318 (APM Server n'écoute que sur 8200)" \
+      "s|\(data\.OTEL_EXPORTER_OTLP_ENDPOINT = .*\):[0-9]*\$|\1:4318|"
+    autotest_defaut "un attribut d'environnement resté à la valeur de la base" \
+      "s|\(data\.OTEL_RESOURCE_ATTRIBUTES\) = .*\$|\1 = deployment.environment=non-surcharge|"
+    autotest_defaut "une clé MDC de l'image redéfinie par la ConfigMap" \
+      "s|data\.OTEL_TRACES_EXPORTER = .*\$|data.OTEL_INSTRUMENTATION_COMMON_LOGGING_TRACE_ID_KEY = trace_id|"
   else
     ko 'auto-test' 'le rendu de staging est absent, impossible de jouer les défauts'
+  fi
+
+  titre 'Auto-test des assertions de la stack d'"'"'observabilité'
+  if [ -s "$WORK_DIR/faits-elk.txt" ]; then
+    autotest_elk "un APM Server d'une autre version que la stack" \
+      "s|\(apm-server:\)8[0-9.]*\$|\18.19.8|"
+    autotest_elk "une image Elastic en tag mobile latest" \
+      "s|\(kibana/kibana\):.*\$|\1:latest|"
+    autotest_elk "un Service APM Server absent (renommé)" \
+      "s|^Service/$NOM_APM |Service/apm |"
+    autotest_elk "un Service APM Server qui vise un port non déclaré" \
+      "s|^\(Service/$NOM_APM spec\.ports\.0\.targetPort\) = .*\$|\1 = otlp|"
+    autotest_elk "un APM Server sans racine en lecture seule" \
+      "s|^\(Deployment/$NOM_APM .*\.readOnlyRootFilesystem\) = true\$|\1 = false|"
+  else
+    ko 'auto-test elk' "le rendu de $ELK_DIR est absent, impossible de jouer les défauts"
   fi
 
   titre "Auto-test de l'assertion d'équivalence"

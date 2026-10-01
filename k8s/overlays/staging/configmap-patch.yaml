@@ -10,3 +10,6 @@ data:
   # URL que le navigateur utilisera pour joindre l'API : l'hôte d'API déclaré
   # dans ingress-patch.yaml, et non un nom de Service interne au cluster.
   FRONT_API_BASE_URL: https://api.microcrm.staging.example.com
+  # Étiquette des traces dans Kibana APM (filtre « Environment »). Staging et
+  # production partagent le même APM Server : c'est elle qui les sépare.
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment=staging

@@ -14,6 +14,12 @@
 #
 # Vide par défaut : la base Kustomize ne porte pas ces labels, elle n'appartient
 # à aucun environnement. Les deux labels ne sont alors pas émis du tout.
+#
+# Pilote AUSSI l'étiquette des traces OpenTelemetry
+# (`OTEL_RESOURCE_ATTRIBUTES=deployment.environment=<env>`, dans
+# templates/configmap.yaml) — l'équivalent du patch de ConfigMap que chaque
+# overlay Kustomize écrit à la main. Vide, elle vaut `non-surcharge`, comme
+# dans la base.
 environment: ''
 
 # Coordonnées de l'image. Elles ne varient pas entre environnements mais entre
