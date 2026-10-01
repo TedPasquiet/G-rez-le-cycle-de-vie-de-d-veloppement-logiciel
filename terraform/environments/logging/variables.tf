@@ -51,3 +51,31 @@ variable "container_limits" {
     max_memory             = string
   })
 }
+
+variable "apm_client_namespaces" {
+  description = <<-EOT
+    Namespaces autorisés à envoyer des traces à APM Server (port 8200). Ce sont
+    ceux des environnements applicatifs, dont les pods `back` portent l'agent
+    OpenTelemetry.
+  EOT
+  type        = list(string)
+  # Sans défaut, comme `namespace` : une valeur de repli ouvrirait APM Server au
+  # mauvais environnement en cas d'oubli, et l'erreur serait muette.
+  #
+  # ⚠️ Liste vide = policy qui sélectionne APM Server sans aucune source
+  # autorisée, donc un refus TOTAL dès qu'un CNI l'applique. La validation
+  # l'interdit plutôt que de laisser les traces se perdre en silence.
+  validation {
+    condition     = length(var.apm_client_namespaces) > 0
+    error_message = "apm_client_namespaces doit contenir au moins un namespace, sinon APM Server ne reçoit plus rien."
+  }
+}
+
+variable "apm_server_port" {
+  description = "Port d'écoute du CONTENEUR APM Server (OTLP/HTTP, OTLP/gRPC et intake natif, multiplexés)."
+  type        = number
+  # 8200 : celui de k8s/elk/apm-server-deployment.yaml. Une valeur fausse ici
+  # ne casse rien de visible au `plan` ; sur un CNI qui applique la policy, les
+  # traces tombent et l'agent Java n'en dit qu'une ligne par minute.
+  default = 8200
+}

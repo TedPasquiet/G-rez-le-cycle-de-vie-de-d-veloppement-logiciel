@@ -34,3 +34,129 @@ data:
   # Le back la reçoit par `envFrom` (toute la ConfigMap) ; le front ne prend
   # qu'une clé nommée et n'est donc pas concerné. Voir MONITORING.md.
   SPRING_PROFILES_ACTIVE: container
+
+  # --------------------------------------------------------------------------
+  # Tracing distribué — agent OpenTelemetry Java (2.x) du back
+  # --------------------------------------------------------------------------
+  # Toutes les clés qui suivent ne concernent que le back, qui reçoit la
+  # ConfigMap entière par `envFrom`. Le front ne prend que FRONT_API_BASE_URL
+  # par `configMapKeyRef` : aucune n'arrive jusqu'à lui.
+  #
+  # ⚠️ Elles existent en DEUX exemplaires, ici et dans
+  # helm/microcrm/templates/configmap.yaml, comme SPRING_PROFILES_ACTIVE.
+  # scripts/tests/validate_k8s.sh compare les deux rendus clé par clé.
+
+  # L'interrupteur. L'image du back contient l'agent
+  # (/app/opentelemetry-javaagent.jar) mais ne le charge PAS d'elle-même
+  # (back/Dockerfile) : c'est cette variable, lue par la JVM au démarrage, qui
+  # l'active. JAVA_TOOL_OPTIONS plutôt qu'un `-javaagent` dans la commande du
+  # conteneur : la commande reste celle de l'image, et désactiver le tracing se
+  # résume à retirer cette clé.
+  #
+  # ⚠️ Couplage DUR avec l'image : si le fichier est absent, la JVM refuse de
+  # démarrer (« Error opening zip file or JAR manifest missing »), et le pod
+  # boucle en CrashLoopBackOff. Or `kubectl rollout undo` (rollback.sh, et
+  # l'annulation automatique de deploy.sh) ramène l'IMAGE précédente mais PAS
+  # cette ConfigMap. Revenir à une image construite AVANT l'ajout de l'agent
+  # avec cette clé en place, c'est un pod neuf qui ne démarre jamais — l'ancien
+  # reste en service grâce à maxUnavailable: 0, mais le rollback n'aboutit pas.
+  # Dans ce cas précis, retirer d'abord cette clé.
+  #
+  # ⚠️ Effets de bord connus : la JVM écrit « Picked up JAVA_TOOL_OPTIONS: ... »
+  # sur stderr au démarrage — une ligne de TEXTE au milieu des logs JSON, que
+  # Filebeat indexe telle quelle (add_error_key: false). Et la variable vaut
+  # pour TOUTE JVM lancée dans le conteneur : un `kubectl exec ... java
+  # -version` chargera l'agent lui aussi.
+  JAVA_TOOL_OPTIONS: -javaagent:/app/opentelemetry-javaagent.jar
+
+  # Nom du service tel que Kibana > Observability > APM l'affiche. Sans lui,
+  # l'agent déduit un nom du jar — ou pire `unknown_service:java`.
+  #
+  # ⚠️ Il doit être IDENTIQUE au `service.name` des logs ECS, qui vient de
+  # `spring.application.name` (back/src/main/resources/application.properties).
+  # L'onglet « Logs » d'un service dans Kibana APM filtre sur ce champ : avec
+  # deux noms différents (`microcrm-back` ici, `microcrm` dans les logs), le
+  # lien trace → log par trace.id tient, mais cet onglet reste vide. On aligne
+  # les traces sur les logs plutôt que l'inverse, pour ne pas changer le JSON
+  # déjà indexé.
+  OTEL_SERVICE_NAME: microcrm
+
+  # APM Server de la stack de supervision (k8s/elk/apm-server-*.yaml).
+  #
+  # ⚠️ Le namespace `logging` est écrit en dur, ce qui déroge à la règle de
+  # K8S.md §4 (« Kustomize décrit la forme, la CI fournit les coordonnées »), et
+  # c'est inévitable : une adresse vers un AUTRE namespace doit le nommer. La
+  # forme courte `apm-server` se résoudrait dans le namespace de l'application,
+  # où il n'existe pas. Même nature d'exception que le ClusterRoleBinding de
+  # Filebeat (k8s/elk/filebeat-rbac.yaml).
+  #
+  # `.svc` sans `.cluster.local` : le suffixe de domaine du cluster est un
+  # réglage de chaque cluster ; les domaines de recherche du resolv.conf du pod
+  # complètent le nom, quel qu'il soit.
+  #
+  # ⚠️ Port 8200 et non 4318 : APM Server multiplexe l'OTLP sur son port unique
+  # (apm-server-config.yaml). Et PAS de `/v1/traces` à la fin : en
+  # http/protobuf, l'agent ajoute lui-même le chemin propre à chaque signal à
+  # cette URL de base. L'écrire ici donnerait `/v1/traces/v1/traces`, un 404.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://apm-server.logging.svc:8200
+
+  # http/protobuf plutôt que grpc, alors qu'APM Server accepte les deux sur le
+  # même port :
+  #   - c'est la valeur par défaut de l'agent 2.x — l'écrire ne change rien au
+  #     comportement, mais l'endpoint ci-dessus n'a de sens qu'avec ce protocole
+  #     (voir la remarque sur `/v1/traces`), il faut donc les lire ensemble ;
+  #   - du HTTP/1.1 ordinaire, qu'un `curl` suffit à tester, là où gRPC impose
+  #     HTTP/2 et un outil dédié pour le moindre diagnostic.
+  # ⚠️ Protobuf, pas JSON : l'OTLP/HTTP d'APM Server 8.19 REFUSE le JSON
+  # (« failed to unmarshal request body », 400). Vérifié.
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+
+  # Les traces partent en OTLP — c'est la raison d'être de tout ce bloc. Valeur
+  # par défaut de l'agent, écrite pour que les trois signaux se lisent côte à
+  # côte.
+  OTEL_TRACES_EXPORTER: otlp
+
+  # Métriques : désactivées, en connaissance de cause.
+  #
+  # APM Server les ingérerait sans difficulté (/v1/metrics est ouvert). Mais ce
+  # dont l'application APM de Kibana a besoin — débit, latence, taux d'erreur
+  # par transaction — APM Server le CALCULE LUI-MÊME à partir des traces
+  # (agrégations `metrics-apm.transaction.*`, vérifié : la liste des services
+  # affiche latence et débit pour un service qui n'a envoyé que des spans).
+  # L'export OTLP ajouterait les métriques JVM et les histogrammes HTTP de
+  # l'agent, toutes les 60 s, dans un data stream supplémentaire
+  # (`metrics-apm.app.*`) — du volume sur un PVC de 5 Gio, pour des séries
+  # dont aucun écran de ce lot n'a besoin. Non vérifié, donc non promis : ce
+  # que l'onglet « Metrics » de Kibana 8.19 en ferait pour un agent
+  # OpenTelemetry.
+  #
+  # Réversible sans reconstruire l'image : passer cette valeur à `otlp`.
+  OTEL_METRICS_EXPORTER: none
+
+  # Logs : désactivés, et ce n'est pas négociable. Ils arrivent DÉJÀ dans
+  # Elasticsearch par Filebeat (MONITORING.md §2). Les exporter aussi en OTLP
+  # les indexerait DEUX fois, dans deux data streams différents
+  # (`microcrm-logs-*` et `logs-apm.app.*`), et chaque ligne apparaîtrait en
+  # double sous une trace. La corrélation ne passe pas par là : l'agent écrit
+  # `trace.id` et `span.id` dans le MDC, et l'encodeur ECS les recopie dans le
+  # JSON que Filebeat collecte.
+  #
+  # ⚠️ Les deux variables qui RENOMMENT ces clés MDC
+  # (OTEL_INSTRUMENTATION_COMMON_LOGGING_TRACE_ID_KEY / _SPAN_ID_KEY) sont
+  # posées par back/Dockerfile, pas ici : elles décrivent le format des logs de
+  # l'image. Ne PAS les redéfinir dans cette ConfigMap — `envFrom` l'emporte
+  # sur l'`ENV` de l'image, et une valeur divergente casserait la corrélation
+  # trace -> logs sans aucune erreur.
+  OTEL_LOGS_EXPORTER: none
+
+  # Environnement, tel que Kibana le propose dans son filtre « Environment »
+  # (APM Server traduit `deployment.environment` en `service.environment`).
+  # Staging et production écrivent dans le MÊME APM Server : sans cet
+  # attribut, leurs traces seraient indiscernables.
+  #
+  # Valeur de base volontairement fausse, comme les hôtes en `.invalid` de
+  # l'Ingress (K8S.md §7) : chaque overlay DOIT la remplacer, et une trace
+  # étiquetée `non-surcharge` dans Kibana désigne un patch oublié au lieu de se
+  # faire passer pour un vrai environnement. validate_k8s.sh échoue si elle
+  # survit au rendu d'un overlay.
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment=non-surcharge

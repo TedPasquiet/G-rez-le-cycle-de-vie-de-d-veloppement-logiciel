@@ -72,6 +72,17 @@
               accompagne l'événement. C'est ce qui rend la pile d'exception
               interrogeable au lieu d'être noyée dans des lignes de continuation
               que le collecteur découperait en autant d'événements distincts.
+
+              Le MDC est recopié tel quel, une clé = un champ JSON. C'est par là
+              qu'arrive la corrélation avec les traces : quand l'agent
+              OpenTelemetry est chargé (JAVA_TOOL_OPTIONS, voir back/Dockerfile),
+              il pose `trace.id` et `span.id` dans le MDC de chaque événement
+              émis pendant une requête tracée, et Kibana relie la ligne à sa
+              trace APM. Rien à déclarer ici : les noms de clés sont réglés dans
+              le Dockerfile (OTEL_INSTRUMENTATION_COMMON_LOGGING_*_KEY), et sans
+              agent ces champs sont simplement absents — le format ne change pas.
+              ⚠️ Remplacer cet encodeur par un pattern texte ou un encodeur qui
+              filtre le MDC ferait disparaître la corrélation sans aucune erreur.
             -->
             <encoder class="co.elastic.logging.logback.EcsEncoder">
                 <!-- Discrimine les flux quand le back et d'autres services partagent un index. -->

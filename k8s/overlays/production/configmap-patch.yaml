@@ -9,3 +9,11 @@ data:
   # URL que le navigateur utilisera pour joindre l'API : l'hôte d'API déclaré
   # dans ingress-patch.yaml, et non un nom de Service interne au cluster.
   FRONT_API_BASE_URL: https://api.microcrm.example.com
+  # Étiquette des traces dans Kibana APM (filtre « Environment »). Staging et
+  # production partagent le même APM Server : c'est elle qui les sépare.
+  #
+  # ⚠️ Les traces de production arrivent bien dans Kibana, mais leurs LOGS non :
+  # Filebeat ne collecte que microcrm-staging (MICROCRM_NAMESPACE,
+  # k8s/elk/elk-config.yaml). L'onglet « Logs » d'une trace de production
+  # restera donc vide tant que ce périmètre n'est pas élargi.
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment=production

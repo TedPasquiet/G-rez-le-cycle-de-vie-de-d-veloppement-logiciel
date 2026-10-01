@@ -158,7 +158,18 @@ spec:
               mountPath: /usr/share/kibana/data
             - name: tmp
               mountPath: /tmp
+            # subPath : seul kibana.yml est superposé. Monter le répertoire
+            # config/ entier masquerait node.options, livré par l'image.
+            # Voir kibana-config.yaml pour la raison d'être de ce fichier : la
+            # corrélation trace -> logs de l'application APM.
+            - name: config
+              mountPath: /usr/share/kibana/config/kibana.yml
+              subPath: kibana.yml
+              readOnly: true
       volumes:
+        - name: config
+          configMap:
+            name: kibana-config
         # emptyDir et non PVC : tout ce que Kibana persiste durablement (vues,
         # index patterns, tableaux de bord) est stocké dans Elasticsearch, pas
         # ici. Perdre ce répertoire au redémarrage ne coûte qu'un cache à

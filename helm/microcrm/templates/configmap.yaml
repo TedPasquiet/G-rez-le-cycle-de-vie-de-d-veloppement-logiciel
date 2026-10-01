@@ -38,3 +38,46 @@ data:
   # environnement à l'autre. L'exposer n'offrirait qu'un moyen de désactiver la
   # journalisation structurée d'un seul côté.
   SPRING_PROFILES_ACTIVE: container
+
+  # --------------------------------------------------------------------------
+  # Tracing distribué — agent OpenTelemetry Java (2.x) du back
+  # --------------------------------------------------------------------------
+  # Portage à l'identique de k8s/base/configmap.yaml, qui fait foi (HELM.md §3)
+  # et porte la justification détaillée de chaque clé. Ne sont repris ici que
+  # les pièges qu'il faut avoir sous les yeux en modifiant ce fichier.
+  #
+  # Tout est écrit en dur, sauf l'environnement : ces valeurs ne varient pas
+  # d'un environnement à l'autre, et les exposer dans values.yaml n'offrirait
+  # qu'un moyen de faire diverger le chart des overlays.
+
+  # L'interrupteur de l'agent, embarqué mais inactif dans l'image
+  # (back/Dockerfile).
+  # ⚠️ Couplage dur avec l'image : sur une image construite avant l'ajout de
+  # l'agent, la JVM ne démarre plus — y compris après un `rollout undo`, qui
+  # ramène l'image mais pas cette ConfigMap.
+  JAVA_TOOL_OPTIONS: -javaagent:/app/opentelemetry-javaagent.jar
+  # Identique au service.name des logs (spring.application.name) : voir
+  # k8s/base/configmap.yaml.
+  OTEL_SERVICE_NAME: microcrm
+  # ⚠️ Namespace `logging` écrit en dur : une adresse vers un autre namespace
+  # doit le nommer (exception à K8S.md §4). Port 8200 et non 4318 (APM Server
+  # multiplexe l'OTLP), et pas de `/v1/traces` : l'agent l'ajoute lui-même.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://apm-server.logging.svc:8200
+  # Protobuf : l'OTLP/HTTP d'APM Server 8.19 refuse le JSON.
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_TRACES_EXPORTER: otlp
+  # Débit, latence et erreurs sont recalculés par APM Server depuis les traces.
+  OTEL_METRICS_EXPORTER: none
+  # ⚠️ Les logs passent déjà par Filebeat : les exporter aussi les doublerait.
+  # Les clés MDC trace.id / span.id sont renommées par back/Dockerfile — ne pas
+  # les redéfinir ici, `envFrom` l'emporterait sur l'`ENV` de l'image.
+  OTEL_LOGS_EXPORTER: none
+  # Seule clé du bloc qui varie : dérivée de `environment`, la valeur qui pilote
+  # déjà les labels `instance` et `environment` (_helpers.tpl). Une seule
+  # valeur à renseigner par environnement, donc aucune occasion de désaccord
+  # entre l'étiquette des pods et celle des traces.
+  #
+  # Sans `environment` (rendu de la base), la valeur retombe sur le même
+  # `non-surcharge` que k8s/base : volontairement fausse, pour qu'un oubli se
+  # voie dans Kibana au lieu de se faire passer pour un vrai environnement.
+  OTEL_RESOURCE_ATTRIBUTES: {{ printf "deployment.environment=%s" (.Values.environment | default "non-surcharge") | quote }}

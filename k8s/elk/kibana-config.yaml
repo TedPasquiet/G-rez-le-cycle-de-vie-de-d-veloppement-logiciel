@@ -1,0 +1,55 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kibana-config
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/component: logging
+data:
+  # ⚠️ Un fichier, alors que tout le reste de Kibana se règle par variables
+  # d'environnement (kibana-deployment.yaml) — et ce n'est pas par goût.
+  #
+  # Le seul réglage qui l'impose est `uiSettings.overrides`, et l'entrypoint de
+  # l'image (/usr/local/bin/kibana-docker) ne traduit en réglage qu'une LISTE
+  # FERMÉE de variables : `uiSettings.*` n'y figure pas. Vérifié dans l'image
+  # 8.19.7. Une variable UISETTINGS_OVERRIDES_... serait ignorée sans un mot.
+  #
+  # Ce fichier REMPLACE celui de l'image, qui contient quatre lignes. Elles sont
+  # recopiées ci-dessous pour que le montage ne retire rien : `server.host` et
+  # `elasticsearch.hosts` sont de toute façon redonnés par les variables
+  # d'environnement du Deployment, qui priment sur le fichier.
+  kibana.yml: |
+    # --- Recopié du kibana.yml de l'image docker.elastic.co/kibana/kibana:8.19.7
+    server.host: '0.0.0.0'
+    server.shutdownTimeout: '5s'
+    elasticsearch.hosts: ['http://elasticsearch:9200']
+    monitoring.ui.container.elasticsearch.enabled: true
+
+    # --- Corrélation trace -> logs dans l'application APM
+    #
+    # ⚠️ Sans ce réglage, l'onglet « Logs » d'une trace reste VIDE alors que les
+    # logs portent bien le `trace.id`.
+    #
+    # L'application APM ne cherche les logs d'une trace que dans les « sources
+    # de logs » d'Observability, dont la valeur par défaut en 8.19 est
+    # `logs-*-*, logs-*, filebeat-*` (DEFAULT_LOG_SOURCES du plugin
+    # logs-data-access, relu dans l'image). Or Filebeat écrit dans
+    # `microcrm-logs-*` — un nom choisi pour qu'un `_cat/indices` dise à qui
+    # appartient la donnée (filebeat-config.yaml). Aucun des trois motifs ne le
+    # couvre : `logs-*` exige que le nom COMMENCE par `logs-`.
+    #
+    # On AJOUTE le motif du projet aux trois motifs par défaut plutôt que de les
+    # remplacer : les retirer casserait d'autres écrans d'Observability pour
+    # rien.
+    #
+    # `overrides` et non un réglage posé à la main dans « Advanced settings » :
+    # un réglage d'interface vit dans Elasticsearch (objet `config`) et
+    # disparaît avec lui — même raisonnement que pour les tableaux de bord
+    # (MONITORING.md §8), le livrable est un fichier. Contrepartie : le champ
+    # apparaît verrouillé dans l'interface, et c'est voulu.
+    uiSettings.overrides:
+      'observability:logSources':
+        - 'logs-*-*'
+        - 'logs-*'
+        - 'filebeat-*'
+        - 'microcrm-logs-*'
