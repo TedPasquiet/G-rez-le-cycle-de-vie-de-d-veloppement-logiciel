@@ -1,0 +1,97 @@
+{
+  "name": "MicroCRM - sécurité - chemins sensibles demandés au front de staging",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "enabled": true,
+  "tags": ["microcrm", "famille:securite", "severite:haute"],
+  "schedule": {
+    "interval": "1m"
+  },
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM microcrm-logs-* | WHERE kubernetes.namespace == \"microcrm-staging\" AND kubernetes.container.name == \"front\" AND TO_LOWER(caddy.request.uri) RLIKE \"\"\".*(\\.env|\\.git|\\.aws|\\.\\.|%2e%2e|etc/passwd|id_rsa|wp-|phpmyadmin|\\.php|cgi-bin|actuator).*\"\"\" | STATS valeur = COUNT(*), chemins = VALUES(caddy.request.uri) | WHERE valeur >= 1 | EVAL detail = MV_CONCAT(MV_SLICE(MV_SORT(chemins), 0, 9), \" \") | KEEP valeur, detail"
+    },
+    "timeField": "@timestamp",
+    "timeWindowSize": 5,
+    "timeWindowUnit": "m",
+    "threshold": [0],
+    "thresholdComparator": ">",
+    "size": 10
+  },
+  "actions": [
+    {
+      "id": "microcrm-alerts-index",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "securite",
+            "severite": "haute",
+            "seuil": "1 requête ou plus vers un chemin sensible en 5 min",
+            "unite": "requêtes",
+            "statut": "declenchee",
+            "valeur": "{{#context.hits}}{{_source.valeur}}{{/context.hits}}",
+            "detail": "{{#context.hits}}{{_source.detail}}{{/context.hits}}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "warn",
+        "message": "ALERTE [securite/haute] {{rule.name}} - valeur {{#context.hits}}{{_source.valeur}}{{/context.hits}} requêtes (seuil : 1 requête ou plus vers un chemin sensible en 5 min) - {{#context.hits}}{{_source.detail}}{{/context.hits}}"
+      }
+    },
+    {
+      "id": "microcrm-alerts-index",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "securite",
+            "severite": "haute",
+            "seuil": "1 requête ou plus vers un chemin sensible en 5 min",
+            "unite": "requêtes",
+            "statut": "retablie",
+            "detail": "la condition n'est plus remplie"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "info",
+        "message": "RETABLIE [securite] {{rule.name}}"
+      }
+    }
+  ]
+}

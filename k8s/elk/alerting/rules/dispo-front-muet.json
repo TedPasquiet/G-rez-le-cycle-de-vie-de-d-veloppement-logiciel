@@ -1,0 +1,97 @@
+{
+  "name": "MicroCRM - disponibilité - front de staging muet",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "enabled": true,
+  "tags": ["microcrm", "famille:disponibilite", "severite:critique"],
+  "schedule": {
+    "interval": "1m"
+  },
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM microcrm-logs-* | WHERE kubernetes.namespace == \"microcrm-staging\" AND kubernetes.container.name == \"front\" AND caddy.status IS NOT NULL | STATS valeur = COUNT(*) | WHERE valeur < 1 | EVAL detail = \"aucune ligne du journal d'accès Caddy : front arrêté, ou collecte Filebeat interrompue\""
+    },
+    "timeField": "@timestamp",
+    "timeWindowSize": 3,
+    "timeWindowUnit": "m",
+    "threshold": [0],
+    "thresholdComparator": ">",
+    "size": 10
+  },
+  "actions": [
+    {
+      "id": "microcrm-alerts-index",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "disponibilite",
+            "severite": "critique",
+            "seuil": "moins de 1 requête servie en 3 min",
+            "unite": "requêtes",
+            "statut": "declenchee",
+            "valeur": "{{#context.hits}}{{_source.valeur}}{{/context.hits}}",
+            "detail": "{{#context.hits}}{{_source.detail}}{{/context.hits}}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "warn",
+        "message": "ALERTE [disponibilite/critique] {{rule.name}} - valeur {{#context.hits}}{{_source.valeur}}{{/context.hits}} requêtes (seuil : moins de 1 requête servie en 3 min) - {{#context.hits}}{{_source.detail}}{{/context.hits}}"
+      }
+    },
+    {
+      "id": "microcrm-alerts-index",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "disponibilite",
+            "severite": "critique",
+            "seuil": "moins de 1 requête servie en 3 min",
+            "unite": "requêtes",
+            "statut": "retablie",
+            "detail": "la condition n'est plus remplie"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "info",
+        "message": "RETABLIE [disponibilite] {{rule.name}}"
+      }
+    }
+  ]
+}

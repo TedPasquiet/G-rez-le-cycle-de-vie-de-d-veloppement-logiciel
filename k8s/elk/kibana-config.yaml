@@ -53,3 +53,38 @@ data:
         - 'logs-*'
         - 'filebeat-*'
         - 'microcrm-logs-*'
+
+    # --- Connecteurs d'alerte, déclarés ici et non créés par l'API
+    #
+    # Une règle d'alerte Kibana ne « prévient » que par un connecteur. Les deux
+    # ci-dessous sont PRÉCONFIGURÉS : ils existent dès le démarrage de Kibana,
+    # avec un identifiant fixe (la clé YAML), et ne peuvent être ni modifiés ni
+    # supprimés depuis l'interface. Les règles de k8s/elk/alerting/ les
+    # référencent par cet identifiant ; un connecteur créé par l'API recevrait
+    # un identifiant aléatoire, différent à chaque réinstallation.
+    #
+    # Pourquoi ces deux types et pas un webhook : la licence est « basic », et
+    # `.webhook`, `.slack`, `.email` exigent la licence « gold » (relu sur
+    # l'instance par GET /api/actions/connector_types). `.index` et
+    # `.server-log` sont les deux seuls types de notification ouverts en basic.
+    #
+    #  - `microcrm-alerts-index` écrit un document par alerte dans l'index
+    #    `microcrm-alerts` : c'est ce que lit le tableau de bord « suivi des
+    #    alertes ». `executionTimeField` fait poser par Kibana l'heure d'envoi
+    #    dans `@timestamp`, pour ne pas dépendre de ce que la règle écrit.
+    #  - `microcrm-alerts-journal` écrit une ligne dans le journal du pod
+    #    Kibana (`kubectl -n logging logs deploy/kibana`).
+    #
+    # Aucun secret ici : ni l'un ni l'autre n'a d'identifiant. La clé de
+    # chiffrement dont les règles ont besoin, elle, n'est PAS dans ce fichier —
+    # voir kibana-deployment.yaml.
+    xpack.actions.preconfigured:
+      microcrm-alerts-index:
+        name: 'MicroCRM - index microcrm-alerts'
+        actionTypeId: .index
+        config:
+          index: microcrm-alerts
+          executionTimeField: '@timestamp'
+      microcrm-alerts-journal:
+        name: 'MicroCRM - journal du pod Kibana'
+        actionTypeId: .server-log

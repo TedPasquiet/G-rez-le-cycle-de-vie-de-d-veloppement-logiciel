@@ -13,6 +13,7 @@
 #   FAKE_DEPLOYMENT_MISSING Si "1" : `get deployment` échoue (deployment absent).
 #   FAKE_ROLLOUT_FAIL       Si "1" : `rollout status` échoue (déploiement raté).
 #   FAKE_UNDO_FAIL          Si "1" : `rollout undo` échoue (rollback raté).
+#   FAKE_SECRET_MISSING     Si "1" : `get secret` échoue (Secret absent).
 
 args="$*"
 
@@ -29,6 +30,9 @@ case "$args" in
     ;;
   *"rollout undo"*)
     [[ "${FAKE_UNDO_FAIL:-0}" == "1" ]] && exit 1
+    ;;
+  *"get secret"*)
+    [[ "${FAKE_SECRET_MISSING:-0}" == "1" ]] && exit 1
     ;;
 esac
 

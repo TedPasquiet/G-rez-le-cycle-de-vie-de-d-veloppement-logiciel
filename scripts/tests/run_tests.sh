@@ -1252,6 +1252,107 @@ verifie_code 0 'webhook injoignable -> code 0, le pipeline n est pas affecté' \
 verifie_contient "n'en est pas affecté" "l'échec d'envoi est journalisé sans faire échouer le job"
 
 # ==========================================================================
+titre 'monitoring/install_alerting.py'
+# ==========================================================================
+# Le script parle à Kibana et à Elasticsearch, que la CI n'a pas. Ce qui se
+# teste sans eux : le contrôle des fichiers de règles (--dry-run), le refus
+# propre quand Kibana ne répond pas, et la création du Secret (faux kubectl).
+ALERTING="$ROOT_DIR/scripts/monitoring/install_alerting.py"
+REGLES_DIR="$ROOT_DIR/k8s/elk/alerting/rules"
+
+# --- Les règles RÉELLES du dépôt -------------------------------------------
+# Ce test-là porte sur les fichiers versionnés, pas sur des fixtures : c'est
+# lui qui rougit si quelqu'un supprime la dernière règle d'une famille.
+verifie_code 0 'les règles du dépôt sont valides' python3 "$ALERTING" --dry-run
+verifie_contient '3 familles couvertes' 'disponibilité, performance et sécurité ont chacune une règle'
+verifie_contient 'dispo-front-muet' 'une règle de disponibilité est listée'
+verifie_contient 'perf-front-p95' 'une règle de performance est listée'
+verifie_contient 'secu-front-chemins-sensibles' 'une règle de sécurité est listée'
+
+# --- Les fichiers défectueux sont refusés, avec la raison ------------------
+regles_test="$WORK_DIR/regles"
+
+mkdir -p "$regles_test/vide"
+verifie_code 1 'un dossier sans règle est une erreur' python3 "$ALERTING" --dry-run --regles "$regles_test/vide"
+verifie_contient 'aucun fichier de règle' 'le message dit que le dossier est vide'
+
+mkdir -p "$regles_test/casse"
+cp "$REGLES_DIR"/*.json "$regles_test/casse/"
+printf '{"name": ' >"$regles_test/casse/dispo-front-muet.json"
+verifie_code 1 'un JSON tronqué est refusé' python3 "$ALERTING" --dry-run --regles "$regles_test/casse"
+verifie_contient 'dispo-front-muet.json' 'le fichier fautif est nommé'
+
+# Supprimer toutes les règles de sécurité : chaque fichier restant est valide,
+# c'est l'ENSEMBLE qui ne l'est plus.
+mkdir -p "$regles_test/sans-securite"
+cp "$REGLES_DIR"/*.json "$regles_test/sans-securite/"
+rm "$regles_test/sans-securite"/secu-*.json
+verifie_code 1 'une famille sans règle est refusée' python3 "$ALERTING" --dry-run --regles "$regles_test/sans-securite"
+verifie_contient 'famille(s) sans aucune règle : securite' 'la famille manquante est nommée'
+
+# Une règle qui vise un connecteur que kibana-config.yaml ne déclare pas
+# serait acceptée par Kibana… puis échouerait à chaque déclenchement.
+mkdir -p "$regles_test/connecteur"
+cp "$REGLES_DIR"/*.json "$regles_test/connecteur/"
+python3 - "$regles_test/connecteur/perf-front-p95.json" <<'PY'
+import json, sys
+regle = json.load(open(sys.argv[1], encoding="utf-8"))
+regle["actions"][0]["id"] = "connecteur-inconnu"
+json.dump(regle, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+verifie_code 1 'un connecteur non déclaré est refusé' python3 "$ALERTING" --dry-run --regles "$regles_test/connecteur"
+verifie_contient "connecteur 'connecteur-inconnu' absent" 'le connecteur fautif est nommé'
+
+mkdir -p "$regles_test/muette"
+cp "$REGLES_DIR"/*.json "$regles_test/muette/"
+python3 - "$regles_test/muette/perf-front-p95.json" <<'PY'
+import json, sys
+regle = json.load(open(sys.argv[1], encoding="utf-8"))
+regle["actions"] = []
+json.dump(regle, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+verifie_code 1 'une règle sans action est refusée' python3 "$ALERTING" --dry-run --regles "$regles_test/muette"
+verifie_contient 'ne préviendrait personne' 'la raison du refus est dite'
+
+# --- Kibana injoignable : un échec net, pas une pile d'appels --------------
+# Le port 9 (discard) n'est pas écouté : la connexion est refusée tout de suite.
+verifie_code 1 'Kibana injoignable -> code 1' \
+  env KIBANA_URL='http://127.0.0.1:9' ELASTICSEARCH_URL='http://127.0.0.1:9' python3 "$ALERTING"
+verifie_contient 'injoignable' "le message dit que Kibana ne répond pas"
+verifie_contient 'port-forward' 'et rappelle la cause la plus probable'
+verifie_contient_pas 'Traceback' 'aucune pile d appels Python dans la sortie'
+
+# --- Le Secret de la clé de chiffrement -------------------------------------
+journal_secret="$WORK_DIR/kubectl-secret.log"
+
+: >"$journal_secret"
+verifie_code 0 'Secret absent -> il est créé' \
+  env FAKE_KUBECTL_LOG="$journal_secret" FAKE_SECRET_MISSING=1 python3 "$ALERTING" --secret
+verifie_fichier_contient "$journal_secret" 'create secret generic kibana-encryption-key' 'le Secret est créé sous le nom attendu par kibana-deployment.yaml'
+verifie_fichier_contient "$journal_secret" '-n logging' 'dans le namespace logging'
+# La clé ne doit JAMAIS être un argument : un argument se lit dans `ps`.
+verifie_fichier_contient "$journal_secret" '--from-file=encryptionKey=/dev/stdin' 'la clé passe par l entrée standard'
+verifie_fichier_contient_pas "$journal_secret" '--from-literal' 'la clé n est pas passée en argument'
+verifie_fichier_contient "$journal_secret" 'rollout restart deployment/kibana' 'Kibana est redémarré pour lire la clé'
+verifie_contient_pas 'encryptionKey=' 'la clé n apparaît pas dans la sortie du script'
+
+# Secret déjà là : surtout ne pas le régénérer, les règles existantes
+# deviendraient indéchiffrables.
+: >"$journal_secret"
+verifie_code 0 'Secret présent -> rien à faire' \
+  env FAKE_KUBECTL_LOG="$journal_secret" python3 "$ALERTING" --secret
+verifie_contient 'existe déjà' 'le script dit qu il ne touche à rien'
+verifie_fichier_contient_pas "$journal_secret" 'create secret' 'aucune recréation du Secret'
+verifie_fichier_contient_pas "$journal_secret" 'rollout restart' 'aucun redémarrage inutile de Kibana'
+
+: >"$journal_secret"
+verifie_code 1 'redémarrage de Kibana raté -> code 1' \
+  env FAKE_KUBECTL_LOG="$journal_secret" FAKE_SECRET_MISSING=1 FAKE_ROLLOUT_FAIL=1 python3 "$ALERTING" --secret
+verifie_contient 'a échoué' 'l échec du rollout est signalé'
+
+verifie_code 2 'deux modes à la fois -> erreur d utilisation' python3 "$ALERTING" --secret --dry-run
+
+# ==========================================================================
 # Bilan
 # ==========================================================================
 printf '\n---------------------------------------------\n'
