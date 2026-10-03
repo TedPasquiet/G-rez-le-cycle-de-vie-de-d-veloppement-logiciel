@@ -12,6 +12,131 @@
       <packageUrl regex="true">^pkg:maven/org\.example/lib@.*$</packageUrl>
       <cve>CVE-2024-00000</cve>
   </suppress>
+
+  ⚠️ POURQUOI CE FICHIER N'EST PLUS VIDE (2026-10-02).
+
+  Il l'était parce que le scan ne lisait rien : `runtimeClasspath` était écartée
+  comme « configuration de test » (voir `skipTestGroups` dans build.gradle). Le
+  premier scan réel a relevé 12 CVE de score >= 7 sur Spring Framework 6.2.19.
+  Toutes sont déclarées par la NVD sur le produit ENTIER (`spring_framework`,
+  6.2.0 à 6.2.19), donc reportées sur chacun de ses jars, quel que soit le
+  module réellement concerné.
+
+  ⚠️ AUCUNE MONTÉE DE VERSION GRATUITE NE LES LÈVE. La version corrigée de la
+  branche 6.2, la 6.2.20, n'est PAS publiée sur Maven Central et ne le sera
+  pas : les avis de Spring (spring.io/security/cve-2026-47886, -59282, -59283)
+  la marquent « Enterprise Support Only ». Le seul correctif en source ouverte
+  est Spring Framework 7.0.9, c'est-à-dire Spring Boot 4 : une migration
+  majeure, pas un changement de numéro. Attendre ne sert donc à rien.
+
+  Les 12 entrées ci-dessous concernent des modules, des fonctions ou des
+  conditions que l'application N'EMBARQUE PAS, N'UTILISE PAS ou NE RÉUNIT PAS,
+  et chaque justification cite un fait vérifiable dans le dépôt.
+
+  Les trois dernières (CVE-2026-47886, CVE-2026-59282, CVE-2026-59283) avaient
+  d'abord été laissées bloquantes, faute d'analyse : l'application expose ses
+  dépôts par Spring Data REST, dont le PATCH JSON Patch traduit en SpEL des
+  chemins fournis par le client. L'analyse a été faite le 2026-10-02, condition
+  par condition, contre les avis de l'éditeur ; elle est dans la troisième
+  entrée.
+
+  Toutes les entrées expirent le 2026-12-31 : passé cette date, la porte se
+  referme et impose la relecture. Elles sont à RETIRER le jour où le back passe
+  sur Spring Boot 4 / Spring Framework 7.0.9 ou plus.
 -->
 <suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+    <suppress until="2026-12-31Z">
+        <notes><![CDATA[
+        Six CVE de Spring WebFlux et de Spring RSocket. L'application est une
+        API Spring MVC servie par Tomcat : ni `spring-webflux`, ni
+        `spring-messaging`, ni Reactor, ni RSocket ne figurent sur le
+        runtimeClasspath (vérifiable : `./gradlew dependencies
+        --configuration runtimeClasspath`, ou la liste des dépendances du
+        rapport). Le code visé n'est pas dans le jar livré.
+          CVE-2026-47885  WebFlux, PartEventHttpMessageReader
+          CVE-2026-47888  RSocket, trame SETUP malformée
+          CVE-2026-47889  WebFlux sur Jetty 12, cookies sans sameSite
+          CVE-2026-47891  WebFlux, analyseur XML Aalto
+          CVE-2026-47892  WebFlux, endpoints fonctionnels
+          CVE-2026-47893  WebFlux, WebSocket
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.springframework/spring\-[a-z\-]+@6\.2\.19$</packageUrl>
+        <cve>CVE-2026-47885</cve>
+        <cve>CVE-2026-47888</cve>
+        <cve>CVE-2026-47889</cve>
+        <cve>CVE-2026-47891</cve>
+        <cve>CVE-2026-47892</cve>
+        <cve>CVE-2026-47893</cve>
+    </suppress>
+
+    <suppress until="2026-12-31Z">
+        <notes><![CDATA[
+        Trois CVE de fonctions de Spring MVC que l'application n'utilise pas.
+        Elle ne déclare AUCUN contrôleur : ses seuls points d'entrée sont deux
+        dépôts `@RepositoryRestResource` (PersonRepository,
+        OrganizationRepository), qui ne rendent que du JSON. Vérifiable :
+        `grep -rE "XsltView|SseEmitter|RouterFunction|text/event-stream"
+        back/src/main` ne trouve rien.
+          CVE-2026-47884  XsltView avec un mapping « /** » qui rend une vue
+          CVE-2026-47890  Server-Sent Events avec fragments de vue
+          CVE-2026-59313  framework web fonctionnel + Server-Sent Events
+        Cette justification tombe le jour où l'application rend une vue, émet
+        des SSE ou déclare un RouterFunction.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.springframework/spring\-[a-z\-]+@6\.2\.19$</packageUrl>
+        <cve>CVE-2026-47884</cve>
+        <cve>CVE-2026-47890</cve>
+        <cve>CVE-2026-59313</cve>
+    </suppress>
+
+    <suppress until="2026-12-31Z">
+        <notes><![CDATA[
+        Trois CVE de SpEL et de la liaison de données, dont l'application ne
+        réunit pas les conditions. Chaque avis de Spring énumère des conditions
+        qui doivent TOUTES être présentes ; pour chacune, au moins une manque.
+
+          CVE-2026-59283 (9,1)  contournement de SimpleEvaluationContext
+            Exige que le compilateur SpEL soit actif : propriété
+            `spring.expression.compiler.mode` à IMMEDIATE ou MIXED, ou un
+            SpelParserConfiguration en SpelCompilerMode.IMMEDIATE/MIXED. Le
+            compilateur est désactivé par défaut et rien ne l'active ici.
+            Vérifiable : `grep -rniE "compiler\.mode|SpelCompilerMode" back/src
+            back/Dockerfile k8s helm docker-compose.yml` ne trouve rien, et
+            JAVA_TOOL_OPTIONS ne porte que l'agent OpenTelemetry.
+
+          CVE-2026-47886 (7,5)  déni de service par l'opérateur puissance
+            Exige (1) que l'application évalue des expressions SpEL fournies
+            par l'utilisateur ET (2) qu'un BigDecimal ou un BigInteger soit
+            accessible dans le contexte d'évaluation. Les deux entités (Person,
+            Organization) n'ont que des champs long, String, Instant et List :
+            aucun BigDecimal, aucun BigInteger. Et le client ne fournit pas une
+            expression : Spring Data REST valide chaque chemin JSON Patch
+            contre les propriétés du type avant de le traduire en SpEL.
+
+          CVE-2026-59282 (7,5)  déni de service par liaison de données
+            Exige que l'objet cible porte une propriété List « auto-peuplée »,
+            qui alloue ses éléments à la demande (AutoPopulatingList et
+            équivalents). Les deux seules listes du modèle sont des
+            java.util.List ordinaires (ArrayList, puis collection Hibernate),
+            qui lèvent une exception sur un index hors bornes.
+
+        Contrôle par exécution, le 2026-10-02, sur le back de staging : trois
+        PATCH `application/json-patch+json` portant un chemin avec l'opérateur
+        « ^ », un chemin `T(java.math.BigInteger).TEN^99999999`, et un index de
+        liste de 999999999 ont chacun répondu 400 en moins de 0,1 s ; la
+        ressource est restée inchangée et /actuator/health à UP.
+
+        ⚠️ Ce que cette exception ne vaut pas : une preuve que Spring 6.2.19
+        est sain. Elle tombe le jour où le modèle reçoit un champ BigDecimal ou
+        BigInteger, une liste auto-peuplée, où le compilateur SpEL est activé,
+        ou où du code applicatif évalue une expression venue d'une requête.
+        La sortie propre reste la migration vers Spring Boot 4.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.springframework/spring\-[a-z\-]+@6\.2\.19$</packageUrl>
+        <cve>CVE-2026-47886</cve>
+        <cve>CVE-2026-59282</cve>
+        <cve>CVE-2026-59283</cve>
+    </suppress>
+
 </suppressions>
