@@ -17,6 +17,10 @@ arrière si ça se passe mal. Tout ça est mis en place dans le pipeline
   `production`. On déploie toujours un tag précis, jamais `latest`.
 - **On vérifie avant de déployer.** Une image n'arrive à l'étape de déploiement
   qu'après les tests, Sonar, et les scans de sécurité.
+- **On scanne avant de publier.** L'image est scannée par Trivy **avant** d'être
+  poussée au registry : une image refusée n'y entre pas, donc ne peut être ni
+  déployée ni promue. Le relevé du scan est conservé en artefact
+  ([SCRIPTS.md](SCRIPTS.md), `ci/trivy_scan.sh`).
 - **On peut revenir en arrière vite.** Kubernetes garde l'historique des versions,
   donc on peut remettre la version d'avant sans rien reconstruire.
 - **On sait ce qui a été livré.** Une release est un tag Git SemVer (`vX.Y.Z`),
@@ -34,12 +38,13 @@ flowchart LR
     B --> C[quality<br/>Sonar + contrôles]
     C --> D[security<br/>Trivy + Dep-Check]
     D --> E[build]
-    E --> F[package<br/>image :SHA vers le registry]
+    E --> F[package<br/>scan Trivy puis image :SHA<br/>vers le registry]
     F --> P[perf<br/>k6 sur l'image construite]
     P --> G{Quelle branche ?}
     G -- develop --> H[deploy-staging<br/>manuel]
     G -- main --> I[deploy-production<br/>manuel]
     G -- tag --> V[promote<br/>retag :X.Y.Z, sans rebuild]
+    V --> R[release<br/>Release GitLab]
     V --> I
     I -. si problème .-> J[rollback-production<br/>manuel]
 ```
@@ -49,6 +54,8 @@ flowchart LR
   on n'arrive même pas au choix de la branche. Détail dans [QUALITY.md](QUALITY.md) §5.
 - **`develop`** → on construit l'image et on peut déployer sur **staging**.
 - **`main` / tag** → on peut déployer sur **production** (avec validation à la main).
+- **tag** → les deux images sont promues, puis la **Release GitLab** est créée
+  automatiquement (§2.2).
 - **En cas de souci en prod** → on lance le job **`rollback-production`**.
 
 ---
@@ -89,6 +96,7 @@ sous charge. En retaguant, `1.4.0` **est** l'artefact éprouvé, pas un jumeau.
 | `v01.4.0`                           | refusée  | SemVer interdit les zéros de tête : `01.4.0` et `1.4.0` seraient la même version sous deux tags différents                      |
 | `v1.4.0+exp.sha.5114f85`            | refusée  | un tag Docker n'accepte pas le `+`. Le traduire en `_` casserait l'égalité entre tag Git et tag d'image, qui est tout l'intérêt |
 | tag sur un commit jamais construit  | refusée  | le `docker pull` échoue : on ne publie pas un numéro de version qui ne désigne aucun artefact                                   |
+| tag sur un commit refusé par Trivy  | refusée  | l'image est scannée **avant** le push : refusée, elle n'est pas au registry, et le cas précédent s'applique                     |
 
 **Le tag d'image ne porte pas le « v ».** Le tag Git est `v1.4.0`, l'image est
 `back:1.4.0` — la convention des registries (`node:22-alpine`,
@@ -104,6 +112,46 @@ annoncée, sans table de correspondance entre un SHA et une release.
 Les règles de refus ci-dessus sont couvertes par `scripts/tests/run_tests.sh`
 (bloc `ci/promote_image.sh`), y compris l'assertion qui échoue si une promotion
 se met à construire.
+
+⚠️ **La cinquième ligne n'a pas toujours été vraie.** Jusqu'au 2026-10-02, le
+scan Trivy était une commande placée _après_ le push dans `package-*`. Le job
+rougissait, mais l'image était déjà au registry sous le tag du SHA — et la
+promotion ne demande que l'existence de ce tag. Constaté ce jour-là :
+`back:5bf1d6a2` y figurait avec cinq CVE hautes de Jackson, job rouge. Un tag
+posé sur ce commit aurait promu une image que la porte venait de refuser. Le
+scan a été déplacé dans `build_and_push.sh`, entre le build et le push, et un
+test vérifie l'ordre.
+
+---
+
+## 2.2 La Release GitLab
+
+Un tag Git dit « cette version existe ». Il ne dit ni quelles images la portent,
+ni depuis quel commit. Le job `release` crée donc, sur chaque pipeline de tag,
+la **Release GitLab** correspondante (Deploy → Releases) :
+
+- il ne tourne qu'**après** `promote-back` **et** `promote-front` (`needs:`) —
+  une Release qui annoncerait des images absentes serait pire que pas de
+  Release ;
+- sa description est écrite par `scripts/ci/release_notes.sh` : le commit, le
+  pipeline, et pour chaque image ses deux tags, `:X.Y.Z` et `:SHA`, qui
+  désignent le même digest ;
+- il s'authentifie avec le jeton du job : aucun secret à créer. L'outil est
+  `glab`, que le mot-clé `release:` appelle (l'ancien `release-cli` est déprécié
+  depuis GitLab 18.0). Son image est figée dans `.gitlab/ci/variables.yml`
+  (`GLAB_IMAGE`).
+
+La mise en production n'est **pas** une condition : la Release dit « la version
+est publiée », `deploy-production` reste manuel et vient après.
+
+Deux pièges :
+
+- **Si la Release existe déjà, le job échoue.** Rejouer un pipeline de tag ne
+  réécrit pas l'histoire. Pour corriger une Release, on l'édite dans GitLab, ou
+  on la supprime avant de rejouer le job.
+- **Ne pas saisir de « release notes » en créant un tag depuis l'interface
+  GitLab** : cela crée la Release aussitôt, et le job échoue ensuite pour la
+  raison ci-dessus. Un tag poussé par `git push` n'a pas ce problème.
 
 ---
 
@@ -123,7 +171,8 @@ qui permet de suivre les déploiements par environnement dans l'interface.
 
 Le déploiement est fait par le script [`scripts/deploy/deploy.sh`](scripts/deploy/deploy.sh) :
 
-1. il change l'image du Deployment vers la version `:SHA` (`kubectl set image`),
+1. il change l'image du Deployment vers le tag demandé (`kubectl set image`) —
+   `:X.Y.Z` sur un pipeline de tag, `:SHA` partout ailleurs (§2.1),
 2. il attend que le déploiement se termine (`kubectl rollout status`),
 3. **si ça rate ou si c'est trop long**, il revient tout seul à la version d'avant
    (`kubectl rollout undo`). On peut désactiver ce comportement avec `--no-auto-rollback`.
@@ -133,7 +182,7 @@ Exemple (extrait du job `deploy-production`) :
 ```bash
 bash scripts/deploy/deploy.sh \
   -n "$PROD_NAMESPACE" -d back -c back \
-  -i "$CI_REGISTRY_IMAGE/back:$CI_COMMIT_SHORT_SHA"
+  -i "$CI_REGISTRY_IMAGE/back:$DEPLOY_IMAGE_TAG"
 ```
 
 ---
@@ -171,13 +220,20 @@ qu'on est prévenu si le rollback lui-même échoue.
 
 À créer dans Settings → CI/CD → Variables :
 
-| Variable                        | Type              | À quoi ça sert                                            |
-| ------------------------------- | ----------------- | --------------------------------------------------------- |
-| `KUBE_CONFIG`                   | File              | Le fichier de connexion au cluster (jamais dans le code). |
-| `STAGING_NAMESPACE`             | Variable          | Le namespace de staging.                                  |
-| `PROD_NAMESPACE`                | Variable          | Le namespace de production.                               |
-| `SONAR_HOST_URL`, `SONAR_TOKEN` | Variable / Masked | Pour Sonar et le Quality Gate.                            |
-| `CI_REGISTRY*`                  | Automatiques      | Fournies par GitLab, rien à faire.                        |
+| Variable                        | Type              | À quoi ça sert                     |
+| ------------------------------- | ----------------- | ---------------------------------- |
+| `STAGING_NAMESPACE`             | Variable          | Le namespace de staging.           |
+| `PROD_NAMESPACE`                | Variable          | Le namespace de production.        |
+| `SONAR_HOST_URL`, `SONAR_TOKEN` | Variable / Masked | Pour Sonar et le Quality Gate.     |
+| `CI_REGISTRY*`                  | Automatiques      | Fournies par GitLab, rien à faire. |
+
+L'accès au cluster ne passe **pas** par une variable : c'est l'agent GitLab pour
+Kubernetes (`.gitlab/agents/microcrm/`) qui fournit le kubeconfig aux jobs, à
+l'exécution. Une variable `KUBE_CONFIG` a existé ; elle n'est plus lue (le
+pourquoi est dans `.deploy_template`, `.gitlab/ci/templates.yml`).
+
+Les jobs `release` et `dora-metrics` n'ont besoin d'aucune variable : le premier
+utilise le jeton du job, le second lit l'API publique du projet.
 
 **Pour déployer automatiquement sur staging** : dans le job `deploy-staging`,
 remplacer `when: manual` par `when: on_success`. Le déploiement partira alors tout
@@ -187,16 +243,108 @@ seul dès que l'étape `package` réussit sur `develop`.
 
 ## 7. Étapes pour une mise en prod
 
-1. Merger sur `main` (via une MR avec le pipeline vert). **C'est ce pipeline
-   qui construit l'image** et la pousse sous le SHA du commit.
-2. Créer un tag de version : `git tag vX.Y.Z && git push origin vX.Y.Z`.
-3. Le pipeline de tag ne reconstruit rien : `promote-back` et `promote-front`
-   posent `X.Y.Z` sur l'image déjà publiée (§2.1). Si l'étape 1 n'a pas abouti,
-   ce job échoue — c'est voulu.
-4. Lancer le job `deploy-production` à la main et valider. Il déploie
-   `:X.Y.Z`.
-5. Vérifier que l'appli fonctionne bien.
-6. **Si problème** : lancer `rollback-production`.
+La procédure tient en une règle : **le tag se pose sur un commit de `main` dont
+le pipeline a déjà construit, scanné et poussé les deux images.** Tout le reste
+en découle, et c'est l'ordre des étapes qui la fait respecter.
+
+### 7.1 Avant de commencer
+
+1. **Les trois fichiers de version portent le numéro visé** —
+   `back/build.gradle`, `front/package.json` (et `front/package-lock.json`, qui
+   le répète deux fois en tête de fichier), `appVersion` de
+   `helm/microcrm/Chart.yaml`. Ce changement se fait sur `develop`, dans un
+   commit, **avant** la fusion vers `main` : le tag doit pointer sur un commit
+   qui contient déjà le bon numéro, sinon `version-consistency` arrête le
+   pipeline de tag à la première étape.
+
+   ```bash
+   bash scripts/ci/check_version.sh --version vX.Y.Z   # doit sortir en 0
+   ```
+
+2. **Le pipeline de `develop` est vert jusqu'à `package`.** Un `develop` rouge
+   donnera un `main` rouge.
+
+### 7.2 La séquence
+
+```bash
+# 1. develop -> main, par une Pull Request sur GitHub (le miroir pousse vers GitLab).
+gh pr create --base main --head develop --title "release: X.Y.Z" --body "..."
+gh pr merge --merge          # un commit de fusion : c'est LUI qui sera taggué
+
+# 2. Attendre que le pipeline de main ait construit et poussé les deux images.
+#    ⚠️ Il ne passera jamais « success » : il s'arrête sur `deploy-production`,
+#    manuel et bloquant, et s'affiche « blocked ». Ce qu'il faut voir en vert,
+#    ce sont `package-back`, `package-front` et l'étape `perf`.
+git checkout main && git pull origin main
+SHA=$(git rev-parse --short=8 HEAD)
+API=https://gitlab.com/api/v4/projects/pasquietted%2FG-rez-le-cycle-de-vie-de-d-veloppement-logiciel
+#    Les deux commandes doivent répondre 200 : l'image du commit existe au registry.
+#    (11983096 et 11983090 sont les identifiants des dépôts d'images back et front.)
+curl -s -o /dev/null -w 'back  %{http_code}\n' "$API/registry/repositories/11983096/tags/$SHA"
+curl -s -o /dev/null -w 'front %{http_code}\n' "$API/registry/repositories/11983090/tags/$SHA"
+
+# 3. Poser le tag SUR CE COMMIT, et le pousser.
+bash scripts/ci/check_version.sh --version vX.Y.Z
+git tag -a vX.Y.Z -m "MicroCRM X.Y.Z"
+git push origin vX.Y.Z
+```
+
+4. Le pipeline de tag ne reconstruit rien. Dans l'ordre : `version-consistency`
+   (première étape), les tests et les scans, puis `promote-back` et
+   `promote-front` qui posent `X.Y.Z` sur l'image déjà publiée (§2.1), puis
+   `release` qui crée la Release GitLab (§2.2).
+5. Lancer le job `deploy-production` **du pipeline de tag** à la main. Il
+   déploie `:X.Y.Z`.
+6. Vérifier que l'appli fonctionne, et que la Release existe :
+
+   ```bash
+   curl -s "$API/releases/vX.Y.Z" | head -c 300
+   ```
+
+7. **Si problème** : lancer `rollback-production`.
+
+### 7.3 Ce qui fait échouer la promotion, et comment s'en sortir
+
+`promote-*` échoue sur « Image introuvable au registry » dès que le commit
+taggué n'a pas d'image `:SHA`. Quatre causes, une seule réponse — **ne jamais
+reconstruire à la main, reposer le tag au bon endroit** :
+
+| Cause                                                                      | Comment la reconnaître                                     |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Tag posé avant la fin du pipeline de `main`                                | `package-*` encore en cours ou en attente                  |
+| Tag posé sur un commit de branche de travail (`feature/`, `fix/`, `docs/`) | ces branches vérifient sans construire d'image             |
+| Pipeline de `main` rouge avant `package`                                   | un job de test, de qualité ou de sécurité a échoué         |
+| Image refusée par Trivy                                                    | `package-*` rouge, rapport dans ses artefacts (`reports/`) |
+
+Dans le premier cas, il suffit d'attendre que `package-*` ait fini, puis de
+relancer `promote-*`. Dans les trois autres, ce commit n'aura jamais d'image :
+il faut corriger si besoin, refusionner vers `main`, et le tag doit **changer de
+commit** :
+
+```bash
+git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z   # retire le tag mal placé
+# ⚠️ le miroir GitHub -> GitLab ne supprime PAS les tags : le retirer aussi côté
+# GitLab (Code > Tags), sans quoi le miroir refusera de pousser un tag qui existe déjà.
+```
+
+Un numéro déjà **promu** (une image `:X.Y.Z` existe) ne se réutilise pas : on
+passe au correctif suivant. Deux images différentes sous le même numéro, c'est
+exactement ce que ce document cherche à rendre impossible.
+
+### 7.4 Le précédent : `v1.0.0` n'a jamais abouti
+
+Le tag `v1.0.0` existe (commit `5d459fb`), mais **aucune image `1.0.0` n'est au
+registry et aucune Release n'a été créée**. Son pipeline de tag (22 septembre) a
+échoué sur `test-front`, avant la promotion : `Can not find the binary
+/opt/google/chrome/chrome`. Le runner du projet tourne sur Apple Silicon, et
+l'image Cypress, alors désignée par son tag, y résolvait vers sa variante arm64 —
+qui n'embarque pas Chrome. La directive `platform: linux/amd64` présente dans ce
+commit ne mordait pas. Le correctif (image désignée par son digest amd64) est
+arrivé une heure et demie plus tard, dans un commit postérieur au tag.
+
+Un tag ne se déplace pas : `v1.0.0` reste où il est, comme trace. **La première
+version réellement livrable est la suivante**, d'où le passage des fichiers de
+version à `1.0.1`.
 
 ---
 
@@ -204,8 +352,12 @@ seul dès que l'étape `package` réussit sur `develop`.
 
 - Des petits tests automatiques après le déploiement (vérifier que l'appli répond).
 - Un déploiement progressif (blue/green ou canary) pour limiter les risques.
-- La génération automatique du changelog à partir des messages de commit.
-- Une notification (Slack ou mail) quand un déploiement échoue.
+- La génération automatique du changelog à partir des messages de commit, pour
+  enrichir la description de la Release (aujourd'hui : les images et le commit).
+- L'envoi des indicateurs DORA à Elasticsearch depuis la CI. Le job
+  `dora-metrics` les calcule et les publie en artefact, mais l'Elasticsearch du
+  cluster n'est pas joignable depuis un job ([SCRIPTS.md](SCRIPTS.md),
+  `ci/collect_dora.py`).
 
 ## 9. Sauvegarde et restauration
 
@@ -411,3 +563,107 @@ Deux choses en découlent :
 **Ce qui reste hors de portée de cet exercice** : la restauration de _données_.
 Elle n'a pas d'objet tant que la base vit en mémoire — le raisonnement est en
 §9.1, et il ne change pas.
+
+---
+
+## 10. Accessibilité de ce plan
+
+Ce plan décrit la mise à jour (§2 à §7), le retour en arrière (§5) et la
+sauvegarde (§9). Il doit pouvoir être lu, puis suivi, par toutes les parties
+prenantes — y compris les collaborateurs en situation de handicap (PSH) : ceux
+qui lisent avec un lecteur d'écran ou une plage braille, avec une loupe
+d'écran, sans distinguer les couleurs, ou pour qui une phrase longue est un
+obstacle. Cette section dit ce qui a été vérifié, comment, et ce qui ne l'a pas
+été.
+
+### 10.1 Le référentiel
+
+Le **RGAA 4.1** (référentiel général d'amélioration de l'accessibilité), qui
+applique en France les **WCAG 2.1** (_Web Content Accessibility Guidelines_) aux
+niveaux A et AA. Il est écrit pour des pages web ; n'en sont retenus ici que les
+critères qui ont un sens pour un document : images, couleurs, tableaux, liens,
+éléments obligatoires (langue, titre), structure et présentation.
+
+### 10.2 Ce qui a été vérifié, et comment
+
+Deux outils versionnés, rejouables sans rien installer d'autre que Python,
+Node et Chrome :
+
+```shell
+# Les sources Markdown — code de sortie 0 si aucun défaut, 1 sinon
+python3 scripts/tests/check_accessibilite_docs.py
+
+# Le PDF de ce plan, balisé, avec le contrôle de son balisage
+scripts/docs/build_pdf.sh -o /tmp/pdf RELEASE.md
+```
+
+Le premier contrôle par défaut six documents : ce plan, et les cinq livrables
+de `docs/` qui partent en PDF. Résultats du 2026-10-02 :
+
+| Exigence                                             | Critères                   | Comment c'est vérifié                                                               | Résultat                                                                                       |
+| ---------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Titres hiérarchisés, sans niveau sauté               | RGAA 9.1 · WCAG 1.3.1      | script, sur chaque titre                                                            | 186 titres, aucun saut, un seul titre de niveau 1 par document                                 |
+| Texte alternatif sur chaque image                    | RGAA 1.1, 1.2 · WCAG 1.1.1 | script                                                                              | 3 images, toutes décrites                                                                      |
+| Ligne d'en-tête sur chaque tableau                   | RGAA 5.6, 5.7 · WCAG 1.3.1 | script                                                                              | 100 tableaux ; **1 défaut corrigé** (une colonne sans nom)                                     |
+| Liens au libellé explicite                           | RGAA 6.1 · WCAG 2.4.4      | script : aucun « ici », « cliquez ici », « lien »                                   | 12 liens, aucun libellé creux                                                                  |
+| Schéma accompagné d'un texte                         | RGAA 1.6 · WCAG 1.1.1      | script (un texte à proximité), puis relecture                                       | 20 schémas, tous commentés — voir la réserve au §10.4                                          |
+| Information jamais portée par un seul pictogramme    | RGAA 3.1 · WCAG 1.3.3      | script (cellule, ligne ou libellé réduit à un symbole), puis relecture des ⚠️ et ✅ | **2 défauts corrigés** dans un schéma (« ✋ » pour « manuel », « ✗ » pour « échec »)           |
+| Contraste du texte                                   | RGAA 3.2 · WCAG 1.4.3      | calcul du rapport de contraste, feuille de style et couleurs des schémas            | de 6,7:1 à 15,7:1 — le niveau AA demande 4,5:1                                                 |
+| Langue déclarée                                      | RGAA 8.3 · WCAG 3.1.1      | `build_pdf.sh` : `<html lang="fr">`, puis `/Lang (fr)` cherché dans le PDF          | présente dans les PDF produits par le script                                                   |
+| Titre de document                                    | RGAA 8.5 · WCAG 2.4.2      | `build_pdf.sh` : `<title>` tiré du titre de niveau 1                                | présent ; les PDF produits jusqu'ici portaient un nom de fichier                               |
+| PDF balisé : structure, en-têtes de tableau, signets | WCAG 1.3.1, 2.4.5          | `build_pdf.sh` cherche `/StructTreeRoot`, `/MarkInfo`, `/Outlines` et échoue sinon  | présents ; titres en `H1`-`H3`, cellules d'en-tête en `TH` avec leur portée, images avec `Alt` |
+| Texte lisible : 11 points au moins, aligné à gauche  | bonne pratique, hors RGAA  | feuille de style du script                                                          | 11 pt partout, tableaux et code compris ; aucun texte justifié                                 |
+| Tableaux et code qui ne débordent pas de la page     | bonne pratique, hors RGAA  | relecture des pages d'un PDF produit                                                | vérifié sur trois documents de test                                                            |
+
+### 10.3 Les formats mis à disposition
+
+- **Le Markdown source**, dans le dépôt. C'est du texte brut : un lecteur
+  d'écran, une plage braille ou un terminal le lisent sans intermédiaire, et sa
+  taille d'affichage est celle que choisit le lecteur. GitHub et GitLab le
+  rendent en HTML structuré, titres et tableaux compris.
+- **Un PDF balisé**, produit par `scripts/docs/build_pdf.sh` : langue, titre,
+  arbre de structure, signets. Les schémas y sont des images vectorielles
+  portant un texte alternatif.
+- **Le HTML intermédiaire**, que l'option `-w` conserve : il s'agrandit et se
+  reformate dans un navigateur, ce qu'un PDF fait mal.
+
+### 10.4 Ce qui n'a pas été vérifié, et ce qui reste hors de portée
+
+- **Aucun essai avec un lecteur d'écran réel** (VoiceOver, NVDA, JAWS), ni par
+  une personne concernée. Les contrôles ci-dessus portent sur la structure,
+  pas sur l'expérience de lecture.
+- **Aucun validateur PDF/UA** (PAC, veraPDF) n'a été passé sur les PDF. Leur
+  balisage est constaté, leur conformité à la norme ne l'est pas.
+- **Les schémas sont commentés, pas tous décrits.** Le texte voisin explique ce
+  qu'il faut en retenir ; il n'énumère pas toujours chaque boîte. Un seul
+  schéma du dépôt porte une description complète (`accDescr`) ; pour les
+  autres, le texte alternatif du PDF donne le titre de la section et renvoie au
+  texte. C'est le défaut le plus net de ce plan pour un lecteur non voyant.
+- **Les captures d'écran** restent des images d'interfaces. Leur texte
+  alternatif dit ce qu'elles montrent, et les chiffres qu'elles portent sont
+  repris en texte ou en tableau à côté.
+- **Les sigles ne sont pas tous développés** à leur première occurrence. Ceux
+  de ce plan : CI (intégration continue), MR (_merge request_, demande de
+  fusion), SHA (l'empreinte d'un commit), SemVer (versionnage sémantique),
+  HSQLDB (la base embarquée). Un glossaire commun est tenu dans
+  `docs/documentation-ci-cd-complete.md` §8.2.
+- **10 phrases de plus de 60 mots** sont signalées par le script dans
+  les six documents. Elles n'ont pas été réécrites.
+- **Les interfaces de GitLab et de Kibana** ne sont pas sous notre contrôle.
+  Lancer un job manuel se fait dans l'interface de GitLab, dont l'accessibilité
+  dépend de son éditeur et n'a pas été évaluée ici. Ce qui dépend de nous : le
+  retour en arrière (§5) et la reconstruction (§9.4) se jouent entièrement au
+  clavier, dans un terminal.
+- **Les PDF déjà présents dans `docs/`** ont été produits avant ce script. Ils
+  sont balisés et déclarent leur langue, mais n'ont ni signets ni vrai titre.
+  Ils sont à régénérer.
+
+### 10.5 Demander une adaptation
+
+Un passage illisible avec un outil d'assistance, un schéma sans description
+suffisante, un besoin d'un autre format (gros caractères, texte seul, lecture
+à voix haute d'une procédure) : ouvrir une _issue_ sur le dépôt, avec le
+libellé `accessibilité`, en citant le document et la section. Elle est traitée
+par le mainteneur du dépôt, qui est aussi l'auteur de ce plan. Un défaut
+d'accessibilité se corrige comme un défaut de procédure : dans le document, par
+une demande de fusion, et le contrôle du §10.2 est rejoué avant de fusionner.

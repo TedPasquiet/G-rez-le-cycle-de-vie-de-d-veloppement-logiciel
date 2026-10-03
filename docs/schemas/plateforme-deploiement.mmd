@@ -1,16 +1,18 @@
 %% Schéma 1 — La plateforme de déploiement, du commit au pod.
 %% Source versionnée du bloc Mermaid d'ARCHITECTURE.md §8.1.
-%% Convention : trait plein = chemin réellement emprunté ;
-%%              pointillé   = chemin décrit, jamais abouti.
+%% Convention : trait plein = chemin emprunté par le fil du pipeline ;
+%%              pointillé   = chemin manuel, hors de ce fil.
 %% L'étape deploy est passée en trait plein le 2026-09-23 : elle aboutit depuis
-%% le 2026-09-22 (ARCHITECTURE.md §8.1). Seul Terraform reste en pointillé.
+%% le 2026-09-22 (ARCHITECTURE.md §8.1). Seul Terraform reste en pointillé :
+%% son apply a été joué (production depuis la CI le 2026-09-23), mais il reste
+%% un geste manuel, dans la dernière étape.
 %% Les identifiants de nœuds restent en ASCII, seuls les libellés sont accentués.
 flowchart TB
     dev(["git push / merge"]) --> gh["GitHub<br/>dépôt de travail, Pull Requests"]
     gh -->|"GitHub Actions : mirror-to-gitlab.yaml<br/>push --prune de toutes les refs"| gl["GitLab<br/>miroir en lecture seule"]
     gl --> pipe
 
-    subgraph pipe["Pipeline GitLab CI : 10 étapes, 37 jobs"]
+    subgraph pipe["Pipeline GitLab CI : 10 étapes, 39 jobs"]
         direction LR
         s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
     end

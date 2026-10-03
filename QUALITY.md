@@ -1,7 +1,8 @@
 # Qualité, sécurité et supervision
 
 Cinq outils sont branchés sur le cycle de vie de MicroCRM, et un sixième angle —
-la supervision de l'application déployée — reste à couvrir. Chacun voit ce que les
+la supervision de l'application déployée — est couvert depuis par la stack ELK,
+ses tableaux de bord et ses règles d'alerte (§6). Chacun voit ce que les
 autres ne voient pas : un test unitaire ne détecte pas une CVE, un scan de CVE ne
 détecte pas une mauvaise pratique de code, et aucun des deux ne dit si l'application
 tient la charge.
@@ -30,14 +31,16 @@ toute compilation — un plan cassé n'a pas besoin d'attendre Gradle pour être
 signalé — et `infra-apply` est en dernier parce que ses jobs manuels
 bloqueraient tout ce qui les suit.
 
-> ⚠️ **Tous ces contrôles sont bloquants, sauf un.**
+> ⚠️ **Tous ces contrôles sont bloquants, sauf deux.**
 >
 > - **`k6-load`** (§5) : ses mesures varient d'une exécution à l'autre sur les
 >   runners partagés, et un seuil dur y produirait des échecs sans rapport avec le
 >   code.
+> - **`spotbugs-back`** (§2) : `ignoreFailures = true` dans `back/build.gradle`.
+>   Le job publie son rapport, il ne fait pas échouer le pipeline.
 >
 > Pour tout le reste, un échec arrête le pipeline : analyse Sonar qui n'a pas eu
-> lieu, Quality Gate non franchie, défaut SpotBugs, CVE de score CVSS 7 ou plus dans
+> lieu, Quality Gate non franchie, CVE de score CVSS 7 ou plus dans
 > les dépendances Java, misconfiguration ou CVE système relevée par Trivy, couverture
 > ou score de mutation sous leur seuil, image qui ne répond pas au smoke test.
 
@@ -143,8 +146,66 @@ vulnérabilité de sévérité HIGH ou CRITICAL. Le job CI est bloquant : une CV
 pendant la nuit arrête la livraison suivante, et c'est un arbitrage humain (mise à
 jour, ou suppression justifiée et datée) qui la débloque.
 
-**Faux positifs.** À documenter et dater dans
+**Exceptions.** À documenter et dater dans
 `back/config/dependency-check/suppressions.xml`, jamais à ignorer silencieusement.
+
+### ⚠️ Ce contrôle n'a rien lu pendant des semaines
+
+Jusqu'au 2026-10-02, cette section pouvait écrire que `dependency-check-back`
+« trouvait 0 vulnérabilité ». C'était vrai, et cela ne voulait rien dire :
+**le scan n'analysait aucun jar.**
+
+**La cause**, lue dans le journal `--info` du plugin et expliquée dans
+`back/build.gradle` : le plugin écarte par défaut les configurations « de test »
+(`skipTestGroups = true`) et les reconnaît à leur **nom**. Or le plugin Spring
+Boot fait hériter `runtimeClasspath` de `testAndDevelopmentOnly`. La seule
+configuration nommée par `scanConfigurations` était donc écartée, et le rapport
+sortait avec une liste de dépendances vide. Le signe était visible : cinq
+secondes de Gradle, un rapport XML de 1,4 Ko. C'est aussi l'explication de
+l'écart resté ouvert depuis le 2026-09-14 — Trivy trouvait dans le jar des CVE
+de Tomcat, puis de Jackson, que Dependency-Check ne signalait pas.
+
+**Le correctif** est une ligne : `skipTestGroups = false`. Les dépendances de
+test n'entrent pas pour autant, `scanConfigurations` ne nommant que
+`runtimeClasspath`.
+
+**Ce que le premier scan réel a trouvé** (2026-10-02, en local) : **82
+dépendances analysées**, **13 CVE de score 7 ou plus** — 12 sur Spring Framework
+6.2.19, 1 sur Log4j 2.24.3.
+
+| Constat                                | Traitement                                                                                                                                      |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| CVE-2026-34479, Log4j 2.24.3           | **Corrigé** : Log4j forcé à 2.25.5 (`ext['log4j2.version']`)                                                                                    |
+| 6 CVE de Spring WebFlux et RSocket     | **Exceptées** jusqu'au 2026-12-31 : ces modules ne sont pas sur le `runtimeClasspath`                                                           |
+| 3 CVE de fonctions Spring MVC          | **Exceptées** jusqu'au 2026-12-31 : `XsltView`, Server-Sent Events et framework fonctionnel, que l'application n'utilise pas — aucun contrôleur |
+| 3 CVE de SpEL et de liaison de données | **Exceptées** jusqu'au 2026-12-31, après analyse condition par condition contre les avis de Spring, et un contrôle par exécution sur staging    |
+
+**Pourquoi des exceptions et non une montée de version.** La version corrigée
+de la branche 6.2, la 6.2.20, n'est pas publiée sur Maven Central : les avis de
+Spring la réservent au support payant. Le seul correctif en source ouverte est
+Spring Framework 7, c'est-à-dire **Spring Boot 4** — une migration majeure, pas
+un changement de numéro. Attendre ne lèverait donc rien. Les douze entrées,
+leurs justifications et ce qui les ferait tomber sont dans
+`back/config/dependency-check/suppressions.xml`, qui fait foi ; le processus
+est décrit dans [AUDIT.md](AUDIT.md) §7.4.
+
+**La leçon vaut pour tous les contrôles de cette page.** Une porte bloquante qui
+ne lit rien ne se distingue pas, à l'œil, d'une porte qui n'a rien trouvé. Un
+job vert se vérifie aussi par ce qu'il a regardé : sa durée, la taille de son
+rapport, le nombre d'éléments analysés.
+
+**L'état après traitement**, relu dans le rapport JSON du dernier scan local
+(2026-10-02, 21 h 31) : 82 dépendances analysées, les 12 CVE exceptées
+apparaissent comme supprimées, **aucune CVE de score 7 ou plus ne reste
+ouverte**, et la tâche Gradle se termine en succès. Six CVE de score inférieur
+à 7 (de 3,7 à 6,5) restent visibles dans le rapport : elles sont sous le seuil,
+donc non bloquantes — et suivies par rien ([AUDIT.md](AUDIT.md) §7.4.5).
+
+**Ce qui n'est pas vérifié.** Le scan corrigé n'a tourné que sur le poste : rien
+de ce lot n'est encore passé dans un pipeline. Et les trois dernières exceptions
+reposent sur une analyse, pas sur un correctif — elles tombent le jour où le
+modèle reçoit un champ `BigDecimal`, une liste auto-peuplée, ou que le
+compilateur SpEL est activé.
 
 > ⚠️ Il n'existe **pas** d'équivalent côté front aujourd'hui : aucun job ne lance
 > `npm audit`. Les dépendances npm ne sont couvertes que par `trivy-fs`, qui lit le
@@ -160,9 +221,10 @@ contient aussi un OS (Alpine), une JRE, un serveur web (Caddy) — chacun avec s
 propres CVE. Trivy scanne les **couches système** de l'image finale. Il détecte en
 prime les **secrets commités** et les **mauvaises configurations** de Dockerfile.
 
-> Exemple concret sur ce projet : le scan du dépôt relève 5 misconfigurations HIGH
-> sur les manifestes Kubernetes et le RBAC de l'agent GitLab. Toutes sont justifiées
-> et bornées à leur fichier dans `.trivyignore.yaml`. Les deux défauts que cette
+> Exemple concret sur ce projet : le scan du dépôt relève des misconfigurations HIGH
+> sur les manifestes Kubernetes, le RBAC de l'agent GitLab et le Dockerfile du back.
+> Toutes sont justifiées et bornées à leur fichier dans `.trivyignore.yaml`
+> (7 entrées, revue au 2026-12-31). Les deux défauts que cette
 > section citait auparavant — image front en `root`, CVE ouvertes sur `@angular/*` —
 > sont fermés depuis la montée d'Angular 20 et celle des images du 2026-09-19.
 
@@ -170,32 +232,68 @@ prime les **secrets commités** et les **mauvaises configurations** de Dockerfil
 
 - Le job **`trivy-fs`** (stage `security`, rapide) scanne le dépôt : dépendances
   déclarées, secrets oubliés, misconfigurations de Dockerfile.
-- Le **scan des images** n'est pas un job séparé : il est lancé en fin de
-  `package-back` et `package-front`, juste après la construction de l'image, via un
-  `docker run aquasec/trivy image`.
+- Le **scan des images** n'est pas un job séparé : il est lancé dans
+  `package-back` et `package-front`, **entre** la construction de l'image et son
+  envoi au registry (`build_and_push.sh --scan`).
 
-**Les deux sont bloquants** (`--exit-code 1`) depuis le 2026-09-19. `trivy-fs`
-passe en plus `--ignorefile .trivyignore.yaml` : Trivy ne lit que `.trivyignore`
-par défaut, et sans ce drapeau les exclusions justifiées ne s'appliquent pas.
+**Les deux sont bloquants** depuis le 2026-09-19, sur `HIGH,CRITICAL`. Depuis le
+2026-10-02 ils ne passent plus par un `--exit-code 1` écrit en dur dans le
+pipeline, mais par `scripts/ci/trivy_scan.sh`, qui fait deux passages : un
+**relevé** en JSON, sans porte, puis la **porte**, au format tableau. Son code
+de sortie distingue un constat d'une panne — `2` quand la porte est fermée, `1`
+quand le scan n'a pas pu avoir lieu ; le job échoue dans les deux cas.
+`trivy-fs` passe en plus `--ignorefile .trivyignore.yaml` : Trivy ne lit que
+`.trivyignore` par défaut, et sans ce drapeau les exclusions justifiées ne
+s'appliquent pas.
 
-La porte se ferme sur du vide, et c'est voulu : le scan du dépôt sort en 0 une
-fois les exclusions appliquées, et les deux images ne portent plus aucune CVE
-HIGH ou CRITICAL depuis la montée de version (Alpine 3.24, Spring Boot 3.5.16,
-Caddy recompilé). Ce qui arrêtera le pipeline, c'est donc ce qui sera introduit
-**après**.
+**Les rapports sont publiés en artefacts**, que le job réussisse ou non
+(`when: always`, une semaine) :
+
+| Job             | Artefacts                                                         |
+| --------------- | ----------------------------------------------------------------- |
+| `trivy-fs`      | `reports/trivy-fs.json`, `reports/trivy-fs.txt`                   |
+| `package-back`  | `reports/trivy-image-back.json`, `reports/trivy-image-back.txt`   |
+| `package-front` | `reports/trivy-image-front.json`, `reports/trivy-image-front.txt` |
+
+Ils sont **filtrés comme la porte** — HIGH et CRITICAL seulement, exclusions
+appliquées : ils décrivent ce que la porte a vu, pas tout ce que Trivy sait.
+`scripts/ci/collect_security.py` sait les indexer pour le tableau de bord
+« sécurité » ([SCRIPTS.md](SCRIPTS.md)).
+
+**Pourquoi le scan d'image a été déplacé avant le push.** Il était jusque-là une
+ligne placée _après_ `build_and_push.sh`. L'image d'un job rouge était donc déjà
+au registry sous son SHA, et la promotion par tag ne demande que l'existence de
+ce tag : un tag de version posé sur ce commit aurait promu une image que Trivy
+venait de refuser. Le cas s'est présenté — `back:5bf1d6a2` est au registry avec
+5 CVE HIGH de Jackson. Un test de `run_tests.sh` vérifie désormais l'ordre.
+
+**Où en sont les scans.** Le scan du dépôt sort à 0 constat une fois les
+exclusions appliquées (rejoué le 2026-10-02). La dernière image du back publiée
+par la CI, `back:5bf1d6a2`, porte 5 CVE HIGH de `jackson-core` et
+`jackson-databind` 2.21.4 : c'est ce qui a arrêté `package-back` sur le dernier
+pipeline de `develop` (les deux pipelines précédents ont échoué pour d'autres
+raisons — [MONITORING.md](MONITORING.md) §10.4). Jackson est forcé à 2.21.7 sur la branche de correction, et les deux
+images construites **en local** depuis cette branche sortent à 0 HIGH ou
+CRITICAL. Aucune image corrigée n'a encore été publiée par un pipeline.
 
 **Utilisation locale** (sans installer Trivy) :
 
 ```shell
-# Scan du dépôt
-docker run --rm -v "$PWD:/scan" aquasec/trivy:latest \
+# Scan du dépôt, par le script du pipeline (Trivy installé), rapport compris
+scripts/ci/trivy_scan.sh --mode fs --target . --report reports/trivy-fs.json \
+  --scanners vuln,secret,misconfig --severity HIGH,CRITICAL \
+  --ignorefile .trivyignore.yaml
+
+# Le même scan sans rien installer — même version que le pipeline
+docker run --rm -v "$PWD:/scan" -w /scan aquasec/trivy:0.69.3 \
   fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL \
-  --skip-dirs front/node_modules --skip-dirs back/build /scan
+  --ignorefile .trivyignore.yaml \
+  --skip-dirs front/node_modules --skip-dirs back/build .
 
 # Scan d'une image construite
-docker compose build
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest \
-  image --severity HIGH,CRITICAL --ignore-unfixed back-p6
+docker build -t microcrm-back:local ./back
+scripts/ci/trivy_scan.sh --mode image --target microcrm-back:local \
+  --report reports/trivy-image-back.json --docker-image aquasec/trivy:0.69.3
 ```
 
 Les exceptions assumées se déclarent dans `.trivyignore.yaml` — une entrée par
@@ -363,8 +461,8 @@ la commande locale et le job CI mesurent exactement la même chose. Voir
 
 ## 6. Supervision de l'application déployée — **implémenté**
 
-> Cette section annonçait une amélioration prévue. Elle est faite, en deux temps,
-> et ce qui suit décrit ce qui existe réellement dans le dépôt.
+> Cette section annonçait une amélioration prévue. Elle est faite, par étapes,
+> et ce qui suit décrit ce qui existe réellement dans le dépôt au 2026-10-02.
 
 **Le manque de départ.** Les quatre outils précédents agissent tous **avant** le
 déploiement. Une fois l'application en marche, plus rien ne disait si elle répondait,
@@ -372,13 +470,14 @@ si sa base était joignable, ni ce qu'elle racontait.
 
 **Ce qui a été fait, et où c'est décrit.**
 
-| Volet                             | État       | Détail                                                                                                                                                                                       |
-| --------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sondes de santé                   | fait       | Actuator est en dépendance, et les trois sondes (`startup`, `liveness`, `readiness`) sont posées sur les deux Deployments — [K8S.md](K8S.md) §5. Vérifiées sous kubelet en §14.3             |
-| Centralisation des logs           | fait       | Elasticsearch, Kibana et Filebeat sur le cluster local ; les logs du back sont en JSON ECS et arrivent décodés — [MONITORING.md](MONITORING.md)                                              |
-| Tableaux de bord                  | fait       | 6 panneaux — volume, latence, erreurs applicatives et HTTP, statuts, logs récents — exportés en objets sauvegardés versionnés dans `k8s/elk/dashboards/` — [MONITORING.md](MONITORING.md) §8 |
-| Métriques (CPU, mémoire, latence) | **absent** | seuls les logs sont collectés. Il n'y a ni Prometheus ni `metrics-server` sur le cluster                                                                                                     |
-| Alerting                          | **absent** | rien ne prévient : la supervision se consulte, elle ne réveille personne                                                                                                                     |
+| Volet                                   | État                        | Détail                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sondes de santé                         | fait                        | Actuator est en dépendance, et les trois sondes (`startup`, `liveness`, `readiness`) sont posées sur les deux Deployments — [K8S.md](K8S.md) §5. Vérifiées sous kubelet en §14.3                                                                                                                                                                                              |
+| Centralisation des logs                 | fait                        | Elasticsearch, Kibana et Filebeat sur le cluster local ; les logs du back sont en JSON ECS et arrivent décodés. **Staging seulement** : Filebeat ne collecte pas la production — [MONITORING.md](MONITORING.md)                                                                                                                                                               |
+| Tableaux de bord                        | fait                        | Cinq tableaux de bord versionnés dans `k8s/elk/dashboards/` : supervision, DORA, sécurité, disponibilité, suivi des alertes — [MONITORING.md](MONITORING.md) §8                                                                                                                                                                                                               |
+| Alerting                                | fait, **sans notification** | Huit règles Kibana versionnées (disponibilité, performance, sécurité), installées par `scripts/monitoring/install_alerting.py`, toutes déclenchées une fois le 2026-10-02. Elles écrivent dans l'index `microcrm-alerts` et dans le journal de Kibana ; **rien ne sort de Kibana**, les connecteurs webhook exigeant une licence payante — [MONITORING.md](MONITORING.md) §11 |
+| Latence, débit et taux d'échec de l'API | **écrit, pas déployé**      | Traces OpenTelemetry vers Elastic APM, éprouvées depuis un conteneur lancé sur le poste. Les images déployées précèdent l'agent : aucun pod du cluster n'émet de trace — [MONITORING.md](MONITORING.md) §10                                                                                                                                                                   |
+| Métriques de ressources (CPU, mémoire)  | **absent**                  | Ni Prometheus ni `metrics-server` sur le cluster ; les métriques de la JVM que l'agent pourrait envoyer sont coupées. Les `resources` des Deployments restent des estimations                                                                                                                                                                                                 |
 
 Ce qui suit dans cette section décrivait l'ajout d'Actuator ; c'est fait, et le
 détail des sondes est désormais dans [K8S.md](K8S.md) §5. Conservé ici pour le
@@ -402,7 +501,8 @@ fonctionne.
    déclenche donc le rollback automatique de `deploy.sh`.
 
 > Pour aller plus loin : `io.micrometer:micrometer-registry-prometheus` exposerait
-> `/actuator/prometheus`, scrapable par Prometheus/Grafana.
+> `/actuator/prometheus`, scrapable par Prometheus/Grafana. C'est ce qui manque
+> encore : les traces donnent la latence de l'API, pas la consommation des pods.
 
 ---
 
@@ -484,8 +584,12 @@ la ligne est exécutée mais rien ne l'observe.
 
 ```bash
 cd back && ./gradlew pitest          # rapport dans build/reports/pitest/
-MUTATION_MIN=90 ./gradlew pitest     # seuil surchargé, comme en CI
+MUTATION_MIN=80 ./gradlew pitest     # le seuil posé par variable, comme en CI
 ```
+
+Le seuil du pipeline est **80** (`MUTATION_MIN` dans `.gitlab/ci/variables.yml`),
+et c'est aussi la valeur par défaut de `back/build.gradle` quand la variable est
+absente. La surcharger sert à essayer un seuil plus strict en local.
 
 Job séparé, parce que PIT relance la suite une fois par mutant et qu'il est
 nettement plus lent que `test-back`. Il est bloquant : sous `MUTATION_MIN`, le
@@ -502,7 +606,7 @@ l'implémentation par défaut est vide. Aucun test ne peut le tuer.
 | Back — branches (JaCoCo)  | 100 %  | 90 %  |
 | Back — mutants tués (PIT) | 96 %   | 80 %  |
 | Front — lignes            | 100 %  | 90 %  |
-| Front — branches          | 89 %   | 80 %  |
+| Front — branches          | 90 %   | 80 %  |
 
 Les seuils sont calés **sous** les valeurs tenues, avec assez de marge pour ne pas
 se déclencher sur une ligne de plus, et assez peu pour qu'une vraie régression se

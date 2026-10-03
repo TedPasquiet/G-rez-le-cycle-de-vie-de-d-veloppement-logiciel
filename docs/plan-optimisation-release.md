@@ -59,7 +59,9 @@ frontière traverse une boîte mail.
 ### 1.2 Le chiffre qui cadre tout le reste
 
 Le collecteur d'indicateurs DORA (`scripts/ci/collect_dora.py`), mesuré le
-**2026-09-23** sur les **50 pipelines** des trente derniers jours :
+**2026-09-23** sur les **50 pipelines** des trente derniers jours, puis rejoué le
+2026-10-02 sur 57 pipelines avec **les mêmes valeurs** — aucun déploiement
+n'ayant eu lieu entre les deux :
 
 | Indicateur DORA              | Valeur mesurée       | Lecture                                                 |
 | ---------------------------- | -------------------- | ------------------------------------------------------- |
@@ -108,12 +110,14 @@ premier a déjà l'adhésion de l'équipe, le second doit d'abord être partagé
 | **I7** | **Trois artefacts** dont une image tout-en-un                   | Sondage Dev                    | Couple les cadences front et back, empêche la montée en charge, triple la surface à scanner.                                                                    |
 | **I8** | **Aucune compétence Kubernetes** déclarée dans les deux équipes | Absence dans les deux sondages | La cible repose sur une compétence que personne n'a. Risque non pas de lenteur, mais d'incident non diagnosticable.                                             |
 
-**Deux irritants sont déjà traités et il serait malhonnête de les recompter.**
+**Trois irritants sont traités et il serait malhonnête de les recompter.**
 I7 est réglé : l'image tout-en-un a été scindée au commit `2931df3` puis
-supprimée au commit `f125ef0`. I2 est **partiellement** traité — les outils sont
-descendus dans le pipeline Dev, mais I3 explique pourquoi le résultat n'est pas
-encore là. C'est exactement le genre de demi-mesure qui donne l'illusion du
-progrès, et c'est pourquoi I3 est en tête du plan.
+supprimée au commit `f125ef0`. I3 est réglé depuis le 2026-09-19 : les scans
+bloquent (A1.1). I2 l'est donc aussi, avec une réserve que le 2026-10-02 a mise
+au jour : l'une des portes, Dependency-Check, n'analysait aucun jar et
+« passait » sur du vide (A1.3). La colonne « ce qu'il coûte aujourd'hui » garde
+la description d'origine de ces irritants : c'est ce qui permet de mesurer
+l'écart.
 
 ---
 
@@ -173,6 +177,23 @@ Chaque action porte un identifiant, l'irritant traité, un porteur, un effort
 (S ≤ 1 j, M ≤ 3 j, L > 3 j) et **une preuve d'atteinte** — ce qu'on regarde pour
 dire que c'est fait.
 
+**État des vagues au 2026-10-02.** « Écrit » veut dire présent dans le dépôt
+mais jamais exécuté par un pipeline : le travail de ce jour-là n'est ni commité
+ni passé dans un runner.
+
+| Vague | Actions faites               | En partie, ou écrites sans avoir tourné | Pas commencées                  |
+| ----- | ---------------------------- | --------------------------------------- | ------------------------------- |
+| 0     | A0.1, A0.2, A0.3 — **close** | —                                       | —                               |
+| 1     | A1.1, A1.2, A1.3             | —                                       | A1.4 ; A1.5 n'est pas mesurable |
+| 2     | A2.1                         | —                                       | A2.2, A2.3, A2.4, A2.5          |
+| 3     | —                            | A3.3 (écrite)                           | A3.1, A3.2, A3.4, A3.5          |
+| 4     | A4.3                         | A4.2 (Release sans changelog)           | A4.1, A4.4                      |
+
+Hors plan, deux chantiers ont avancé et changent la lecture des vagues 3 et 4 :
+**huit règles d'alerte Kibana** couvrent désormais disponibilité, performance et
+sécurité en staging, sans notification hors de Kibana (`MONITORING.md` §11) ; et
+les **traces de l'API** sont écrites mais pas déployées (§10 du même document).
+
 ### Vague 0 — Faire aboutir la chaîne une fois — **close le 2026-09-22**
 
 C'était le préalable à tout le reste : tant qu'elle n'était pas close, les
@@ -211,14 +232,20 @@ plus.
 
 ### Vague 1 — Rendre les contrôles contraignants
 
-| ID   | Action                                                                                                                   | Irritant           | Porteur        | Effort | Preuve d'atteinte                                                                               |
-| ---- | ------------------------------------------------------------------------------------------------------------------------ | ------------------ | -------------- | ------ | ----------------------------------------------------------------------------------------------- |
-| A1.1 | Passer les scans Trivy à `--exit-code 1` sur `HIGH,CRITICAL` (`trivy-fs`, `package-back`, `package-front`)               | I3, I2             | Maïa           | S      | **Fait le 2026-09-19.** Une image porteuse d'une CVE critique fait échouer `package-*`          |
-| A1.2 | Tenir un fichier d'exceptions **daté et justifié** : une entrée = un identifiant, un chemin, une raison, une date        | I3                 | Maïa + Roubina | S      | **Fait le 2026-09-19** — `.trivyignore.yaml`, 4 entrées bornées par chemin, revue au 2026-12-31 |
-| A1.3 | Rendre `dependency-check-back` bloquant au-delà d'un score CVSS convenu                                                  | I2                 | Sylvain        | S      | Le job échoue sur une dépendance vulnérable introduite volontairement en test                   |
-| A1.4 | Miroiter les images de base dans le registry interne et n'y référencer qu'elles                                          | I6, souhait Ops C8 | Nico           | M      | Aucun `FROM` ne pointe vers DockerHub ; le build passe DockerHub coupé                          |
-| A1.5 | Remplacer l'email par le pipeline comme canal : un déploiement se désigne par un tag d'image, jamais par un numéro dicté | I6                 | Roubina + Nico | S      | Aucun échange de version par email sur une itération complète                                   |
+| ID   | Action                                                                                                                   | Irritant           | Porteur        | Effort | Preuve d'atteinte                                                                                                                                                                                                                                                                                                                      |
+| ---- | ------------------------------------------------------------------------------------------------------------------------ | ------------------ | -------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1.1 | Passer les scans Trivy en mode bloquant sur `HIGH,CRITICAL` (`trivy-fs`, `package-back`, `package-front`)                | I3, I2             | Maïa           | S      | **Fait le 2026-09-19.** Une image porteuse d'une CVE critique fait échouer `package-*`. Depuis le 2026-10-02 (écrit) : le scan d'image a lieu **avant** le push, et chaque scan publie un rapport JSON en artefact (`scripts/ci/trivy_scan.sh`)                                                                                        |
+| A1.2 | Tenir un fichier d'exceptions **daté et justifié** : une entrée = un identifiant, un chemin, une raison, une date        | I3                 | Maïa + Roubina | S      | **Fait le 2026-09-19** — `.trivyignore.yaml`, 7 entrées au 2026-10-02, bornées par chemin, revue au 2026-12-31 ; et depuis le 2026-10-02, `suppressions.xml` pour Dependency-Check : 12 CVE de Spring Framework, même échéance                                                                                                         |
+| A1.3 | Rendre `dependency-check-back` bloquant au-delà d'un score CVSS convenu                                                  | I2                 | Sylvain        | S      | **Bloquant depuis le 2026-09-19, effectif depuis le 2026-10-02 seulement.** Le job n'analysait aucun jar (`skipTestGroups`) ; il en lit 82, et a échoué en local sur 13 CVE réelles avant traitement. La preuve prévue — une dépendance vulnérable introduite exprès — n'a pas été jouée : c'est une vraie qui a fait la démonstration |
+| A1.4 | Miroiter les images de base dans le registry interne et n'y référencer qu'elles                                          | I6, souhait Ops C8 | Nico           | M      | Aucun `FROM` ne pointe vers DockerHub ; le build passe DockerHub coupé                                                                                                                                                                                                                                                                 |
+| A1.5 | Remplacer l'email par le pipeline comme canal : un déploiement se désigne par un tag d'image, jamais par un numéro dicté | I6                 | Roubina + Nico | S      | Aucun échange de version par email sur une itération complète                                                                                                                                                                                                                                                                          |
 
+> **A1.3 enseigne ce qu'une preuve d'atteinte doit regarder.** Le job était
+> bloquant et vert ; la case aurait pu être cochée le 2026-09-19. Il ne lisait
+> rien. Une porte bloquante qui ne lit rien ne se distingue pas, à l'œil, d'une
+> porte qui n'a rien trouvé — la preuve d'atteinte d'un contrôle doit donc
+> inclure ce qu'il a regardé, pas seulement son verdict.
+>
 > **A1.1 tient en un caractère, et c'est précisément le piège.** Le travail
 > n'est pas la modification, c'est A1.2 : sans une liste d'exceptions tenue
 > honnêtement, un scan bloquant devient un scan qu'on contourne, et l'équipe
@@ -227,13 +254,13 @@ plus.
 
 ### Vague 2 — Réparer la parité d'environnement
 
-| ID   | Action                                                                                       | Irritant | Porteur           | Effort | Preuve d'atteinte                                                                   |
-| ---- | -------------------------------------------------------------------------------------------- | -------- | ----------------- | ------ | ----------------------------------------------------------------------------------- |
-| A2.1 | Faire tourner les tests d'intégration du back contre un **PostgreSQL réel** en service de CI | I5       | Sylvain           | M      | `test-back` échoue si une requête ne passe pas sur PostgreSQL                       |
-| A2.2 | Introduire Flyway ou Liquibase et **retirer `ddl-auto`** en environnement persistant         | I5       | Sylvain + Roubina | L      | Une évolution d'entité produit un script de migration, pas une recréation de schéma |
-| A2.3 | Déployer PostgreSQL en `StatefulSet` + PVC, identifiants en `Secret`                         | I5       | Nico              | M      | La base survit à la suppression du pod applicatif                                   |
-| A2.4 | Lever le plafond de 1 replica sur le back et le vérifier sous charge k6                      | I5       | Maïa + Temim      | S      | 2 replicas servent des données cohérentes sous `k6-load`                            |
-| A2.5 | Écrire et **jouer** la procédure de sauvegarde/restauration                                  | I5       | Nico              | M      | Une restauration effective, pas un `CronJob` jamais rejoué                          |
+| ID   | Action                                                                                       | Irritant | Porteur           | Effort | Preuve d'atteinte                                                                                                                         |
+| ---- | -------------------------------------------------------------------------------------------- | -------- | ----------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| A2.1 | Faire tourner les tests d'intégration du back contre un **PostgreSQL réel** en service de CI | I5       | Sylvain           | M      | **Fait le 2026-09-04** (commit `ffe1d39`) — `test-back` et `mutation-back` tournent sur un service `postgres:16-alpine` (`QUALITY.md` §7) |
+| A2.2 | Introduire Flyway ou Liquibase et **retirer `ddl-auto`** en environnement persistant         | I5       | Sylvain + Roubina | L      | Une évolution d'entité produit un script de migration, pas une recréation de schéma                                                       |
+| A2.3 | Déployer PostgreSQL en `StatefulSet` + PVC, identifiants en `Secret`                         | I5       | Nico              | M      | La base survit à la suppression du pod applicatif                                                                                         |
+| A2.4 | Lever le plafond de 1 replica sur le back et le vérifier sous charge k6                      | I5       | Maïa + Temim      | S      | 2 replicas servent des données cohérentes sous `k6-load`                                                                                  |
+| A2.5 | Écrire et **jouer** la procédure de sauvegarde/restauration                                  | I5       | Nico              | M      | Une restauration effective, pas un `CronJob` jamais rejoué                                                                                |
 
 > **L'ordre est contraint et ne se négocie pas.** A2.2 avant A2.3 : mettre en
 > place une base persistante en gardant `ddl-auto` revient à installer un
@@ -243,13 +270,13 @@ plus.
 
 ### Vague 3 — Automatiser le déploiement et combler l'angle mort
 
-| ID   | Action                                                                                       | Irritant | Porteur                      | Effort | Preuve d'atteinte                                                                       |
-| ---- | -------------------------------------------------------------------------------------------- | -------- | ---------------------------- | ------ | --------------------------------------------------------------------------------------- |
-| A3.1 | Passer `deploy-staging` de `when: manual` à `when: on_success`                               | I4       | Nico                         | S      | Un merge sur `develop` met à jour staging sans intervention                             |
-| A3.2 | Tests post-déploiement en **TestInfra** — l'outil que l'équipe Ops maîtrise déjà             | I4, I8   | Maïa                         | M      | Un déploiement fonctionnel mais cassé fait échouer le job                               |
-| A3.3 | Exécuter le collecteur DORA **dans la CI** au lieu de le lancer à la main                    | I1       | Josefina                     | S      | Les indicateurs s'actualisent sans commande manuelle                                    |
-| A3.4 | Montée en compétence Kubernetes : deux ateliers, un incident simulé, une astreinte en binôme | I8       | Nico (anime), toute l'équipe | L      | Chaque membre a diagnostiqué seul un pod en `CrashLoopBackOff` et déclenché un rollback |
-| A3.5 | Documenter les décisions structurantes en ADR courtes                                        | I8       | Josefina                     | S      | Une ADR par décision d'architecture non triviale                                        |
+| ID   | Action                                                                                       | Irritant | Porteur                      | Effort | Preuve d'atteinte                                                                                                                                                                                                                    |
+| ---- | -------------------------------------------------------------------------------------------- | -------- | ---------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A3.1 | Passer `deploy-staging` de `when: manual` à `when: on_success`                               | I4       | Nico                         | S      | Un merge sur `develop` met à jour staging sans intervention                                                                                                                                                                          |
+| A3.2 | Tests post-déploiement en **TestInfra** — l'outil que l'équipe Ops maîtrise déjà             | I4, I8   | Maïa                         | M      | Un déploiement fonctionnel mais cassé fait échouer le job                                                                                                                                                                            |
+| A3.3 | Exécuter le collecteur DORA **dans la CI** au lieu de le lancer à la main                    | I1       | Josefina                     | S      | **Écrit le 2026-10-02, jamais exécuté** : job `dora-metrics` sur `develop`, `main` et les tags, artefact `reports/dora.json`. Il n'alimente pas Elasticsearch, injoignable depuis un job : le tableau de bord reste rempli à la main |
+| A3.4 | Montée en compétence Kubernetes : deux ateliers, un incident simulé, une astreinte en binôme | I8       | Nico (anime), toute l'équipe | L      | Chaque membre a diagnostiqué seul un pod en `CrashLoopBackOff` et déclenché un rollback                                                                                                                                              |
+| A3.5 | Documenter les décisions structurantes en ADR courtes                                        | I8       | Josefina                     | S      | Une ADR par décision d'architecture non triviale                                                                                                                                                                                     |
 
 > **Sur A3.2 et le choix de TestInfra.** Le réflexe serait d'écrire ces tests
 > dans l'outillage du pipeline. On les écrit en TestInfra parce que l'équipe Ops
@@ -265,12 +292,12 @@ plus.
 
 ### Vague 4 — Réduire le risque de la mise en production
 
-| ID   | Action                                                   | Irritant | Porteur     | Effort | Preuve d'atteinte                                       |
-| ---- | -------------------------------------------------------- | -------- | ----------- | ------ | ------------------------------------------------------- |
-| A4.1 | Déploiement progressif — canary ou blue/green            | I4       | Nico + Maïa | L      | Une version fautive n'atteint qu'une fraction du trafic |
-| A4.2 | Changelog généré depuis les Conventional Commits         | I6       | Josefina    | S      | Chaque tag porte son changelog, sans rédaction manuelle |
-| A4.3 | Notification d'échec de déploiement sur un canal partagé | I6       | Temim       | S      | Un échec est visible sans consulter GitLab              |
-| A4.4 | Signature des images et attestation de provenance        | I2       | Maïa        | M      | Une image non signée est refusée au déploiement         |
+| ID   | Action                                                   | Irritant | Porteur     | Effort | Preuve d'atteinte                                                                                                                                                                                       |
+| ---- | -------------------------------------------------------- | -------- | ----------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A4.1 | Déploiement progressif — canary ou blue/green            | I4       | Nico + Maïa | L      | Une version fautive n'atteint qu'une fraction du trafic                                                                                                                                                 |
+| A4.2 | Changelog généré depuis les Conventional Commits         | I6       | Josefina    | S      | **En partie, écrit le 2026-10-02** : le job `release` crée une Release GitLab sur chaque tag, avec le commit et les images — pas encore la liste des changements. Jamais exécuté : aucun tag n'a abouti |
+| A4.3 | Notification d'échec de déploiement sur un canal partagé | I6       | Temim       | S      | **Fait le 2026-09-29** (commit `44a1418`) — `notify-echec` et l'`after_script` des déploiements, vers `NOTIFY_WEBHOOK_URL`. Sans la variable, le message reste dans le journal du job                   |
+| A4.4 | Signature des images et attestation de provenance        | I2       | Maïa        | M      | Une image non signée est refusée au déploiement                                                                                                                                                         |
 
 ---
 
@@ -280,16 +307,16 @@ Quatre indicateurs DORA, plus quatre propres aux irritants d'Orion. La colonne
 « aujourd'hui » n'est pas une estimation : c'est ce qui est mesuré, ou
 l'indication franche qu'il n'y a pas de mesure.
 
-| Indicateur                                     | Aujourd'hui                     | Après vague 1               | Après vague 3          | Comment on le mesure                            |
-| ---------------------------------------------- | ------------------------------- | --------------------------- | ---------------------- | ----------------------------------------------- |
-| Fréquence de déploiement                       | **0,1667 / j**                  | > 0,33 / j                  | ≥ 1 / j sur staging    | `collect_dora.py`                               |
-| Délai de mise en production                    | **1,38 h**                      | < 1,38 h                    | < 1 j, sans clic       | `collect_dora.py`                               |
-| Temps de rétablissement                        | **2,14 h**                      | mesurable sur plus de 2 cas | < 1 h                  | `collect_dora.py`                               |
-| Taux d'échec des changements                   | **66,67 %**                     | < 50 %                      | < 15 %                 | `collect_dora.py`                               |
-| Délai entre remise et retour CVE               | **jours** (retour à l'envoyeur) | **minutes** (le job échoue) | idem                   | Durée du job `package-*`                        |
-| Part d'opérations de déploiement manuelles     | **100 %**                       | 100 %                       | staging à 0 %          | Comptage des gestes `when: manual`              |
-| Artefacts publiés par release                  | **2** (3 avant `f125ef0`)       | 2                           | 2                      | `docker images` du registry                     |
-| Environnements où le code voit sa base de prod | **0**                           | 0                           | **1** (CI, après A2.1) | Présence du service PostgreSQL dans `test-back` |
+| Indicateur                                     | Aujourd'hui                                      | Après vague 1               | Après vague 3       | Comment on le mesure                            |
+| ---------------------------------------------- | ------------------------------------------------ | --------------------------- | ------------------- | ----------------------------------------------- |
+| Fréquence de déploiement                       | **0,1667 / j**                                   | > 0,33 / j                  | ≥ 1 / j sur staging | `collect_dora.py`                               |
+| Délai de mise en production                    | **1,38 h**                                       | < 1,38 h                    | < 1 j, sans clic    | `collect_dora.py`                               |
+| Temps de rétablissement                        | **2,14 h**                                       | mesurable sur plus de 2 cas | < 1 h               | `collect_dora.py`                               |
+| Taux d'échec des changements                   | **66,67 %**                                      | < 50 %                      | < 15 %              | `collect_dora.py`                               |
+| Délai entre remise et retour CVE               | **minutes** (le job échoue) depuis le 2026-09-19 | **minutes**                 | idem                | Durée du job `package-*`                        |
+| Part d'opérations de déploiement manuelles     | **100 %**                                        | 100 %                       | staging à 0 %       | Comptage des gestes `when: manual`              |
+| Artefacts publiés par release                  | **2** (3 avant `f125ef0`)                        | 2                           | 2                   | `docker images` du registry                     |
+| Environnements où le code voit sa base de prod | **1** (CI, depuis A2.1)                          | 1                           | 1                   | Présence du service PostgreSQL dans `test-back` |
 
 Trois honnêtetés à maintenir dans ce tableau. **Un indicateur sans donnée se
 rend `null`, jamais `0`** — c'est la règle du collecteur, et l'afficher en `0`

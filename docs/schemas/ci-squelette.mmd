@@ -4,10 +4,10 @@
 %% allow_failure est BLOQUANT, il ne peut donc pas vivre au milieu du pipeline.
 flowchart LR
     subgraph V["Vérification — toutes branches + MR"]
-        l["lint<br/>5 jobs"] --> t["test<br/>3 jobs"] --> q["quality<br/>6 jobs"] --> s["security<br/>2 jobs"] --> i["infra<br/>3 jobs"]
+        l["lint<br/>6 jobs"] --> t["test<br/>3 jobs"] --> q["quality<br/>6 jobs"] --> s["security<br/>2 jobs"] --> i["infra<br/>3 jobs"]
     end
     subgraph C["Livraison — develop, release/, hotfix/, main, tag"]
-        b["build<br/>2 jobs"] --> p["package<br/>2 jobs"] --> f["perf<br/>enfant, 3 jobs"] --> d["deploy<br/>3 jobs"]
+        b["build<br/>2 jobs"] --> p["package<br/>2 jobs, + 3 sur un tag"] --> f["perf<br/>enfant, 3 jobs"] --> d["deploy<br/>4 jobs"]
     end
     V --> C
-    C --> a["infra-apply<br/>3 jobs manuels"]
+    C --> a["infra-apply<br/>3 jobs manuels + notification"]

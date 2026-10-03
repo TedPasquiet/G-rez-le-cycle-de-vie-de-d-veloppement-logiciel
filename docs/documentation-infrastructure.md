@@ -1,7 +1,7 @@
 # Documentation d'infrastructure — MicroCRM
 
 **Projet** : MicroCRM — P5, Expert DevOps, « Gérez le cycle de vie de développement logiciel »
-**Date** : 18 août 2026 · **Périmètre** : architecture, conteneurisation, infrastructure as code, exploitation
+**Date** : 18 août 2026, mis à jour le 2 octobre 2026 · **Périmètre** : architecture, conteneurisation, infrastructure as code, exploitation
 
 Ce document décrit comment MicroCRM est construit, décrit et déployé, et par
 quelles procédures on le met à jour, on revient en arrière et on le reconstruit.
@@ -17,11 +17,19 @@ exercée sur un cluster Kubernetes local, à la main, depuis un poste. **Elle es
 déployée depuis la CI depuis le 22 septembre 2026** — après sept échecs, un
 quota GitLab épuisé, puis un runner auto-hébergé et trois correctifs d'accès au
 cluster. Staging et production sont aujourd'hui posés par le pipeline, et un
-rollback de production a été joué. Le recul est de deux jours, et le taux
-d'échec des changements est de **66,67 % sur 9 tentatives** : le chemin
-automatisé existe, il n'est pas encore éprouvé. Ce que la campagne manuelle
-porte encore seule — le comportement sous incident — est détaillé dans
-`rapport-performance.md` §2.3.
+rollback de production a été joué. Le recul est de deux journées de
+déploiement — les 22 et 23 septembre — et le taux d'échec des changements est de
+**66,67 % sur 9 tentatives** : le chemin automatisé existe, il n'est pas encore
+éprouvé. **Rien n'a été déployé depuis le 23 septembre** : les trois derniers
+pipelines de `develop` ont échoué, pour trois raisons différentes (§7). Ce que
+la campagne manuelle porte encore seule — le comportement sous incident — est
+détaillé dans `rapport-performance.md`.
+
+⚠️ **Ce que la mise à jour du 2 octobre décrit.** Le scan d'image avant le push,
+les rapports de sécurité en artefacts, la Release GitLab, l'alerting et les
+traces de l'API sont dans l'arbre de travail du dépôt. **Rien de cela n'est
+passé dans un pipeline, et les traces ne sont pas déployées.** Les passages
+concernés le disent à leur place.
 
 ## 1. L'application et ses composants
 
@@ -70,35 +78,43 @@ base vit dans le tas de la JVM.
 ```mermaid
 flowchart TB
     dev(["git push / merge"]) --> gh["GitHub<br/>dépôt de travail, Pull Requests"]
-    gh -->|"GitHub Actions : mirror-to-gitlab.yaml"| gl["GitLab<br/>miroir en lecture seule"]
+    gh -->|"GitHub Actions : mirror-to-gitlab.yaml<br/>push --prune de toutes les refs"| gl["GitLab<br/>miroir en lecture seule"]
     gl --> pipe
-    subgraph pipe["Pipeline GitLab CI : 10 étapes, 37 jobs"]
+
+    subgraph pipe["Pipeline GitLab CI : 10 étapes, 39 jobs"]
         direction LR
         s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
     end
-    s7 -->|"docker push, tag = SHA court"| reg[("Registry GitLab privé")]
-    s5 -.->|"terraform plan / apply"| tf["Namespace, quota,<br/>limites, policies"]
-    s9 == "déclenchement MANUEL" ==> jobs
+
+    s7 -->|"docker push<br/>tag = CI_COMMIT_SHORT_SHA, jamais latest"| reg[("Registry GitLab<br/>privé")]
+    s5 -.->|"terraform plan / apply<br/>manuels"| tf["Namespace, quota,<br/>limites, policies"]
+
+    s9 == "déclenchement MANUEL<br/>develop, main ou tag" ==> jobs
+
     subgraph jobs["Étape deploy : 3 jobs, aboutis depuis le 2026-09-22"]
         direction TB
         j1["1. kubectl create secret docker-registry"]
-        j2["2. overlay éphémère Kustomize"]
+        j2["2. overlay éphémère Kustomize<br/>images: newName + newTag"]
         j3["3. kubectl apply -k"]
-        j4["4. deploy.sh : rollout + rollback auto"]
+        j4["4. deploy.sh : attente de rollout,<br/>retour arrière automatique si échec"]
         j1 --> j2 --> j3 --> j4
     end
+
     reg -->|"imagePullSecrets"| j3
     tf -.-> ns
     j4 --> ns
+
     subgraph ns["Namespace microcrm-staging ou microcrm-production"]
         direction LR
-        ing["Ingress, 2 hôtes"]
-        pb["pod back, 1 replica imposé"]
+        ing["Ingress<br/>2 hôtes"]
+        pb["pod back<br/>1 replica imposé"]
         pf["pod front"]
         ing --> pb
         ing --> pf
     end
+
     poste(["Poste : docker build<br/>+ minikube image load"]) ==>|"chemin manuel,<br/>campagne K8S.md §14"| ns
+
     classDef jamais stroke-dasharray: 5 5;
     class tf jamais;
 ```
@@ -106,9 +122,15 @@ flowchart TB
 _Source versionnée : `docs/schemas/plateforme-deploiement.mmd`, reprise dans
 `ARCHITECTURE.md` §8.1._
 
+Le schéma se lit de haut en bas : un push sur GitHub est recopié sur GitLab,
+dont le pipeline traverse ses étapes ; l'étape `package` envoie les images au
+registry, l'étape `deploy` les pose dans le namespace que Terraform a préparé.
+
 **Le cadre en tirets qui reste n'est pas une coquetterie graphique** : il marque
-ce qui est écrit, testé, et jamais mené à son terme — ici l'`apply` Terraform,
-qui demeure un geste manuel. L'étape `deploy` en est sortie le 22 septembre 2026. Le trait épais du bas n'est plus le seul chemin qui produit des pods en
+ce qui ne suit pas le fil du pipeline — ici l'`apply` Terraform, qui demeure un
+geste manuel, placé dans la dernière étape. Il a été joué : en production depuis
+la CI le 23 septembre 2026, en staging et dans `logging` depuis un poste
+(`TERRAFORM.md` §4). L'étape `deploy` est sortie des tirets le 22 septembre 2026. Le trait épais du bas n'est plus le seul chemin qui produit des pods en
 marche, mais il reste celui de la campagne de vérification (`K8S.md` §14).
 
 ### 2.1 Du dépôt au pipeline
@@ -123,18 +145,22 @@ revient à perdre le travail au push suivant.
 
 ### 2.2 Les dix étapes
 
-| Étape         | Jobs                                                                          | Rôle                                                |
-| ------------- | ----------------------------------------------------------------------------- | --------------------------------------------------- |
-| `lint`        | `lint-front`, `lint-back`, `shellcheck`, `lint-k8s`, `lint-helm`              | Forme du code, des scripts, des manifestes          |
-| `test`        | `test-scripts`, `test-front`, `test-back`                                     | Scripts d'automatisation, Karma, JUnit              |
-| `quality`     | `sonar-back`, `sonar-front`, `spotbugs-back`, `coverage-gate`, `quality-gate` | Analyse statique, bugs, seuil de couverture         |
-| `security`    | `dependency-check-back`, `trivy-fs`                                           | CVE des dépendances, secrets, misconfigurations     |
-| `infra`       | `terraform-validate`, `ansible-lint`, `terraform-plan`                        | L'infrastructure se valide **avant** la compilation |
-| `build`       | `build-front`, `build-back`                                                   | Compilation des artefacts                           |
-| `package`     | `package-back`, `package-front`                                               | Images Docker taguées par SHA + scan Trivy          |
-| `perf`        | job `perf` → **pipeline enfant** (3 jobs k6)                                  | Tests de performance sur l'image construite         |
-| `deploy`      | `deploy-staging`, `deploy-production`, `rollback-production`                  | Déploiement Kubernetes et retour arrière            |
-| `infra-apply` | 3× `terraform-apply-<env>`                                                    | Manuels et bloquants, donc placés en dernier        |
+Le pipeline compte **39 jobs** : 36 dans le pipeline parent, 3 dans le pipeline
+enfant de performance. Il est décrit par 14 fichiers — la racine
+`.gitlab-ci.yml`, qui ne contient aucun job, et 13 fichiers de `.gitlab/ci/`.
+
+| Étape         | Jobs                                                                                           | Rôle                                                                                |
+| ------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `lint`        | `lint-front`, `lint-back`, `shellcheck`, `lint-k8s`, `lint-helm`, `version-consistency`        | Forme du code, des scripts, des manifestes ; concordance des versions sur un tag    |
+| `test`        | `test-scripts`, `test-front`, `test-back`                                                      | Scripts d'automatisation, Karma, JUnit sur PostgreSQL                               |
+| `quality`     | `sonar-back`, `sonar-front`, `spotbugs-back`, `coverage-gate`, `mutation-back`, `quality-gate` | Analyse statique, bugs, seuils de couverture et de mutation                         |
+| `security`    | `dependency-check-back`, `trivy-fs`                                                            | CVE des dépendances, secrets, misconfigurations                                     |
+| `infra`       | `terraform-validate`, `ansible-lint`, `terraform-plan`                                         | L'infrastructure se valide **avant** la compilation                                 |
+| `build`       | `build-front`, `build-back`                                                                    | Compilation des artefacts                                                           |
+| `package`     | `package-back`, `package-front`, `promote-back`, `promote-front`, `release`                    | Images scannées puis poussées sous le SHA ; sur un tag, promotion et Release GitLab |
+| `perf`        | job `perf` → **pipeline enfant** (`k6-smoke`, `k6-load`, `k6-stress`)                          | Tests de performance sur l'image construite                                         |
+| `deploy`      | `deploy-staging`, `deploy-production`, `rollback-production`, `dora-metrics`                   | Déploiement Kubernetes, retour arrière, calcul des indicateurs                      |
+| `infra-apply` | 3× `terraform-apply-<env>`, `notify-echec`                                                     | `apply` manuels et bloquants, donc placés en dernier ; notification d'échec         |
 
 L'ordre n'est pas cosmétique. `infra` passe **avant** `build` parce qu'un chart,
 un manifeste ou un plan Terraform cassé n'a pas besoin d'attendre une
@@ -160,17 +186,17 @@ Passer staging en automatique ne demande que de remplacer `when: manual` par
 `when: on_success`.
 
 Le projet suit **GitFlow**, et le nommage des branches n'est pas cosmétique :
-`.gitlab-ci.yml` filtre les jobs sur le préfixe, donc **une branche mal nommée
-ne déclenche aucun pipeline**. Le séparateur est un slash — `feature/ma-fonction`
+les règles de `.gitlab/ci/templates.yml` filtrent les jobs sur le préfixe, donc
+**une branche mal nommée ne déclenche aucun pipeline**. Le séparateur est un slash — `feature/ma-fonction`
 part, `feature_ma-fonction` ne correspond à aucune règle.
 
-| Branche                 | Jobs déclenchés                          |
-| ----------------------- | ---------------------------------------- |
-| `main`                  | tous, jusqu'au déploiement en production |
-| `develop`               | tous, jusqu'au staging                   |
-| `feature/…`             | lint, test, quality, security            |
-| `release/…`, `hotfix/…` | tous                                     |
-| Tag `vX.Y.Z`            | tous, déploiement production             |
+| Branche                        | Jobs déclenchés                                                                      |
+| ------------------------------ | ------------------------------------------------------------------------------------ |
+| `main`                         | tous, jusqu'au déploiement en production                                             |
+| `develop`                      | tous, jusqu'au staging                                                               |
+| `feature/…`, `fix/…`, `docs/…` | lint, test, quality, security, validation d'infra ; aucune image                     |
+| `release/…`, `hotfix/…`        | vérification, build, images, performance ; aucun déploiement                         |
+| Tag `vX.Y.Z`                   | tous sauf `package-*` : promotion de l'image, Release GitLab, déploiement production |
 
 ## 3. La conteneurisation
 
@@ -293,26 +319,32 @@ flowchart TB
         a1["outillage : docker, kubectl,<br/>helm, terraform, ansible-lint"]
         a2["profil minikube<br/>addons ingress et registry"]
     end
+
     subgraph L2["2. Terraform possède le contenant"]
         t1["Namespace"]
         t2["ResourceQuota"]
         t3["LimitRange"]
         t4["NetworkPolicy"]
     end
+
     subgraph L3["3. Kustomize possède l'application"]
         k1["Deployment"]
         k2["Service"]
         k3["Ingress"]
         k4["ConfigMap"]
     end
+
     subgraph L4["La CI possède les secrets, et eux seuls"]
         c1["Secret du registry<br/>recréé à chaque déploiement"]
     end
+
     L1 -->|"ansible-playbook site.yml"| L2
     L2 -->|"terraform apply"| L3
     L4 -.->|"kubectl create secret,<br/>avant l'apply"| L3
+
     helm["Helm : même rendu, autre mécanisme.<br/>Équivalence prouvée objet par objet,<br/>jamais déployé, exclusif de Kustomize"]
     helm -.->|"n'applique rien"| L3
+
     lbl["Frontière lisible dans le cluster :<br/>app.kubernetes.io/managed-by<br/>vaut terraform ou kustomize"]
     L2 -.- lbl
     L3 -.- lbl
@@ -398,7 +430,7 @@ autrement que par leurs valeurs — sans quoi le premier cesserait de valider qu
 que ce soit du second. Trois environnements existent : `staging`, `production`
 et `logging` (la stack ELK).
 
-|                            | staging            | production            |
+| Réglage                    | staging            | production            |
 | -------------------------- | ------------------ | --------------------- |
 | Namespace                  | `microcrm-staging` | `microcrm-production` |
 | `pods`                     | 10                 | 20                    |
@@ -452,11 +484,15 @@ rend l'écart lisible sans ouvrir les journaux du job (`TERRAFORM.md` §4.2).
 
 **Ce qui a été vérifié** : `validate` et `plan` sortent en `0` sur les
 environnements, contre le vrai cluster (6 ressources à créer par environnement
-vierge). L'`apply` a été joué sur `logging`.
+vierge). **L'`apply` a été joué sur les trois environnements** : `staging` le
+22 septembre 2026 depuis un poste, à partir d'un namespace détruit ; `production`
+le 23 septembre depuis la CI ; `logging` depuis un poste (`TERRAFORM.md` §4).
+Une réserve : la `NetworkPolicy` d'APM Server, ajoutée depuis au module
+`logging`, n'est pas encore dans le cluster — cet `apply` est à rejouer.
 
 ⚠️ **Deux mises en garde à l'exécution.**
 
-- Sur un namespace qui existe déjà — c'est le cas de `microcrm-staging`, créé à
+- Sur un namespace qui existe déjà — c'était le cas de `microcrm-staging`, créé à
   la main pendant la campagne de déploiement — `terraform apply` échoue sur
   `already exists`. L'adoption se fait **une fois**, par
   `terraform import 'module.namespace.kubernetes_namespace_v1.this' <ns>` ; le
@@ -513,7 +549,7 @@ exécute `kubectl set image deployment/back back=…`), **aucun `instance` dans
 | Le **namespace**            | `$STAGING_NAMESPACE` / `$PROD_NAMESPACE`      | coordonnée d'infrastructure ; `PROD_NAMESPACE` est protégée |
 | Le **chemin du registry**   | `$CI_REGISTRY_IMAGE` + `$CI_COMMIT_SHORT_SHA` | dépend du projet GitLab, et le tag dépend du commit         |
 | Le **`Secret` du registry** | la CI, à chaque déploiement                   | un `Secret` n'est que du base64, pas un chiffrement         |
-| L'**état Terraform**        | le poste                                      | contient en clair tout ce que les providers ont lu          |
+| L'**état Terraform**        | l'état managé GitLab, un par environnement    | contient en clair tout ce que les providers ont lu          |
 
 La règle est donc : **Kustomize décrit la forme, la CI fournit les coordonnées.**
 Ce n'est pas un détail d'hygiène — c'est ce qui rend les manifestes portables
@@ -589,6 +625,11 @@ Chaque point de ce socle est vérifié **au niveau conteneur** par
 
 ### 5.4 Ce que le déploiement local n'a pas pu vérifier
 
+Cette liste décrit la campagne manuelle d'août. **Ses deux premiers points ont
+été levés depuis par la CI** : les 22 et 23 septembre 2026, staging et
+production ont été déployés par le pipeline, avec des images tirées du registry
+GitLab privé par `imagePullSecrets`. Les trois derniers restent vrais.
+
 - **Le registry privé et `imagePullSecrets`** : les images étant chargées par
   `minikube image load` et déjà présentes sur le nœud, le kubelet a signalé le
   Secret manquant puis a poursuivi. Ce n'est pas une preuve que le chemin
@@ -642,10 +683,19 @@ n'autorise cette source.
 
 ## 7. Supervision
 
-La stack ELK — Elasticsearch, Kibana et Filebeat — vit dans un namespace
-`logging` **créé par Terraform**, comme tout autre contenant : la frontière du
-§4.1 ne souffre pas d'exception. Filebeat est un DaemonSet qui lit les fichiers
-de log du nœud, décode le JSON et ajoute les métadonnées Kubernetes.
+La stack de supervision — Elasticsearch, Kibana, Filebeat et APM Server — vit
+dans un namespace `logging` **créé par Terraform**, comme tout autre contenant :
+la frontière du §4.1 ne souffre pas d'exception. Filebeat est un DaemonSet qui
+lit les fichiers de log du nœud, décode le JSON et ajoute les métadonnées
+Kubernetes.
+
+| Volet                     | État au 2 octobre 2026                                                                                                                                                          | Détail                |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| Logs centralisés          | **En service** depuis le 16 août. Filebeat ne collecte que `microcrm-staging` : la production n'est pas dans les logs                                                           | `MONITORING.md` §2-§4 |
+| Tableaux de bord          | **Cinq**, versionnés en NDJSON dans `k8s/elk/dashboards/` : supervision, DORA, sécurité, disponibilité, suivi des alertes                                                       | `MONITORING.md` §8    |
+| Alerting                  | **Huit règles** Kibana versionnées dans `k8s/elk/alerting/` — disponibilité, performance, sécurité — installées et déclenchées une fois. **Aucune notification hors de Kibana** | `MONITORING.md` §11   |
+| Traces de l'API           | **Écrites, éprouvées depuis le poste, pas déployées.** Les images qui tournent précèdent l'agent OpenTelemetry                                                                  | `MONITORING.md` §10   |
+| Ressources (CPU, mémoire) | **Non mesurées.** Ni `metrics-server` ni Prometheus                                                                                                                             | `MONITORING.md` §12   |
 
 Un point de configuration mérite d'être connu par quiconque exploite cette
 plateforme : **la bascule texte → JSON du back tient à la seule clé
@@ -653,8 +703,29 @@ plateforme : **la bascule texte → JSON du back tient à la seule clé
 texte sans que rien ne le signale, les documents arrivent quand même, et Kibana
 n'a plus rien à filtrer.
 
+**L'alerting, en trois phrases.** Les règles sont des fichiers, installés par
+`scripts/monitoring/install_alerting.py` ; elles écrivent dans l'index
+`microcrm-alerts` et dans le journal de Kibana. La clé de chiffrement que Kibana
+exige vit dans un Secret créé hors dépôt. Les connecteurs qui pousseraient une
+alerte vers un canal d'équipe demandent une licence payante : il faut ouvrir
+Kibana pour savoir qu'une règle a sonné, et rien ne dit que l'alerting lui-même
+est arrêté.
+
+**Les traces, en trois phrases.** Un agent OpenTelemetry est embarqué dans
+l'image du back et activé par la ConfigMap ; APM Server reçoit ses traces et en
+déduit latence, débit et taux d'échec par route. La chaîne a été éprouvée depuis
+un conteneur lancé sur le poste, où elle mesure une latence de l'API qui
+n'existait nulle part. Elle n'est pas en service : les images déployées datent
+du 23 septembre, avant l'agent.
+
+**Pourquoi rien n'a été déployé depuis.** Les trois derniers pipelines de
+`develop` sont rouges, pour trois raisons différentes : aucun runner disponible
+(`#2892321711`, 29 septembre) ; `trivy-fs` et `terraform-plan` en échec
+(`#2901472002`, 1er octobre — la cause du second n'a pas été recherchée) ; cinq
+CVE de Jackson dans l'image du back (`#2902337581`, 1er octobre).
+
 Le flux, les résultats de collecte et ce que la supervision ne couvre pas sont
-détaillés dans `rapport-performance.md` §6 et dans `MONITORING.md`.
+détaillés dans `rapport-performance.md` et dans `MONITORING.md`.
 
 ## 8. Procédures d'exploitation
 
@@ -668,17 +739,31 @@ Les principes d'abord, parce qu'ils expliquent les commandes.
   production. Reconstruire reviendrait à déployer autre chose que ce qui a été
   testé et scanné.
 - **On vérifie avant de déployer.** Une image n'arrive à l'étape de déploiement
-  qu'après les tests, l'analyse statique, les scans de sécurité et le test de
-  fumée k6 — le seul contrôle bloquant.
+  qu'après les tests, l'analyse statique, les scans de sécurité — dont celui de
+  l'image elle-même, fait avant son envoi au registry — et le test de fumée k6.
+  Ces contrôles sont bloquants, à deux exceptions près : `spotbugs-back` et
+  `k6-load` (`QUALITY.md`).
 
-Mise en production, pas à pas :
+Mise en production, pas à pas (`RELEASE.md` §7) :
 
-1. Merger sur `main` via une MR au pipeline vert.
-2. Créer un tag de version : `git tag vX.Y.Z && git push origin vX.Y.Z`.
-3. Le pipeline construit l'image et la pousse sur le registry.
-4. Lancer **à la main** le job `deploy-production`.
-5. Vérifier que l'application répond.
-6. En cas de problème : `rollback-production`.
+1. Porter le numéro de version dans les trois fichiers qui le répètent, sur
+   `develop`, et vérifier : `bash scripts/ci/check_version.sh --version vX.Y.Z`.
+2. Merger `develop` sur `main`. **C'est ce pipeline qui construit les images**,
+   les scanne et les pousse sous le SHA du commit.
+3. Une fois les deux images présentes au registry, poser le tag **sur ce
+   commit** : `git tag -a vX.Y.Z -m "MicroCRM X.Y.Z" && git push origin vX.Y.Z`.
+4. Le pipeline de tag ne reconstruit rien : il **promeut** l'image déjà publiée
+   en lui ajoutant le tag `X.Y.Z`, puis crée la Release GitLab.
+5. Lancer **à la main** le job `deploy-production` de ce pipeline.
+6. Vérifier que l'application répond.
+7. En cas de problème : `rollback-production`.
+
+⚠️ **Ce chemin par tag n'a jamais abouti.** Le seul tag du dépôt, `v1.0.0`, a
+échoué avant la promotion : l'image de test du front résolvait vers une variante
+arm64 sans Chrome sur le runner du projet. La cause est corrigée ; la version
+`1.0.1` est préparée dans les fichiers, pas encore taguée. Les cinq
+déploiements réussis de septembre sont partis de `develop` et de `main`, sous
+le SHA du commit.
 
 Une modification de la ConfigMap ne redémarre **pas** les pods : `configmap.yaml`
 est une ressource ordinaire et non un `configMapGenerator`, choix fait pour la
@@ -783,39 +868,56 @@ kubectl -n "$NAMESPACE" port-forward svc/back 18081:8080 &
 curl -s http://127.0.0.1:18081/persons | head -c 200
 ```
 
-⚠️ **Cette procédure n'a PAS été exécutée de bout en bout.** Chacune de ses
-étapes l'a été séparément — playbook Ansible idempotent et rejoué, application
-déployée et rollback observé, Terraform ayant créé et peuplé le namespace
-`logging` — mais l'enchaînement complet, à partir d'une destruction réelle,
-reste à jouer. **Tant qu'il ne l'a pas été, la reconstruction est une conviction
-raisonnable, pas une preuve.**
+**Cette procédure a été exécutée de bout en bout le 22 septembre 2026**, à
+partir d'une destruction réelle du namespace de staging. Le compte rendu est
+dans `RELEASE.md` §9.5 : `ansible ok=23 changed=0 failed=0`, 6 ressources
+Terraform créées, rollout des deux Deployments en 11 secondes, `/persons` qui
+répond et `/actuator/health` à `UP`. Ce document écrivait jusque-là qu'elle
+n'avait jamais été jouée.
 
-Deux points de vigilance connus pour le jour où elle sera jouée : le namespace
-doit être **absent**, sinon `terraform apply` s'arrête sur `already exists` et
-demande l'import du §4.3 ; et **les images doivent être disponibles pour le
-cluster** — en local par `minikube image load`, depuis la CI par le registry
-dont le `Secret` est recréé par le job.
+Trois écarts ont été constatés ce jour-là, et ils valent d'être connus :
+
+- **L'étape 3, telle qu'elle est écrite ci-dessus, est incomplète.** Les
+  manifestes du dépôt portent délibérément une image `PLACEHOLDER` : appliqués
+  tels quels, ils déploieraient une image inexistante. L'exécution a repris
+  l'**overlay éphémère** du pipeline (§5.1), qui pose l'image réelle.
+- **Le namespace doit être absent**, sinon `terraform apply` s'arrête sur
+  `already exists` et demande l'import du §4.3.
+- **Les images doivent être disponibles pour le cluster** — en local par
+  `minikube image load`, depuis la CI par le registry dont le `Secret` est
+  recréé par le job. L'exercice a utilisé des images chargées localement.
+
+**Ce que l'exercice ne couvre pas** : la stack `logging`. La reconstruire
+demande en plus le Secret de la clé de chiffrement de Kibana, l'installation
+des règles d'alerte et l'import des tableaux de bord (`MONITORING.md` §13) ;
+cet enchaînement-là n'a pas été rejoué sur un cluster neuf.
 
 ### 8.5 Variables à créer dans GitLab
 
 Seules celles-ci restent hors du dépôt. Tout le reste vit dans le bloc
 `variables:` du `.gitlab-ci.yml`, où c'est versionné et relisible en revue.
 
-| Variable            | Type             | Protected | Rôle                      |
-| ------------------- | ---------------- | --------- | ------------------------- |
-| `SONAR_HOST_URL`    | Variable         | non       | URL du serveur SonarQube  |
-| `SONAR_TOKEN`       | Variable, masked | non       | Token d'analyse           |
-| `NVD_API_KEY`       | Variable, masked | non       | Accélère Dependency-Check |
-| `KUBE_CONFIG`       | **File**         | **oui**   | Connexion au cluster      |
-| `STAGING_NAMESPACE` | Variable         | non       | Namespace de staging      |
-| `PROD_NAMESPACE`    | Variable         | **oui**   | Namespace de production   |
-| `CI_REGISTRY*`      | automatiques     | —         | Fournies par GitLab       |
+| Variable             | Type             | Protected | Rôle                                         |
+| -------------------- | ---------------- | --------- | -------------------------------------------- |
+| `SONAR_HOST_URL`     | Variable         | non       | URL du serveur SonarQube                     |
+| `SONAR_TOKEN`        | Variable, masked | non       | Token d'analyse                              |
+| `NVD_API_KEY`        | Variable, masked | non       | Accélère Dependency-Check                    |
+| `NOTIFY_WEBHOOK_URL` | Variable, masked | non       | Canal d'équipe des notifications, facultatif |
+| `STAGING_NAMESPACE`  | Variable         | non       | Namespace de staging                         |
+| `PROD_NAMESPACE`     | Variable         | **oui**   | Namespace de production                      |
+| `CI_REGISTRY*`       | automatiques     | —         | Fournies par GitLab                          |
 
-Le type **File** n'est pas un détail : GitLab écrit la valeur dans un fichier
-temporaire et la variable contient _le chemin_. C'est pour cette raison que
-`KUBECONFIG: '$KUBE_CONFIG'` fonctionne — `kubectl` attend un chemin, pas un
-contenu YAML. Et `PROD_NAMESPACE` doit être **protégée** : sans cela, n'importe
-quelle branche `feature/*` lirait les coordonnées de production.
+**Il n'y a plus de variable `KUBE_CONFIG`.** Elle portait un kubeconfig de
+poste, qui désigne le serveur d'API en `127.0.0.1` : une adresse injoignable
+depuis un conteneur de job. Depuis le 23 septembre 2026, les jobs de déploiement
+passent par le tunnel de l'agent GitLab pour Kubernetes, comme les jobs
+Terraform (`RELEASE.md` §6). Si la variable existe encore dans un projet, elle
+n'est plus lue.
+
+`PROD_NAMESPACE` doit être **protégée** : sans cela, n'importe quelle branche de
+travail lirait les coordonnées de production. Et les deux namespaces sont
+**obligatoires** dès qu'on déploie : un namespace vide fait échouer le job, au
+lieu de laisser `kubectl` retomber en silence sur `default`.
 
 Côté GitHub, un secret `GITLAB_TOKEN` est nécessaire au workflow de miroir.
 
@@ -886,16 +988,16 @@ Aucun de ces points ne se corrige par une phrase mieux tournée ; chacun se
 corrigerait par un compte chez un fournisseur, c'est-à-dire par le coût que le
 projet a délibérément refusé de payer.
 
-| Ce qui n'est pas démontré        | Pourquoi, précisément                                                                                                                                                                                                      |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| La haute disponibilité           | Un seul nœud : aucune anti-affinité à exercer, aucun `drain` à observer, aucun `PodDisruptionBudget` qui ait un sens. Et le back étant plafonné à un replica, **la limite applicative masque la limite d'infrastructure**. |
-| Un LoadBalancer réel             | Aucune adresse publique, aucun certificat, aucun DNS. Tout ce qui se joue entre Internet et le cluster est hors périmètre.                                                                                                 |
-| Le stockage managé et sauvegardé | Le seul PVC est celui d'Elasticsearch, servi par le disque du poste : pas de snapshot, pas de réplication, pas de restauration éprouvée.                                                                                   |
-| L'IAM et les droits fins         | Un seul kubeconfig, celui de l'administrateur du poste, avec tous les droits. Le seul RBAC du projet est celui de Filebeat, écrit parce qu'`autodiscover` interroge l'API — pas parce qu'on aurait modélisé des droits.    |
-| La maîtrise des coûts            | Zéro dépense, donc zéro arbitrage. Les quotas sont dimensionnés contre la capacité du nœud (7,75 Gio d'allocatable, partagés avec des projets voisins), jamais contre un budget.                                           |
-| La montée en charge automatique  | Ni HPA, ni `metrics-server`, ni autoscaler de nœuds — il manque jusqu'au signal sur lequel un autoscaler déciderait.                                                                                                       |
-| Le cloisonnement réseau          | Décrit, mais inerte faute d'un CNI qui l'implémente (§6).                                                                                                                                                                  |
-| **Une production**               | L'environnement `production` vise le même minikube dans un autre namespace. Il démontre qu'un second environnement se décrit par les mêmes modules et d'autres valeurs — pas qu'une production existe.                     |
+| Ce qui n'est pas démontré        | Pourquoi, précisément                                                                                                                                                                                                                                                                                            |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| La haute disponibilité           | Un seul nœud : aucune anti-affinité à exercer, aucun `drain` à observer, aucun `PodDisruptionBudget` qui ait un sens. Et le back étant plafonné à un replica, **la limite applicative masque la limite d'infrastructure**.                                                                                       |
+| Un LoadBalancer réel             | Aucune adresse publique, aucun certificat, aucun DNS. Tout ce qui se joue entre Internet et le cluster est hors périmètre.                                                                                                                                                                                       |
+| Le stockage managé et sauvegardé | Le seul PVC est celui d'Elasticsearch, servi par le disque du poste : pas de snapshot, pas de réplication, pas de restauration éprouvée.                                                                                                                                                                         |
+| L'IAM et les droits fins         | Sur le poste, un seul kubeconfig, celui de l'administrateur, avec tous les droits. Deux RBAC existent : celui de Filebeat, et celui de l'agent GitLab — un `ClusterRole` unique, à l'échelle du cluster, qui porte à la fois l'infrastructure et l'application. La forme correcte serait un agent par périmètre. |
+| La maîtrise des coûts            | Zéro dépense, donc zéro arbitrage. Les quotas sont dimensionnés contre la capacité du nœud (7,75 Gio d'allocatable, partagés avec des projets voisins), jamais contre un budget.                                                                                                                                 |
+| La montée en charge automatique  | Ni HPA, ni `metrics-server`, ni autoscaler de nœuds — il manque jusqu'au signal sur lequel un autoscaler déciderait. Les traces de l'API, une fois déployées, donneront la latence et le débit, pas le CPU ni la mémoire.                                                                                        |
+| Le cloisonnement réseau          | Décrit, mais inerte faute d'un CNI qui l'implémente (§6).                                                                                                                                                                                                                                                        |
+| **Une production**               | L'environnement `production` vise le même minikube dans un autre namespace. Il démontre qu'un second environnement se décrit par les mêmes modules et d'autres valeurs — pas qu'une production existe.                                                                                                           |
 
 ## 10. Reprendre le projet
 
@@ -911,6 +1013,12 @@ cd terraform/environments/staging && terraform init && terraform apply
 # 3. L'application
 kubectl apply -k k8s/overlays/staging -n microcrm-staging
 ```
+
+⚠️ L'étape 3 applique les manifestes du dépôt, dont l'image est un
+`PLACEHOLDER` volontaire : hors CI, il faut d'abord construire les images, les
+charger dans le nœud, et composer l'overlay qui les nomme. La séquence complète
+est dans `README.md`, section « Déployer », et son exécution réelle dans
+`RELEASE.md` §9.5.
 
 ### 10.2 Vérifier sans rien déployer
 
@@ -933,11 +1041,12 @@ scripts/ci/terraform_check.sh
 scripts/ci/ansible_check.sh
 ```
 
-⚠️ **Ce qu'un `terraform plan` ne prouve pas.** Mesuré : avec un kubeconfig
-valide pointant sur un cluster **éteint**, `terraform plan` sort en `0` et
-annonce « 6 to add ». L'état étant local et jamais commité, la CI repart d'un
-état vide à chaque exécution. Ce mode contrôle que la configuration se résout,
-pas l'écart avec la réalité.
+⚠️ **Ce qu'un `terraform plan` hors cluster ne prouve pas.** Mesuré : avec un
+kubeconfig valide pointant sur un cluster **éteint** et un état vide,
+`terraform plan` sort en `0` et annonce « 6 to add ». Ce mode contrôle que la
+configuration se résout, pas l'écart avec la réalité. Le job `terraform-plan`
+de la CI, lui, lit l'état partagé et parle au cluster par l'agent : c'est lui
+qui signale une dérive (`TERRAFORM.md` §4).
 
 ### 10.3 Les invariants à ne pas casser
 
@@ -958,18 +1067,18 @@ Chacun est protégé par une assertion qui échouera si la règle est violée.
 
 ### 10.4 Où chercher le détail
 
-| Document                 | Ce qu'il porte                                                    |
-| ------------------------ | ----------------------------------------------------------------- |
-| `README.md`              | Démarrer avec les sources, les images, la stack locale            |
-| `ARCHITECTURE.md`        | Vue d'ensemble, les trois schémas, l'option locale et le cloud    |
-| `K8S.md`                 | Les manifestes, la séquence de déploiement, les campagnes réelles |
-| `TERRAFORM.md`           | Les modules, la frontière, l'état, les limites                    |
-| `ANSIBLE.md`             | Les deux rôles, l'idempotence, les pièges rencontrés              |
-| `HELM.md`                | Le chart, l'équivalence avec Kustomize, ce qui fait foi           |
-| `MONITORING.md`          | La stack ELK, les tableaux de bord, les indicateurs DORA          |
-| `QUALITY.md`             | Les six outils de qualité et de sécurité, et leurs seuils         |
-| `SCRIPTS.md`             | Les scripts, leurs options, leurs codes de sortie, leurs tests    |
-| `RELEASE.md`             | Les releases, le rollback, la sauvegarde et la restauration       |
-| `VARIABILISATION.md`     | Ce qui a été externalisé, et ce qu'il ne faut pas externaliser    |
-| `DATABASE.md`            | Le modèle de données et ses conséquences                          |
-| `rapport-performance.md` | Le document jumeau : mesures, résultats, gains et pistes          |
+| Document                 | Ce qu'il porte                                                                   |
+| ------------------------ | -------------------------------------------------------------------------------- |
+| `README.md`              | Démarrer avec les sources, les images, la stack locale                           |
+| `ARCHITECTURE.md`        | Vue d'ensemble, les trois schémas, l'option locale et le cloud                   |
+| `K8S.md`                 | Les manifestes, la séquence de déploiement, les campagnes réelles                |
+| `TERRAFORM.md`           | Les modules, la frontière, l'état, les limites                                   |
+| `ANSIBLE.md`             | Les deux rôles, l'idempotence, les pièges rencontrés                             |
+| `HELM.md`                | Le chart, l'équivalence avec Kustomize, ce qui fait foi                          |
+| `MONITORING.md`          | La stack ELK, les tableaux de bord, les indicateurs DORA, les traces, l'alerting |
+| `QUALITY.md`             | Les outils de qualité et de sécurité, leurs seuils, ce qui bloque                |
+| `SCRIPTS.md`             | Les scripts, leurs options, leurs codes de sortie, leurs tests                   |
+| `RELEASE.md`             | Les releases, le rollback, la sauvegarde et la restauration                      |
+| `VARIABILISATION.md`     | Ce qui a été externalisé, et ce qu'il ne faut pas externaliser                   |
+| `DATABASE.md`            | Le modèle de données et ses conséquences                                         |
+| `rapport-performance.md` | Le document jumeau : mesures, résultats, gains et pistes                         |
