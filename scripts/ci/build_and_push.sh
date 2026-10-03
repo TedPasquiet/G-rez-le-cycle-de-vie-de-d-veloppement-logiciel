@@ -13,6 +13,14 @@
 #   4. si on demande --scan, il passe Trivy dessus et s'arrête si c'est trop grave
 #   5. il push les 2 tags
 #
+# ⚠️ L'ordre 4 puis 5 est une garantie, pas un détail : une image qui ne passe
+# pas le scan n'atteint JAMAIS le registry. Tant que le scan était une ligne à
+# part dans le job, après ce script, l'image était poussée puis scannée — et un
+# tag de release posé sur ce commit aurait promu une image refusée par la
+# porte, puisque promote_image.sh ne demande qu'une chose : que le tag du SHA
+# existe. Constaté le 2026-10-02 : `back:5bf1d6a2` était au registry avec cinq
+# CVE hautes, alors que son job `package-back` était rouge.
+#
 # Les options :
 #   -c, --context <dir>    Dossier à builder (obligatoire). Ex : ./back
 #   -i, --image <ref>      Nom de l'image sans le tag (obligatoire).
@@ -20,7 +28,15 @@
 #   -t, --tag <sha>        Le tag fixe, en général le SHA du commit (obligatoire).
 #   -m, --moving-tag <t>   Le tag mobile en plus. Par défaut : latest
 #   -f, --dockerfile <f>   Chemin du Dockerfile. Par défaut : <context>/Dockerfile
-#   -s, --scan             Lance le scan Trivy avant le push.
+#   -s, --scan             Lance le scan Trivy avant le push. Le scan lui-même
+#                          est fait par trivy_scan.sh, qui en garde un relevé.
+#       --scan-severity <l> Sévérités qui annulent le push.
+#                          Par défaut : HIGH,CRITICAL
+#       --scan-report <f>  Rapport JSON du scan (le tableau est écrit à côté,
+#                          en .txt). Par défaut : reports/trivy-image.json
+#       --trivy-image <i>  Lance Trivy par `docker run <i>` plutôt que par un
+#                          binaire local : c'est le cas des jobs de CI, dont
+#                          l'image n'embarque pas Trivy.
 #   -h, --help             Affiche l'aide.
 #
 # Les variables d'environnement pour se connecter au registry (fournies par la
@@ -30,13 +46,15 @@
 #   REGISTRY_PASSWORD  Le mot de passe / token (ex : $CI_REGISTRY_PASSWORD)
 #
 # Ce que renvoie le script :
-#   0 = tout va bien · 1 = problème de config/exécution · 2 = image trop vulnérable
+#   0 = tout va bien · 1 = problème de config/exécution (scan impossible compris)
+#   2 = image trop vulnérable, push annulé
 #
 # Exemple :
 #   REGISTRY_HOST=$CI_REGISTRY REGISTRY_USER=$CI_REGISTRY_USER \
 #   REGISTRY_PASSWORD=$CI_REGISTRY_PASSWORD \
 #   scripts/ci/build_and_push.sh -c ./back -i "$CI_REGISTRY_IMAGE/back" \
-#     -t "$CI_COMMIT_SHORT_SHA" --scan
+#     -t "$CI_COMMIT_SHORT_SHA" --scan \
+#     --scan-report reports/trivy-image-back.json --trivy-image "$TRIVY_IMAGE"
 
 # shellcheck source-path=SCRIPTDIR source=../lib/common.sh disable=SC1091
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/common.sh"
@@ -45,6 +63,7 @@ usage() { sed -n '2,${/^#/!q;s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"; }
 
 main() {
   local context='' image='' tag='' moving_tag='latest' dockerfile='' scan='false'
+  local scan_severity='HIGH,CRITICAL' scan_report='reports/trivy-image.json' trivy_image=''
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -54,6 +73,9 @@ main() {
       -m | --moving-tag) moving_tag="${2:?}"; shift 2 ;;
       -f | --dockerfile) dockerfile="${2:?}"; shift 2 ;;
       -s | --scan) scan='true'; shift ;;
+      --scan-severity) scan_severity="${2:?}"; shift 2 ;;
+      --scan-report) scan_report="${2:?}"; shift 2 ;;
+      --trivy-image) trivy_image="${2:?}"; shift 2 ;;
       -h | --help) usage; exit 0 ;;
       *) die "Option inconnue : '$1' (voir --help)" ;;
     esac
@@ -86,11 +108,23 @@ main() {
     || die "Échec du build de l'image"
 
   if [[ "$scan" == 'true' ]]; then
-    require_cmd trivy
-    log_info "Scan de vulnérabilités (Trivy) sur $ref_immutable"
-    if ! trivy image --severity CRITICAL --exit-code 1 --no-progress "$ref_immutable"; then
-      log_error "Vulnérabilités CRITICAL détectées — push annulé"
+    # Le scan est délégué à trivy_scan.sh plutôt que réécrit ici : c'est lui
+    # qui sait produire le relevé JSON, et deux façons de lancer Trivy dans le
+    # même dépôt finiraient par ne plus poser la même porte.
+    local -a scan_args=(--mode image --target "$ref_immutable"
+      --report "$scan_report" --severity "$scan_severity")
+    [[ -n "$trivy_image" ]] && scan_args+=(--docker-image "$trivy_image")
+
+    # Le code de trivy_scan.sh est repris tel quel : 2 = des constats (l'image
+    # est refusée), 1 = le scan n'a pas pu avoir lieu. Dans les deux cas on ne
+    # pousse pas — une image qu'on n'a pas pu scanner n'est pas une image saine.
+    local -i scan_code=0
+    bash "$(dirname "${BASH_SOURCE[0]}")/trivy_scan.sh" "${scan_args[@]}" || scan_code=$?
+    if ((scan_code == 2)); then
+      log_error "Vulnérabilités $scan_severity détectées — push annulé"
       exit 2
+    elif ((scan_code != 0)); then
+      die "Scan Trivy impossible — push annulé (une image non scannée n'est pas une image saine)"
     fi
   fi
 

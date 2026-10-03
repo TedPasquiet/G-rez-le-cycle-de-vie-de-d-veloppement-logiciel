@@ -28,6 +28,16 @@ variables:
   DOCKER_IMAGE: 'docker:24.0.9'
   DOCKER_DIND_IMAGE: 'docker:24.0.9-dind'
   TRIVY_IMAGE: 'aquasec/trivy:0.69.3'
+  # Le CLI GitLab (`glab`), pour le job `release`. C'est l'outil que le mot-clé
+  # `release:` appelle : la documentation GitLab demande que `glab` soit dans le
+  # $PATH du job et donne cette image. L'ancien `release-cli` est déprécié
+  # depuis GitLab 18.0 et son retrait est annoncé pour la 20.0 (vérifié dans la
+  # documentation le 2026-10-02) — inutile de figer un outil en fin de vie.
+  #
+  # La documentation écrit `cli:latest`. Figée ici comme les autres, pour la
+  # même raison : une release qui casse parce que `glab` a changé de version un
+  # mardi n'est expliquée par aucun commit.
+  GLAB_IMAGE: 'registry.gitlab.com/gitlab-org/cli:v1.120.0'
   SHELLCHECK_IMAGE: 'koalaman/shellcheck-alpine:v0.11.0'
   SONAR_SCANNER_IMAGE: 'sonarsource/sonar-scanner-cli:11.5'
   # Le tag Cypress porte les versions de Node ET des navigateurs : c'est
@@ -132,6 +142,16 @@ variables:
   # permet de les jouer en local sur une copie sans toucher au dépôt.
   TERRAFORM_ENVS_DIR: 'terraform/environments'
   ANSIBLE_DIR: 'ansible'
+  # Répertoire des rapports publiés en artefacts : les relevés Trivy
+  # (`trivy-fs.json`, `trivy-image-back.json`, `trivy-image-front.json`, chacun
+  # doublé d'un tableau `.txt`) et les indicateurs DORA (`dora.json`). Ces noms
+  # sont une INTERFACE : scripts/ci/collect_security.py lit les relevés Trivy
+  # sous ces noms-là. Le répertoire est dans .gitignore.
+  REPORTS_DIR: 'reports'
+  # Fenêtre glissante, en jours, des indicateurs DORA calculés par le job
+  # `dora-metrics`. Trente jours : assez pour lisser une semaine sans
+  # déploiement, assez court pour qu'une amélioration récente se voie.
+  DORA_WINDOW_DAYS: '30'
   # Nom de l'agent GitLab pour Kubernetes, tel qu'il est déclaré par le
   # répertoire .gitlab/agents/<nom>/. C'est lui qui donne aux jobs un accès au
   # cluster SANS qu'aucun kubeconfig ne soit stocké en variable : l'agent, qui

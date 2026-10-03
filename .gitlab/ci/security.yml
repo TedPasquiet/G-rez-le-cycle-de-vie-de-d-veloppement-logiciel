@@ -35,9 +35,21 @@ dependency-check-back:
     paths:
       - back/build/reports/dependency-check-report.*
     expire_in: 1 week
-  # Bloquant : le scan trouve 0 vulnérabilité sur le runtimeClasspath, la porte
-  # se ferme donc sur du vide. Toute CVE >= CVSS 7 introduite ensuite arrête
-  # le pipeline, au lieu d'être signalée dans un job que personne ne relit.
+  # Bloquant : toute CVE >= CVSS 7 sur le runtimeClasspath arrête le pipeline.
+  #
+  # ⚠️ Ce commentaire affirmait que « le scan trouve 0 vulnérabilité, la porte se
+  # ferme donc sur du vide ». C'était faux d'une façon qu'il ne soupçonnait pas :
+  # le scan trouvait 0 parce qu'il n'analysait AUCUN jar. `runtimeClasspath`
+  # était écartée comme « configuration de test » par le plugin (le détail est
+  # dans back/build.gradle, à `skipTestGroups`). Le signe était sous les yeux :
+  # 5 secondes de Gradle, un rapport XML de 1,4 Ko, `<dependencies>` vide.
+  # C'est pourquoi Trivy trouvait dans le jar des CVE que ce job ne voyait pas.
+  #
+  # Depuis le 2026-10-02 il analyse réellement les 82 dépendances. Les
+  # exceptions vivent dans back/config/dependency-check/suppressions.xml,
+  # chacune justifiée et datée — et ce fichier dit aussi lesquelles ne sont PAS
+  # accordées. Un job vert ici veut maintenant dire quelque chose ; un job
+  # rouge aussi.
   allow_failure: false
   extends: .rules_test_back
 
@@ -62,8 +74,30 @@ trivy-fs:
   # Bloquant : vérifié le 2026-09-19, le scan sort en 0 une fois les exclusions
   # appliquées. La porte se ferme donc sur du vide, et c'est ce qui serait
   # introduit ensuite qui arrêterait le pipeline.
+  #
+  # ⚠️ Le scan passe par scripts/ci/trivy_scan.sh, et plus par une ligne
+  # `trivy fs` écrite ici. La porte n'a pas changé — mêmes scanners, mêmes
+  # sévérités, même fichier d'exclusions, et le job échoue toujours au premier
+  # constat. Ce qui a changé, c'est qu'il en reste une TRACE : un relevé JSON
+  # et son tableau, publiés en artefacts même quand le job échoue
+  # (`when: always`) — c'est précisément ce jour-là qu'on veut les lire.
+  # Jusqu'ici les constats ne vivaient que dans le journal du job.
+  #
+  # L'image Trivy est basée sur Alpine et n'a pas bash : on l'installe, comme
+  # le font déjà version-consistency et les jobs Terraform.
+  before_script:
+    - apk add --no-cache bash
   script:
-    - trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --exit-code 1 --ignorefile .trivyignore.yaml --no-progress .
+    - bash scripts/ci/trivy_scan.sh --mode fs --target .
+      --report "$REPORTS_DIR/trivy-fs.json"
+      --scanners vuln,secret,misconfig --severity HIGH,CRITICAL
+      --ignorefile .trivyignore.yaml
+  artifacts:
+    when: always
+    paths:
+      - $REPORTS_DIR/trivy-fs.json
+      - $REPORTS_DIR/trivy-fs.txt
+    expire_in: 1 week
   allow_failure: false
   extends: .rules_test
 

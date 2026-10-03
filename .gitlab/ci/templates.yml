@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Les gabarits — le vocabulaire commun des 37 jobs
+# Les gabarits — le vocabulaire commun des 39 jobs
 # ---------------------------------------------------------------------------
 # Ce sont les anciennes ancres YAML (`&cache_gradle`, `&rules_test`…), devenues
 # des **jobs cachés** : un nom qui commence par un point n'est jamais exécuté,
