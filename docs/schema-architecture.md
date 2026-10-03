@@ -1,7 +1,18 @@
 # Architecture finale — MicroCRM
 
+> ⚠️ **Ce document décrit l'architecture cible, pas l'état implémenté.** Plusieurs
+> éléments qu'il présente n'existent pas dans le dépôt au 2 octobre 2026 : la
+> base PostgreSQL persistante (la base vit en mémoire, dans HSQLDB), le
+> déploiement automatique en staging (il est manuel), la signature des images
+> (elles sont taguées par SHA, pas signées), les tests post-déploiement en
+> TestInfra (aucun), et des indicateurs DORA injectés par le pipeline (ils sont
+> calculés par un job mais injectés depuis un poste). Les traces de l'API sont
+> écrites mais pas déployées. L'état réel, et l'écart avec cette cible, sont dans
+> `docs/documentation-ci-cd-complete.md` (§8.4 et §8.5) ; le chemin pour s'en
+> rapprocher est dans `docs/plan-optimisation-release.md`.
+
 **Plateforme de déploiement de l'équipe Orion.** Ce document décrit
-l'architecture du projet dans son état abouti : les composants, leur agencement,
+l'architecture du projet dans son état abouti — c'est-à-dire visé : les composants, leur agencement,
 les artefacts produits, la chaîne qui les vérifie et les mène en production, et
 la répartition des responsabilités entre les équipes Dev et Ops.
 
@@ -402,12 +413,14 @@ flowchart TB
     subgraph cluster["Cluster"]
         direction LR
         pods["Pods back et front<br/>logs JSON sur la sortie standard"] --> fb["Filebeat<br/>DaemonSet"]
+        back["Pod back<br/>agent OpenTelemetry"] --> apm["APM Server"]
     end
 
     fb -->|"champs ECS"| es[("Elasticsearch")]
+    apm -->|"traces, et la latence<br/>qu'il en déduit"| es
     gl["Pipeline GitLab<br/>collecteur DORA"] --> es
-    es --> kib["Kibana — tableaux de bord"]
-    kib --> lect["Erreurs applicatives, latences,<br/>indicateurs de livraison"]
+    es --> kib["Kibana — tableaux de bord<br/>et application APM"]
+    kib --> lect["Erreurs applicatives, latences de l'API,<br/>indicateurs de livraison"]
 ```
 
 **Les applications écrivent en JSON sur la sortie standard.** Elles n'écrivent
@@ -419,6 +432,12 @@ siennes.
 
 **Les champs suivent la convention ECS**, ce qui rend les logs des deux services
 interrogeables ensemble, avec les mêmes noms de champs.
+
+**Le back est tracé.** Un agent OpenTelemetry, chargé dans la JVM sans modifier
+le code, envoie chaque requête traitée à APM Server, qui l'écrit dans le même
+Elasticsearch et en déduit le débit, la latence et le taux d'échec par point
+d'entrée de l'API. Les logs portent l'identifiant de leur trace : depuis une
+requête lente, Kibana mène aux lignes qu'elle a écrites.
 
 **Les quatre indicateurs DORA sont collectés par le pipeline** et injectés dans
 Elasticsearch, où ils alimentent un tableau de bord dédié. Ils constituent le

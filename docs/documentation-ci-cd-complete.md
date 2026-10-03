@@ -9,9 +9,21 @@
 > plausible. Les chiffres qui suivent ont été relus dans le dépôt ; ceux qui
 > viennent d'une exécution disent laquelle et quand.
 >
-> **État des sources au 2026-09-24.** La référence est la branche `develop`.
-> Quelques documents de la copie de travail portent encore des chiffres
-> antérieurs au 2026-09-22 ; les écarts sont recensés en §8.4.
+> **Mise à jour du 2026-10-02.** Ont été ajoutés ou revus ce jour-là : la
+> collaboration entre équipes (§2.3), le plan de conteneurs (§5.5), le plan de
+> sécurité (§6), l'automatisation des releases (§7.2, §7.3), la supervision et
+> l'alerting (§7.7), le glossaire (§8.2), les écarts et les limites (§8.4, §8.5)
+> et l'accessibilité (§8.6), avec un relevé du cluster. Le reste date du
+> 2026-09-24.
+>
+> **Ce que « fait le 2026-10-02 » veut dire dans ce document.** Le travail de ce
+> jour-là est dans l'arbre de travail de la branche `fix/jackson-databind-cve`.
+> **Rien n'en est commité, et rien n'en est passé dans un pipeline.** Chaque
+> nouveauté — scan avant le push, rapports en artefacts, jobs `release` et
+> `dora-metrics`, Dependency-Check réparé, alerting — est donc éprouvée sur le
+> poste, sur le cluster local ou par les suites de tests, jamais par un runner.
+> Le pipeline de `develop` était rouge sur ses trois dernières exécutions à
+> cette date, pour trois raisons différentes (§6.4).
 
 ---
 
@@ -26,19 +38,25 @@ compilation. Ce document décrit la chaîne CI/CD construite depuis : le workflo
 de branches, la stratégie de tests, l'infrastructure décrite en code, les
 contrôles de sécurité, et l'automatisation des releases et du retour arrière.
 
+Deux plans y sont nommés côte à côte : le **plan de conteneurs** (§5.5) — quelles
+images, d'où, sous quels tags, comment elles sont scannées, configurées et
+orchestrées — et le **plan d'optimisation des releases**
+(`docs/plan-optimisation-release.md`), qui dit dans quel ordre la chaîne doit
+encore progresser.
+
 ### 1.2 Technologies principales
 
-| Catégorie           | Outil                                                         | Rôle                                                                                                    |
-| ------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| **CI/CD**           | GitLab CI (+ GitHub Actions pour le miroir)                   | 10 étapes, 37 jobs, 14 fichiers. GitHub porte le code et les Pull Requests, GitLab exécute              |
-| **Qualité**         | SonarQube / SonarCloud, SpotBugs + Find-Sec-Bugs, JaCoCo, PIT | Dette et Quality Gate, bugs de bytecode, couverture de lignes, force des assertions                     |
-| **Conteneurs**      | Docker multi-stage, Kubernetes, Kustomize, Helm               | Une image par application, déploiement par overlays ; Helm est rendu et comparé, jamais appliqué        |
-| **Cloud**           | **aucun fournisseur — minikube local**                        | Décision assumée, argumentée en §5.1 et transposée fournisseur par fournisseur en `ARCHITECTURE.md` §10 |
-| **IaC**             | Terraform (provider `hashicorp/kubernetes`), Ansible          | Terraform possède les namespaces, quotas, limites et policies ; Ansible possède le poste et le cluster  |
-| Sécurité            | OWASP Dependency-Check, Trivy                                 | CVE des dépendances Java ; CVE d'image, secrets et misconfigurations                                    |
-| Performance         | k6                                                            | Trois scénarios contre l'image qui vient d'être construite                                              |
-| Supervision         | Elasticsearch, Filebeat, Kibana                               | Logs centralisés et tableaux de bord versionnés ; **pas de métriques, pas d'alerting applicatif**       |
-| Discipline de dépôt | husky, lint-staged, commitlint, Prettier, Spotless            | Contrôles locaux avant le push                                                                          |
+| Catégorie           | Outil                                                         | Rôle                                                                                                                                                  |
+| ------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **CI/CD**           | GitLab CI (+ GitHub Actions pour le miroir)                   | 10 étapes, 39 jobs, 14 fichiers. GitHub porte le code et les Pull Requests, GitLab exécute                                                            |
+| **Qualité**         | SonarQube / SonarCloud, SpotBugs + Find-Sec-Bugs, JaCoCo, PIT | Dette et Quality Gate, bugs de bytecode, couverture de lignes, force des assertions                                                                   |
+| **Conteneurs**      | Docker multi-stage, Kubernetes, Kustomize, Helm               | Une image par application, déploiement par overlays ; Helm est rendu et comparé, jamais appliqué                                                      |
+| **Cloud**           | **aucun fournisseur — minikube local**                        | Décision assumée, argumentée en §5.1 et transposée fournisseur par fournisseur en `ARCHITECTURE.md` §10                                               |
+| **IaC**             | Terraform (provider `hashicorp/kubernetes`), Ansible          | Terraform possède les namespaces, quotas, limites et policies ; Ansible possède le poste et le cluster                                                |
+| Sécurité            | OWASP Dependency-Check, Trivy                                 | CVE des dépendances Java ; CVE d'image, secrets et misconfigurations ; rapports JSON en artefacts                                                     |
+| Performance         | k6                                                            | Trois scénarios contre l'image qui vient d'être construite                                                                                            |
+| Supervision         | Elasticsearch, Filebeat, Kibana, APM Server, OpenTelemetry    | Logs centralisés, 5 tableaux de bord et 8 règles d'alerte versionnés, traces de l'API écrites mais non déployées ; **pas de métriques de ressources** |
+| Discipline de dépôt | husky, lint-staged, commitlint, Prettier, Spotless            | Contrôles locaux avant le push                                                                                                                        |
 
 **Coût de licence : nul.** Tous ces outils sont gratuits dans l'usage qui en est
 fait ici ; l'investissement est en temps de mise en place et en montée en
@@ -111,17 +129,19 @@ livraison repose ensuite sur des gestes manuels.
 
 ### 2.2 Objectifs
 
-Cinq objectifs, chacun avec sa mesure et son état au 2026-09-24. Les valeurs
+Cinq objectifs, chacun avec sa mesure et son état au 2026-10-02. Les valeurs
 « mesuré » viennent de `scripts/ci/collect_dora.py` (exécution du 2026-09-23,
-fenêtre de 30 jours, 50 pipelines) ou d'une exécution des suites du dépôt.
+fenêtre de 30 jours, 50 pipelines ; rejouée le 2026-10-02 sur 57 pipelines,
+**valeurs identiques**, aucun déploiement n'ayant eu lieu entre-temps) ou d'une
+exécution des suites du dépôt.
 
-| #      | Objectif                                                                                                      | Comment il se mesure                                      | Cible                         | Mesuré aujourd'hui                                                                      |
-| ------ | ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------- |
-| **O1** | Faire aboutir la chaîne de déploiement depuis la CI, sans geste manuel autre que la décision                  | `deployment_frequency` de `collect_dora.py`               | > 0 / jour                    | **0,1667 / jour** — 5 déploiements réussis, atteint depuis le 2026-09-22                |
-| **O2** | Ramener le délai entre la découverte d'une CVE et son retour à l'auteur de plusieurs jours à quelques minutes | Durée du job `package-*` / `dependency-check-back`        | minutes                       | **atteint** — les 4 portes sont bloquantes depuis le 2026-09-19                         |
-| **O3** | Rendre la qualité du back pilotable par un seuil opposable                                                    | `coverage-gate` (JaCoCo) et `mutation-back` (PIT)         | ≥ 90 % lignes, ≥ 80 % mutants | **97 % lignes, 100 % branches, 96 % mutants**                                           |
-| **O4** | Maîtriser le temps de rétablissement : le rollback doit être une commande, pas une improvisation              | `time_to_restore_service`, et un rollback réellement joué | mesurable                     | **2,14 h de médiane sur 2 observations** ; un rollback de production joué le 2026-09-23 |
-| **O5** | Faire descendre le taux d'échec des changements sous 50 %                                                     | `change_failure_rate` de `collect_dora.py`                | < 50 %                        | **66,67 % sur 9 tentatives** — _non atteint_                                            |
+| #      | Objectif                                                                                                      | Comment il se mesure                                      | Cible                         | Mesuré aujourd'hui                                                                                                                                                                                                                                                           |
+| ------ | ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **O1** | Faire aboutir la chaîne de déploiement depuis la CI, sans geste manuel autre que la décision                  | `deployment_frequency` de `collect_dora.py`               | > 0 / jour                    | **0,1667 / jour** — 5 déploiements réussis, atteint depuis le 2026-09-22                                                                                                                                                                                                     |
+| **O2** | Ramener le délai entre la découverte d'une CVE et son retour à l'auteur de plusieurs jours à quelques minutes | Durée du job `package-*` / `dependency-check-back`        | minutes                       | **atteint pour Trivy** — portes bloquantes depuis le 2026-09-19, et elles ont depuis arrêté le pipeline sur des CVE publiées après coup (Tomcat, puis Jackson). **Atteint depuis le 2026-10-02 seulement pour Dependency-Check**, qui n'analysait aucun jar jusque-là (§6.2) |
+| **O3** | Rendre la qualité du back pilotable par un seuil opposable                                                    | `coverage-gate` (JaCoCo) et `mutation-back` (PIT)         | ≥ 90 % lignes, ≥ 80 % mutants | **97 % lignes, 100 % branches, 96 % mutants**                                                                                                                                                                                                                                |
+| **O4** | Maîtriser le temps de rétablissement : le rollback doit être une commande, pas une improvisation              | `time_to_restore_service`, et un rollback réellement joué | mesurable                     | **2,14 h de médiane sur 2 observations** ; un rollback de production joué le 2026-09-23                                                                                                                                                                                      |
+| **O5** | Faire descendre le taux d'échec des changements sous 50 %                                                     | `change_failure_rate` de `collect_dora.py`                | < 50 %                        | **66,67 % sur 9 tentatives** — _non atteint_                                                                                                                                                                                                                                 |
 
 > ⚠️ **Ces chiffres n'ont aucune valeur statistique et il faut le dire avant de
 > les commenter.** Neuf tentatives, deux observations de rétablissement, cinq
@@ -132,6 +152,92 @@ fenêtre de 30 jours, 50 pipelines) ou d'une exécution des suites du dépôt.
 
 Le chemin détaillé — cinq vagues, un porteur et une preuve d'atteinte par action
 — est dans `docs/plan-optimisation-release.md` §4.
+
+### 2.3 Ce que la chaîne change à la collaboration entre développement, intégration et exploitation
+
+Une chaîne CI/CD n'est pas qu'un automate : c'est l'endroit où trois métiers se
+rencontrent. Le **développement** écrit le code. L'**intégration** l'assemble,
+le vérifie et en fait un artefact livrable — chez Orion ce rôle n'a pas d'équipe
+à lui, il était tenu par la dernière étape du cycle Dev (« génération des images
+et envoi des références »). L'**exploitation** déploie cet artefact et le
+maintient en service.
+
+#### Ce que chacun faisait seul
+
+Le cycle déclaré par les équipes (§2.1, `AUDIT.md` §2.3) est une suite de
+travaux menés chacun de son côté, reliés par un email :
+
+| Métier        | Ce qu'il faisait seul                                                                             | Ce que les autres n'en voyaient pas                                             |
+| ------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Développement | Coder, tester sur son poste, corriger après la démonstration                                      | Ni la couverture, ni la qualité : rien ne les mesurait (`AUDIT.md` §2.2)        |
+| Intégration   | Générer trois artefacts à la main, envoyer leurs références par email                             | Quelle image correspond à quel commit : aucun tag, aucun registry interne       |
+| Exploitation  | Recevoir un numéro de version, scanner l'image avec Trivy, déployer à la main en commandes Docker | Le résultat du scan arrivait après la remise : c'est le « retour à l'envoyeur » |
+
+Les frictions n° 1, 2, 3 et 6 de l'audit (`AUDIT.md` §4) en découlent : un
+retour tardif, une mise en production qui dépend d'une personne, une
+connaissance qui n'est écrite nulle part.
+
+#### Ce que la chaîne met en commun
+
+```mermaid
+flowchart TB
+    subgraph D["Équipe Dev"]
+        direction LR
+        code["Code Angular<br/>+ Spring Boot"] --> ci["Pipeline : lint, test,<br/>qualité, sécurité, performance"] --> img["Images signées"]
+    end
+
+    subgraph F["Le contrat"]
+        direction LR
+        reg[("Registry privé")] --- note["Une image immuable, signée, tag = SHA,<br/>et ses rapports d'analyse"]
+    end
+
+    subgraph O["Équipe Ops"]
+        direction LR
+        infra["Terraform : namespace,<br/>quota, limites, policies"] --> deploy["Déploiement<br/>et retour arrière"] --> obs["Exploitation : logs,<br/>sondes, indicateurs"]
+    end
+
+    img --> reg
+    reg --> deploy
+    obs -.->|"retours d'exploitation"| code
+```
+
+_Source : `docs/schemas/frontiere-dev-ops.mmd`, reprise sans modification. Ce
+schéma est celui de l'architecture **cible** : il écrit « images signées », et
+la signature n'est pas implémentée (§6.2). Tout le reste du schéma est en
+place._
+
+Le schéma se lit ainsi : l'équipe Dev produit, par le pipeline, une image
+immuable ; cette image et ses rapports d'analyse, rangés dans un registry privé,
+sont le contrat entre les deux équipes ; l'équipe Ops prépare l'infrastructure,
+déploie cette image et l'exploite ; ce qu'elle observe revient au développement.
+**Ce qui traverse la frontière est un fait, pas un message.**
+
+Cinq mécanismes rendent cela concret :
+
+| Ce qui est mis en commun                                                   | Ce que ça change entre les équipes                                                                                                                                                                                                                                               | Où le vérifier                                                  |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| **Un dépôt unique** pour le code, l'infrastructure et les tableaux de bord | Le Dockerfile, les manifestes, Terraform, Ansible, les tableaux de bord Kibana et les règles d'alerte sont versionnés à côté du code. Une même merge request montre à la fois le changement applicatif et ce qu'il demande à l'exploitation                                      | `back/`, `front/`, `k8s/`, `terraform/`, `ansible/`, `k8s/elk/` |
+| **Des portes de qualité qui renvoient le retour à l'auteur, en minutes**   | Le scan Trivy que l'équipe Ops faisait après remise tourne dans le pipeline de l'auteur, **avant** que l'image n'atteigne le registry. Une CVE arrête le job de celui qui l'a introduite, pas la journée de celui qui la reçoit                                                  | §6.4 ; durées par étape dans `docs/pipeline-ci.md` §5           |
+| **Des environnements GitLab et des notifications visibles de tous**        | Les jobs de déploiement déclarent leur environnement (`staging`, `production`) : GitLab en garde l'historique, lisible sans demander à personne. Chaque déploiement, réussi ou non, est annoncé sur le canal d'équipe dès que le webhook est configuré ; un tag crée une Release | `.gitlab/ci/deploy.yml` ; §7.2, §7.7                            |
+| **Un retour arrière en une commande**                                      | Revenir en arrière n'est plus le savoir d'une personne : c'est `rollback.sh`, ou le job `rollback-production`, que quiconque a le droit de déployer peut lancer                                                                                                                  | §7.4 — joué en production le 2026-09-23                         |
+| **Des indicateurs DORA partagés**                                          | Les deux équipes lisent les mêmes quatre chiffres, calculés depuis l'API et non déclarés. Un taux d'échec de 66,67 % n'est ni « un problème de dev » ni « un problème d'ops » : c'est celui de la chaîne                                                                         | §2.2 ; `MONITORING.md` §9 ; tableau de bord `dora.ndjson`       |
+
+**Pourquoi c'est de la collaboration, et pas seulement de l'outillage.** Chaque
+ligne remplace un échange entre personnes — un email, une question, une demande —
+par un fait consultable par tous au même endroit. L'équipe Dev n'a plus à
+attendre qu'un collègue Ops ait le temps de scanner ; l'équipe Ops n'a plus à
+deviner ce que contient une version. Et la boucle se referme dans l'autre sens :
+les tableaux de bord et les règles d'alerte (§7.7) sont des fichiers du dépôt,
+qu'un développeur peut lire et modifier par merge request.
+
+> ⚠️ **Ce que ce dépôt ne peut pas prouver.** Il a un seul contributeur : les
+> équipes Dev et Ops d'Orion sont celles du cas d'étude. La collaboration est
+> donc **outillée**, pas **observée** — aucune merge request n'a été relue par un
+> tiers, aucune règle d'approbation n'est en place (§3.2), et l'action A1.5 du
+> plan (« aucun échange de version par email sur une itération complète ») ne
+> peut pas être mesurée ici. Deux mécanismes restent en outre incomplets : les
+> alertes applicatives ne sortent pas de Kibana (§7.7), et les deux déploiements
+> restent déclenchés à la main.
 
 ---
 
@@ -175,18 +281,18 @@ flowchart TB
 **Ce que chaque branche déclenche** (`ARCHITECTURE.md` §7, règles réelles dans
 `.gitlab/ci/templates.yml`) :
 
-| Branche      | Rôle                           | Jobs déclenchés                                                   |
-| ------------ | ------------------------------ | ----------------------------------------------------------------- |
-| `main`       | Code en production             | Tous, jusqu'au déploiement production                             |
-| `develop`    | Intégration continue           | Tous, jusqu'au staging                                            |
-| `feature/…`  | Nouvelle fonctionnalité        | lint, test, quality, security — filtrés par périmètre             |
-| `release/…`  | Préparation d'une version      | Tous                                                              |
-| `hotfix/…`   | Correctif urgent en production | Tous                                                              |
-| Tag `vX.Y.Z` | Version livrée                 | Tous **sauf `package-*`** : un tag promeut, il ne reconstruit pas |
+| Branche                        | Rôle                                                         | Jobs déclenchés                                                                                      |
+| ------------------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `main`                         | Code en production                                           | Tous, jusqu'au déploiement production                                                                |
+| `develop`                      | Intégration continue                                         | Tous, jusqu'au staging                                                                               |
+| `feature/…`, `fix/…`, `docs/…` | Travail en cours : fonctionnalité, correction, documentation | lint, test, quality, security, validation d'infra — filtrés par périmètre ; aucune image construite  |
+| `release/…`                    | Préparation d'une version                                    | Vérification, build, images, performance ; aucun déploiement                                         |
+| `hotfix/…`                     | Correctif urgent en production                               | Vérification, build, images, performance ; aucun déploiement                                         |
+| Tag `vX.Y.Z`                   | Version livrée                                               | Tous **sauf `package-*`** : un tag promeut, il ne reconstruit pas ; `release` crée la Release GitLab |
 
 **L'écart entre le modèle et la pratique, parce qu'il se lit dans `git log`.**
-Le dépôt compte 44 branches locales (41 sur `origin`) et un seul tag
-(`v1.0.0`). **Aucune branche
+Le dépôt compte 49 branches locales (45 sur `origin`, relevé du 2026-10-02) et
+un seul tag (`v1.0.0`, qui n'a jamais abouti — §7.3). **Aucune branche
 `release/*` n'a jamais existé** : les livraisons passent directement de
 `develop` à `main` par Pull Request (PR #23, #25). Des branches de correction
 sont également fusionnées directement dans `main` (PR #24), ce qui est un
@@ -216,16 +322,19 @@ le **préfixe**, donc une branche mal nommée ne déclenche rien.
   `$CI_COMMIT_BRANCH =~ /^feature\//`. `feature_ma-fonctionnalite` ne correspond
   à aucune règle.
 - Mots composés en tiret, en minuscules : `feature/initial-documentation`.
-- Préfixes reconnus : `feature/`, `release/`, `hotfix/`, plus `main` et
-  `develop`.
+- Préfixes reconnus : `feature/`, `fix/`, `docs/`, `release/`, `hotfix/`, plus
+  `main` et `develop`. `fix/` et `docs/` ont été ajoutés après coup
+  (`.gitlab/ci/templates.yml`, règle `/^(feature|fix|docs)\//`) : ce sont les
+  préfixes que le dépôt employait réellement.
 
-> ⚠️ **Un piège vérifié dans le dépôt.** Les branches `feat/gestion-des-erreurs-http`
-> et `docs/indicateurs-dora-actualises` existent et **ne correspondent à aucune
-> règle de branche** : `feat/` n'est pas `feature/`, et `docs/` n'est prévu nulle
-> part. Poussées seules, elles ne déclenchent aucun job ; elles ne sont vérifiées
-> qu'une fois ouvertes en merge request, où la règle `$CI_MERGE_REQUEST_ID`
-> s'applique. C'est exactement le mode de défaillance que `ARCHITECTURE.md` §7
-> annonce, observé sur le dépôt lui-même.
+> ⚠️ **Un piège vérifié dans le dépôt.** La branche
+> `feat/gestion-des-erreurs-http` existe et **ne correspond à aucune règle de
+> branche** : `feat/` n'est pas `feature/`. Poussée seule, elle ne déclenche
+> aucun job ; elle n'est vérifiée qu'une fois ouverte en merge request, où la
+> règle `$CI_MERGE_REQUEST_ID` s'applique. C'est exactement le mode de
+> défaillance que `ARCHITECTURE.md` §7 annonce, observé sur le dépôt lui-même.
+> Les branches `fix/…` et `docs/…` ont été dans le même cas jusqu'à ce que la
+> règle soit élargie.
 
 **Commits.** **Conventional Commits**, imposés par `commitlint` via le hook
 `.husky/commit-msg`, donc **avant le push** et non en CI. Onze types autorisés
@@ -245,7 +354,9 @@ ci(securite): rend les trois scans Trivy bloquants
 
 L'intérêt dépasse le style : un historique exploitable par machine ouvre la
 génération automatique de changelog et le versionnage sémantique automatisé —
-deux évolutions identifiées mais **non implémentées** à ce jour (`RELEASE.md` §8).
+deux évolutions identifiées mais **non implémentées** à ce jour (`RELEASE.md`
+§8). La Release GitLab créée sur chaque tag (§7.2) décrit les images et le
+commit, pas encore la liste des changements.
 
 ---
 
@@ -253,22 +364,22 @@ deux évolutions identifiées mais **non implémentées** à ce jour (`RELEASE.m
 
 ### 4.1 Les types de tests
 
-| Type de test    | Outil                                                                       | Déclenchement                                                                      | Couverture cible                                                                 | État réel                                                                                                                                                                                                         |
-| --------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Unitaires**   | JUnit 5 (back), Karma/Jasmine (front)                                       | Étape `test`, à chaque push et MR ; filtrés par périmètre sur `feature/`           | ≥ 90 % de lignes                                                                 | **97 % lignes / 100 % branches** (back) · **100 % lignes / 89 % branches**, 112 tests (front)                                                                                                                     |
-| **Intégration** | JUnit + Spring Boot, sur **PostgreSQL réel** (service `postgres:16-alpine`) | Étape `test`, jobs `test-back` et `mutation-back`                                  | incluse dans le seuil ci-dessus                                                  | Repositories, cascades, contrat HTTP de Spring Data REST, CORS, Actuator                                                                                                                                          |
-| **E2E**         | —                                                                           | —                                                                                  | —                                                                                | **Non implémenté.** Aucun stage `integration`, aucun Cypress ni Playwright. C'est la lacune nommément identifiée en `VEILLE.md` §8 et `schema.md` : rien ne vérifie que le front et le back fonctionnent ensemble |
-| **Sécurité**    | OWASP Dependency-Check, Trivy (`fs` et `image`)                             | Étape `security` (dépôt) et fin de `package-*` (images)                            | zéro CVE HIGH/CRITICAL non arbitrée                                              | **Bloquant depuis le 2026-09-19.** Seuil `failBuildOnCVSS = 7.0` ; les deux images sortent à zéro CVE HIGH/CRITICAL                                                                                               |
-| **SonarQube**   | SonarQube / SonarCloud + SpotBugs + Find-Sec-Bugs                           | Étape `quality`, jobs `sonar-back`, `sonar-front`, `quality-gate`, `spotbugs-back` | Quality Gate franchie sur le **code nouveau**                                    | Quality Gate opposable (§4.3). `spotbugs-back` est en `ignoreFailures = true` : il publie, il ne bloque pas                                                                                                       |
-| **Performance** | k6 (`grafana/k6:2.1.0`, version figée)                                      | Étape `perf`, **pipeline enfant**, après `package`                                 | p95 lecture < 500 ms, p95 écriture < 800 ms, erreurs < 1 %, p95 smoke < 1 500 ms | `k6-smoke` bloquant · `k6-load` en `allow_failure` (runners mutualisés) · `k6-stress` sur demande (`K6_STRESS=true`)                                                                                              |
+| Type de test    | Outil                                                                       | Déclenchement                                                                      | Couverture cible                                                                 | État réel                                                                                                                                                                                                                                                                                               |
+| --------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Unitaires**   | JUnit 5 (back), Karma/Jasmine (front)                                       | Étape `test`, à chaque push et MR ; filtrés par périmètre sur `feature/`           | ≥ 90 % de lignes                                                                 | **97 % lignes / 100 % branches** (back) · **100 % lignes / 90 % branches**, 112 tests (front, relevé du 2026-10-02 : 37 branches sur 41)                                                                                                                                                                |
+| **Intégration** | JUnit + Spring Boot, sur **PostgreSQL réel** (service `postgres:16-alpine`) | Étape `test`, jobs `test-back` et `mutation-back`                                  | incluse dans le seuil ci-dessus                                                  | Repositories, cascades, contrat HTTP de Spring Data REST, CORS, Actuator                                                                                                                                                                                                                                |
+| **E2E**         | —                                                                           | —                                                                                  | —                                                                                | **Non implémenté.** Aucun stage `integration`, aucun Cypress ni Playwright. C'est la lacune nommément identifiée en `VEILLE.md` §8 et `schema.md` : rien ne vérifie que le front et le back fonctionnent ensemble                                                                                       |
+| **Sécurité**    | OWASP Dependency-Check, Trivy (`fs` et `image`)                             | Étape `security` (dépôt) et `package-*` (images, **avant** le push)                | zéro CVE HIGH/CRITICAL non arbitrée                                              | **Bloquant depuis le 2026-09-19.** Seuil `failBuildOnCVSS = 7.0`. Dependency-Check n'analysait aucun jar jusqu'au 2026-10-02 ; il en lit 82, avec 12 CVE exceptées (§6.4). La dernière image du back publiée porte 5 CVE HIGH ; les images construites en local depuis le correctif en portent 0 (§6.2) |
+| **SonarQube**   | SonarQube / SonarCloud + SpotBugs + Find-Sec-Bugs                           | Étape `quality`, jobs `sonar-back`, `sonar-front`, `quality-gate`, `spotbugs-back` | Quality Gate franchie sur le **code nouveau**                                    | Quality Gate opposable (§4.3). `spotbugs-back` est en `ignoreFailures = true` : il publie, il ne bloque pas                                                                                                                                                                                             |
+| **Performance** | k6 (`grafana/k6:2.1.0`, version figée)                                      | Étape `perf`, **pipeline enfant**, après `package`                                 | p95 lecture < 500 ms, p95 écriture < 800 ms, erreurs < 1 %, p95 smoke < 1 500 ms | `k6-smoke` bloquant · `k6-load` en `allow_failure` (runners mutualisés) · `k6-stress` sur demande (`K6_STRESS=true`)                                                                                                                                                                                    |
 
 **S'y ajoutent deux suites que le template ne prévoit pas et qui pèsent lourd
 ici**, parce que toute la logique du pipeline vit dans des scripts :
 
 | Suite                           | Ce qu'elle couvre                                                                                                 | Vérifié                                            |
 | ------------------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `scripts/tests/run_tests.sh`    | Tous les scripts du pipeline, avec `kubectl`, `docker`, `trivy` remplacés par des faux binaires en tête de `PATH` | **266 assertions**, exécuté le 2026-09-24, 0 échec |
-| `scripts/tests/validate_k8s.sh` | Les manifestes Kustomize et le chart Helm, sans cluster, y compris l'équivalence des deux rendus                  | **96 assertions**, exécuté le 2026-09-24, 0 échec  |
+| `scripts/tests/run_tests.sh`    | Tous les scripts du pipeline, avec `kubectl`, `docker`, `trivy` remplacés par des faux binaires en tête de `PATH` | **430 assertions**, exécuté le 2026-10-02, 0 échec |
+| `scripts/tests/validate_k8s.sh` | Les manifestes Kustomize et le chart Helm, sans cluster, y compris l'équivalence des deux rendus                  | **151 assertions**, exécuté le 2026-10-02, 0 échec |
 
 > **Pourquoi tester des scripts de déploiement.** Un script qui échoue mal est
 > plus dangereux qu'un script absent. Les faux `kubectl` permettent de vérifier
@@ -287,7 +398,7 @@ PostgreSQL (`QUALITY.md` §7).
 
 ### 4.2 Intégration dans le pipeline
 
-Le pipeline compte **10 étapes et 37 jobs**, définis dans `.gitlab-ci.yml` et
+Le pipeline compte **10 étapes et 39 jobs**, définis dans `.gitlab-ci.yml` et
 **14 fichiers** au total (la racine, qui ne contient aucun job, et 13 fichiers de
 `.gitlab/ci/`, un par domaine).
 
@@ -299,9 +410,9 @@ Le pipeline compte **10 étapes et 37 jobs**, définis dans `.gitlab-ci.yml` et
 | `security`    | `dependency-check-back`, `trivy-fs`                                                            | Surface d'attaque du dépôt                                 | oui                       |
 | `infra`       | `terraform-validate`, `terraform-plan`, `ansible-lint`                                         | L'infrastructure se valide **avant** qu'on ne compile      | oui                       |
 | `build`       | `build-front`, `build-back`                                                                    | Artefacts                                                  | oui                       |
-| `package`     | `package-back`, `package-front`, `promote-back`, `promote-front`                               | Images taguées par SHA, scannées, poussées                 | oui                       |
+| `package`     | `package-back`, `package-front`, `promote-back`, `promote-front`, `release`                    | Images taguées par SHA, scannées, poussées                 | oui                       |
 | `perf`        | `perf` → pipeline enfant (`k6-smoke`, `k6-load`, `k6-stress`)                                  | Tenue en charge de l'image construite                      | `k6-smoke` seul           |
-| `deploy`      | `deploy-staging`, `deploy-production`, `rollback-production`                                   | Mise en service et retour arrière                          | manuels                   |
+| `deploy`      | `deploy-staging`, `deploy-production`, `rollback-production`, `dora-metrics`                   | Mise en service et retour arrière                          | manuels                   |
 | `infra-apply` | `terraform-apply-{staging,logging,production}`, `notify-echec`                                 | `terraform apply` par environnement, notification d'échec  | manuels, bloquants        |
 
 **Trois choix d'ordonnancement méritent leur explication.**
@@ -322,9 +433,9 @@ Le pipeline compte **10 étapes et 37 jobs**, définis dans `.gitlab-ci.yml` et
 | Régime                                   | Ce qui tourne                                                                                                                                                  |
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Merge request                            | Toute la vérification, **filtrée par périmètre** : un commit qui ne touche que `front/` ne relance pas `test-back`, `mutation-back` ni `dependency-check-back` |
-| Branche `feature/…`                      | Idem, avec `compare_to: refs/heads/develop` pour que le filtre réponde « ce que cette branche change », pas « ce que ce push change »                          |
-| `develop`, `main`, `release/`, `hotfix/` | Tout, sans filtre de périmètre — avant une livraison, on ne saute rien                                                                                         |
-| Tag `vX.Y.Z`                             | Tout **sauf `package-*`** : `promote-back` et `promote-front` retaguent l'image déjà publiée                                                                   |
+| Branche `feature/…`, `fix/…`, `docs/…`   | Idem, avec `compare_to: refs/heads/develop` pour que le filtre réponde « ce que cette branche change », pas « ce que ce push change »                          |
+| `develop`, `main`, `release/`, `hotfix/` | Tout, sans filtre de périmètre — avant une livraison, on ne saute rien. Les déploiements ne sont proposés que sur `develop` (staging) et `main` (production)   |
+| Tag `vX.Y.Z`                             | Tout **sauf `package-*`** : `promote-back` et `promote-front` retaguent l'image déjà publiée, puis `release` crée la Release GitLab                            |
 
 > **Ce que le filtrage n'ose pas franchir.** `build-*`, `package-*` et les jobs
 > de déploiement gardent leurs règles **sans** `changes:`. Les images sont
@@ -428,7 +539,7 @@ brique, figure dans `ARCHITECTURE.md` §10. En résumé :
 | Registry                                   | registry GitLab pour la CI, `minikube image load` en local  | ECR                     | ACR                              |
 | `Secret` du registry                       | recréé par la CI à chaque déploiement                       | **disparaît** (IRSA)    | **disparaît** (identité managée) |
 | État Terraform                             | backend `http` — état managé GitLab, un par env, verrouillé | S3 + verrouillage       | Azure Storage + lease            |
-| Stack de logs                              | Elasticsearch, Kibana, Filebeat dans le namespace `logging` | OpenSearch / CloudWatch | Log Analytics / Azure Monitor    |
+| Stack de logs et de traces                 | Elasticsearch, Kibana, Filebeat, APM Server dans `logging`  | OpenSearch / CloudWatch | Log Analytics / Azure Monitor    |
 
 > **Ce que le local ne démontre pas, et qu'aucune phrase ne remplace**
 > (`ARCHITECTURE.md` §11) : la haute disponibilité (un seul nœud), un
@@ -453,7 +564,7 @@ flowchart TB
     gh -->|"GitHub Actions : mirror-to-gitlab.yaml<br/>push --prune de toutes les refs"| gl["GitLab<br/>miroir en lecture seule"]
     gl --> pipe
 
-    subgraph pipe["Pipeline GitLab CI : 10 étapes, 37 jobs"]
+    subgraph pipe["Pipeline GitLab CI : 10 étapes, 39 jobs"]
         direction LR
         s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
     end
@@ -492,8 +603,8 @@ flowchart TB
 ```
 
 _Source : `docs/schemas/plateforme-deploiement.mmd` (version de `develop`), avec
-le seul libellé du nombre de jobs porté de 36 à 37 depuis l'ajout de
-`notify-echec`. Rendu vérifié avec `mermaid-cli`._
+le libellé du nombre de jobs tenu à jour : 39 depuis l'ajout de `release` et de
+`dora-metrics`. Rendu vérifié avec `mermaid-cli`._
 
 **Ce que le trait plein de l'étape `deploy` veut dire, depuis peu.** Ce cadre
 était en tirets — écrit, testé, jamais mené à son terme. Il ne l'est plus depuis
@@ -523,11 +634,11 @@ flowchart LR
         direction LR
         C1["build<br/>Gradle<br/>Angular CLI"] --> C2["package<br/>2 images multi-stage<br/>tag = SHA"]
         C2 --> C3["perf<br/>k6 sur<br/>l'image construite"]
-        C3 --> D["deploy ✋<br/>staging · production<br/>rollback"]
+        C3 --> D["deploy — manuel<br/>staging · production<br/>rollback"]
         D --> E["EXPLOITATION<br/>ELK · indicateurs DORA"]
     end
     R1 --> R2
-    B5 -.->|"✗ retour immédiat"| A
+    B5 -.->|"échec : retour immédiat"| A
     E -.->|"incidents, dérives"| A
 
     classDef prod fill:#f5f8f8,stroke:#5b6c69,color:#13201e
@@ -577,8 +688,8 @@ vérifié avec `mermaid-cli`._
   divergence entre deux noms tous les deux renseignés, qui reste à la charge de
   la relecture.
 - **Un quatrième namespace existe, hors application** : `logging`, créé par
-  Terraform comme tout autre contenant, qui héberge Elasticsearch, Kibana et
-  Filebeat.
+  Terraform comme tout autre contenant, qui héberge Elasticsearch, Kibana,
+  Filebeat et APM Server (§5.5).
 
 ### 5.4 Structure du code IaC
 
@@ -653,7 +764,8 @@ k8s/
 ├── base/                       Deployment ×2, Service ×2, Ingress, ConfigMap
 ├── overlays/staging/           patches de ConfigMap et d'Ingress
 ├── overlays/production/        + patch de ressources du back
-└── elk/                        Elasticsearch, Kibana, Filebeat, RBAC, dashboards
+└── elk/                        Elasticsearch, Kibana, Filebeat, APM Server, RBAC,
+                                dashboards
 
 helm/microcrm/                  chart équivalent, values par environnement
 ```
@@ -688,6 +800,210 @@ et relâché, état écrit, état relu, `terraform plan` répondant « No change
 > de l'environnement et la variable GitLab — et **rien ne compare les deux**.
 > Terraform crée le namespace, la CI y déploie, et les deux ne se parlent pas.
 
+### 5.5 Plan de conteneurs
+
+**Ce que cette section réunit.** Tout ce qui concerne les conteneurs du projet,
+en un seul endroit : quelles images, construites comment, rangées où et sous
+quels noms, contrôlées par quoi, configurées et orchestrées de quelle façon, et
+ce qui tourne réellement dans chaque environnement. Le raisonnement détaillé
+reste dans `ARCHITECTURE.md` §3, `docs/documentation-infrastructure.md` §3 et
+`K8S.md`. Son pendant est le **plan d'optimisation des releases**
+(`docs/plan-optimisation-release.md`) : ce plan-ci décrit ce qui est livré, l'autre
+la façon de le livrer mieux.
+
+#### 5.5.1 Inventaire des images
+
+**Les deux images du projet.** Une par application, jamais une image commune
+(`ARCHITECTURE.md` §3). Chacune est construite en plusieurs étapes : les outils
+de compilation restent dans les étapes intermédiaires, et l'image livrée ne
+reçoit que l'artefact.
+
+| Image   | Étapes de construction (`FROM`)                                                                                                                  | Ce que l'image livrée contient                                                 | Utilisateur     | Port   |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ | --------------- | ------ |
+| `back`  | 1. `gradle:8.14.5-jdk21` compile le jar · 2. `alpine:3.24` télécharge l'agent OpenTelemetry et vérifie son SHA-256 · 3. `alpine:3.24`, exécution | `openjdk21-jre-headless`, `microcrm.jar`, `opentelemetry-javaagent.jar` 2.31.1 | `app`, UID 1000 | `8080` |
+| `front` | 1. `node:22-alpine` construit le bundle Angular · 2. `caddy:2.11.4-builder-alpine` recompile Caddy 2.11.4 · 3. `alpine:3.24`, exécution          | le binaire Caddy, le bundle (`/app/front`), le `Caddyfile`, `ca-certificates`  | `app`, UID 1000 | `80`   |
+
+**Les tailles, mesurées le 2026-10-02** par `docker image ls` sur le poste
+(images arm64, taille décompressée) :
+
+| Image                                                     | Construite le | Taille      | Compressée |
+| --------------------------------------------------------- | ------------- | ----------- | ---------- |
+| `back:bf272532` (staging), `back:9f4168b3` (production)   | 2026-09-23    | **390 Mo**  | 122 Mo     |
+| `microcrm-back:otel` — le back avec l'agent OpenTelemetry | 2026-09-29    | **446 Mo**  | 147 Mo     |
+| `microcrm-front:local`                                    | 2026-09-14    | **85,8 Mo** | 23 Mo      |
+
+L'agent pèse 25 Mo en jar et alourdit l'image de 56 Mo sur disque. Deux
+réserves : l'image du front mesurée est une construction locale, pas celle du
+registry ; et aucune image du back avec agent n'a encore été publiée par la CI.
+
+Les versions de base sont figées, jamais `latest`, surchargeables par
+`--build-arg`, et alignées sur celles de `.gitlab/ci/variables.yml` : le code est
+compilé avec la version qui l'a testé. Les deux images d'exécution commencent
+par `apk upgrade`, parce que l'image Alpine officielle n'est reconstruite qu'à
+chaque version mineure.
+
+**Les images tierces de la supervision**, tirées telles quelles de
+`docker.elastic.co` et épinglées **ensemble** à la même version — une assertion
+de `validate_k8s.sh` échoue si l'une des quatre diverge :
+
+| Image                   | Rôle                  | Utilisateur        | Port           | Racine en lecture seule   |
+| ----------------------- | --------------------- | ------------------ | -------------- | ------------------------- |
+| `elasticsearch:8.19.7`  | Stockage et recherche | UID 1000           | `9200`, `9300` | **non** — seule exception |
+| `kibana:8.19.7`         | Tableaux de bord, APM | UID 1000           | `5601`         | oui                       |
+| `beats/filebeat:8.19.7` | Collecte des logs     | UID 1000, groupe 0 | —              | oui                       |
+| `apm/apm-server:8.19.7` | Réception des traces  | UID 1000           | `8200`         | oui                       |
+
+**Les images d'outillage du pipeline** (Gradle, Node, Trivy, kubectl, Terraform,
+k6…) sont elles aussi figées, dans `.gitlab/ci/variables.yml`. Elles ne tournent
+jamais en production.
+
+#### 5.5.2 Registry et convention de tags
+
+| Élément          | Ce qui est fait                                                                                                                          |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Registry         | Le registry **GitLab** du projet, privé : `$CI_REGISTRY_IMAGE/back` et `$CI_REGISTRY_IMAGE/front`                                        |
+| Tag de travail   | **Le SHA court du commit** (`back:9f4168b3`), posé par `package-*`. Immuable : c'est lui que les environnements déploient                |
+| Tag de version   | **SemVer** (`back:1.4.0`, sans le « v »), posé par `promote-*` sur un pipeline de tag, **par retag** de l'image du commit — même digest  |
+| Tag mobile       | `latest` est aussi poussé par `build_and_push.sh` (son défaut `--moving-tag`). **Il n'est jamais déployé** : `validate_k8s.sh` le refuse |
+| Accès du cluster | `imagePullSecrets: gitlab-registry`, un `Secret` recréé par la CI à chaque déploiement ; jamais versionné                                |
+| Hors CI          | `docker build` puis `minikube image load` : les images sont chargées dans le nœud, sans registry                                         |
+
+L'ordre compte : **le SHA d'abord, la version ensuite, par promotion**. Une
+image n'est construite qu'une fois ; lui donner un numéro de version ne la
+reconstruit pas (§7.2 et §7.3).
+
+#### 5.5.3 Scan
+
+| Contrôle                        | Ce qu'il regarde                                                                       | Seuil                 | Effet                                                                                                         |
+| ------------------------------- | -------------------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Trivy `image`, dans `package-*` | L'image qui vient d'être construite, **avant** son `push` (`build_and_push.sh --scan`) | `HIGH,CRITICAL`       | Code 2 : le push est annulé, rien n'est publié ; rapport en artefact (`reports/trivy-image-*.json` et `.txt`) |
+| Trivy `fs`, job `trivy-fs`      | Le dépôt : vulnérabilités, secrets, Dockerfiles et manifestes                          | `HIGH,CRITICAL`       | Bloquant (code 2) ; rapport en artefact (`reports/trivy-fs.json` et `.txt`)                                   |
+| OWASP Dependency-Check          | Les 82 dépendances Java du `runtimeClasspath` — aucune jusqu'au 2026-10-02 (§6.2)      | `failBuildOnCVSS = 7` | Bloquant ; rapport HTML, XML et JSON en artefact                                                              |
+
+Les exceptions vivent dans deux fichiers : `.trivyignore.yaml` — **7 entrées**,
+chacune limitée à un fichier — et
+`back/config/dependency-check/suppressions.xml` — **12 CVE** de Spring Framework
+6.2.19. Toutes sont justifiées et expirent le 2026-12-31 (§6.4). Deux
+précisions honnêtes. L'agent OpenTelemetry est vu par Trivy comme **un seul
+paquet** : ses dépendances embarquées sont invisibles au scan d'image, et c'est
+le SBOM publié avec l'agent qui a été scanné à part (93 paquets, 0 HIGH ou
+CRITICAL pour la 2.31.1, relevé du 2026-09-29 consigné dans `back/Dockerfile`).
+Et **les quatre images Elastic ne sont scannées par aucun job** : le pipeline ne
+scanne que ce qu'il construit.
+
+#### 5.5.4 Configuration à l'exécution
+
+**Une seule image pour tous les environnements** : rien de ce qui distingue
+staging de production n'est compilé dedans. Tout entre au démarrage, par la
+ConfigMap `microcrm-config` — le back la reçoit entière (`envFrom`), le front n'en
+prend qu'une clé.
+
+| Clé                             | Lue par | Rôle                                                     | Varie selon l'environnement     |
+| ------------------------------- | ------- | -------------------------------------------------------- | ------------------------------- |
+| `MICROCRM_CORS_ALLOWED_ORIGINS` | back    | Origine autorisée à appeler l'API                        | oui                             |
+| `FRONT_API_BASE_URL`            | front   | URL de l'API, servie par Caddy dans `/config.json`       | oui                             |
+| `SPRING_PROFILES_ACTIVE`        | back    | `container` : bascule les logs en JSON ECS               | non                             |
+| `JAVA_TOOL_OPTIONS`             | back    | Charge l'agent OpenTelemetry — l'interrupteur des traces | non                             |
+| `OTEL_*` (7 clés)               | back    | Destination, protocole et étiquetage des traces          | `OTEL_RESOURCE_ATTRIBUTES` seul |
+
+Il n'y a **aucun `Secret` applicatif** : la base vit en mémoire, donc aucun mot
+de passe à fournir. La racine des deux conteneurs est en lecture seule ; ce qui
+doit s'écrire passe par des volumes `emptyDir` (`/tmp` pour le back, `/config`
+et `/data` pour Caddy).
+
+#### 5.5.5 Orchestration
+
+Deux `Deployment`, `back` et `front`, décrits une fois dans `k8s/base/` et
+ajustés par overlay. Mise à jour en `RollingUpdate`, `maxSurge: 1`,
+`maxUnavailable: 0`, trois révisions conservées pour le retour arrière.
+
+| Réglage                        | staging                  | production                |
+| ------------------------------ | ------------------------ | ------------------------- |
+| Replicas `back`                | 1                        | 1 — plafonné, voir §5.5.7 |
+| Replicas `front`               | 1                        | 2                         |
+| `back`, requests → limits      | 200m / 512Mi → 1 / 768Mi | 500m / 768Mi → 2 / 1Gi    |
+| `front`, requests → limits     | 10m / 32Mi → 200m / 64Mi | 10m / 32Mi → 200m / 64Mi  |
+| Quota : pods                   | 10                       | 20                        |
+| Quota : requests CPU / mémoire | 1 / 1536Mi               | 2 / 2Gi                   |
+| Quota : limits CPU / mémoire   | 3 / 2Gi                  | 6 / 3Gi                   |
+| Plafond par conteneur          | 2 CPU / 1Gi              | 2 CPU / 1Gi               |
+
+| Sonde       | `back` (Actuator)                                        | `front` (Caddy)                 |
+| ----------- | -------------------------------------------------------- | ------------------------------- |
+| `startup`   | `/actuator/health/liveness`, 30 essais × 5 s, soit 150 s | `/`, 15 essais × 2 s, soit 30 s |
+| `liveness`  | `/actuator/health/liveness`, toutes les 10 s, 3 échecs   | `/`, toutes les 10 s, 3 échecs  |
+| `readiness` | `/actuator/health/readiness`, toutes les 5 s, 3 échecs   | `/`, toutes les 5 s, 3 échecs   |
+
+Le socle de sécurité est le même pour les deux : `runAsNonRoot`, UID 1000,
+`allowPrivilegeEscalation: false`, toutes les capabilities retirées (le front
+reprend la seule `NET_BIND_SERVICE`, pour écouter sur le port 80), profil
+seccomp `RuntimeDefault`, aucun jeton de `ServiceAccount` monté. Les quotas et
+les limites par défaut sont posés par Terraform, pas par les manifestes : ils
+sont calés sur le **pic d'un déploiement** (un pod de plus pendant le rollout),
+pas sur le régime permanent.
+
+#### 5.5.6 Ce qui tourne où
+
+| Namespace             | Créé par  | Conteneurs                                                                | Images venues de                         |
+| --------------------- | --------- | ------------------------------------------------------------------------- | ---------------------------------------- |
+| `microcrm-staging`    | Terraform | `back` × 1, `front` × 1                                                   | registry GitLab, job `deploy-staging`    |
+| `microcrm-production` | Terraform | `back` × 1, `front` × 2                                                   | registry GitLab, job `deploy-production` |
+| `logging`             | Terraform | Elasticsearch × 1, Kibana × 1, APM Server × 1, Filebeat × 1 (un par nœud) | `docker.elastic.co`                      |
+
+**Relevé du cluster, le 2026-10-02** (`kubectl get deploy,ds -A -o wide`) :
+
+| Namespace             | Charge          | Prêts | Image                  |
+| --------------------- | --------------- | ----- | ---------------------- |
+| `microcrm-staging`    | `back`          | 1/1   | `…/back:bf272532`      |
+| `microcrm-staging`    | `front`         | 1/1   | `…/front:bf272532`     |
+| `microcrm-production` | `back`          | 1/1   | `…/back:9f4168b3`      |
+| `microcrm-production` | `front`         | 2/2   | `…/front:9f4168b3`     |
+| `logging`             | `elasticsearch` | 1/1   | `elasticsearch:8.19.7` |
+| `logging`             | `kibana`        | 1/1   | `kibana:8.19.7`        |
+| `logging`             | `apm-server`    | 1/1   | `apm-server:8.19.7`    |
+| `logging`             | `filebeat`      | 1/1   | `filebeat:8.19.7`      |
+
+Consommation des quotas au même moment : staging `pods 2/10`,
+`requests.memory 544Mi/1536Mi` ; production `pods 3/20`,
+`requests.memory 832Mi/2Gi` ; `logging` `pods 4/12`, `limits.memory 4Gi/6Gi`.
+
+⚠️ **Un écart entre le dépôt et le cluster, à lire avant tout le reste.** Les
+quatre images applicatives ont été construites le **2026-09-23**. Elles
+précèdent l'agent OpenTelemetry : `/app` n'y contient que `microcrm.jar`, et la
+ConfigMap en place ne porte que trois clés, sans `JAVA_TOOL_OPTIONS` ni
+`OTEL_*`. Le plan des §5.5.1 et §5.5.4 décrit donc ce que le **prochain**
+déploiement posera, pas ce qui tourne aujourd'hui. La version déclarée par le
+dépôt est `1.0.1` ; aucune image ne porte encore ce numéro.
+
+Les trois namespaces vivent sur **le même minikube à un nœud**, à côté de
+namespaces d'autres projets. « Production » désigne donc un second
+environnement décrit par les mêmes modules et d'autres valeurs, pas une
+production isolée.
+
+#### 5.5.7 Limites
+
+- **Le back est plafonné à un replica.** La base HSQLDB vit dans la mémoire du
+  processus : deux pods tiendraient deux bases. Aucune haute disponibilité du
+  back, donc, tant que la base n'est pas externalisée (§7.6).
+- **L'image du back est lourde**, parce qu'elle embarque un JRE complet :
+  390 Mo, 446 Mo avec l'agent. Un runtime réduit par `jlink` est la première
+  optimisation à faire ; elle n'est pas faite.
+- **Ce qui est décrit n'est pas encore ce qui tourne** : les images déployées
+  précèdent l'agent OpenTelemetry (§5.5.6).
+- **Les images ne sont pas signées**, et aucun SBOM n'est publié avec elles
+  (§6.2).
+- **`latest` est poussé au registry**, même s'il n'est jamais déployé : un tag
+  mobile de plus à ne pas utiliser par mégarde.
+- **Aucune politique de nettoyage du registry n'est versionnée** : les images
+  taguées par SHA s'accumulent. Le réglage vit dans l'interface GitLab et n'a
+  pas été relevé ici.
+- **Les images Elastic ne sont pas scannées** par le pipeline (§5.5.3).
+- **Les `resources` sont estimées, pas mesurées** : sans `metrics-server`, rien
+  ne relève la consommation réelle des pods (§7.7). Il n'y a pas non plus de
+  montée en charge automatique.
+- **Les `NetworkPolicy` ne sont pas appliquées** par le CNI par défaut de
+  minikube (§5.1).
+
 ---
 
 ## 6. Sécurité et qualité du code
@@ -699,24 +1015,43 @@ production, elle coûte un incident.** Chaque contrôle est donc placé au plus 
 dans la chaîne : les hooks `husky` filtrent avant le push, l'étape `security`
 s'exécute **avant** `build` — on ne compile pas ce dont on sait déjà qu'il ne
 sera pas livrable — et le scan d'image est accolé à sa construction, dans
-`package-*`, pas dans un job de fin de pipeline qu'on lirait après coup.
+`package-*`, **entre le build et le push** : une image refusée n'atteint pas le
+registry.
 
 **Le deuxième pilier est qu'un contrôle qui signale sans arrêter finit par être
 lu comme du bruit.** Les quatre portes de sécurité étaient en `allow_failure` et
 ne décidaient de rien ; elles sont bloquantes depuis le **2026-09-19**. C'est ce
 qui transforme une intention en processus (§6.4).
 
+**Le troisième s'est imposé le 2026-10-02 : une porte bloquante ne vaut que par
+ce qu'elle lit.** L'une des quatre, `dependency-check-back`, était bloquante,
+verte, et n'analysait aucun jar (§6.2). Les scans laissent donc désormais une
+trace — un rapport en artefact — qui permet de vérifier ce qu'ils ont regardé,
+pas seulement leur verdict.
+
+**Le plan de sécurité, en une table.** Le détail est dans `AUDIT.md` §7.
+
+| Volet                | Ce qui est en place                                                                                     | Où               |
+| -------------------- | ------------------------------------------------------------------------------------------------------- | ---------------- |
+| Risques identifiés   | Huit risques, de R1 (CVE des dépendances) à R8 (vulnérabilités applicatives)                            | `AUDIT.md` §7.1  |
+| Outils               | Sonar, SpotBugs + Find-Sec-Bugs, Dependency-Check, Trivy (`fs` et `image`), linters                     | §6.2             |
+| Secrets              | Variables masquées, agent Kubernetes, aucun secret versionné                                            | §6.3             |
+| Processus            | Portes bloquantes au score 7 ; trois issues (corriger, excepter, arrêter) ; arbitrage en merge request  | §6.4             |
+| Exceptions           | Deux registres versionnés, datés ; 7 entrées Trivy, 12 CVE Dependency-Check                             | §6.4             |
+| Traçabilité          | Rapports JSON en artefacts, tableau de bord « sécurité », Release GitLab par version                    | §6.2, §7.2, §7.7 |
+| Détection en service | Deux règles d'alerte de sécurité : chemins sensibles demandés au front, rafale de réponses 4xx de l'API | §7.7             |
+
 ### 6.2 Les outils d'analyse
 
-| Outil                                                  | Type d'analyse                                   | Rôle                                                                                                                                                                                                                                | Étape                                   | Bloquant                                              |
-| ------------------------------------------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- | ----------------------------------------------------- |
-| **SonarQube / SonarCloud**                             | **SAST** + dette technique                       | Bonnes pratiques, bugs, duplication, complexité, code mort ; agrège la couverture back et front ; porte la Quality Gate                                                                                                             | `quality`                               | **oui** (`quality-gate`)                              |
-| **SpotBugs + Find-Sec-Bugs**                           | **SAST** sur le **bytecode**                     | Ce qu'aucun linter de texte ne voit : déréférencement null sur un chemin précis, comparaison de `String` avec `==`, flux non fermés. Find-Sec-Bugs ajoute ~140 patterns de sécurité (injection, XSS, CORS permissif, crypto faible) | `quality`                               | **non** — `ignoreFailures = true`, publie en artefact |
-| **ESLint, Checkstyle, Spotless, Prettier, ShellCheck** | **Linting** et mise en forme                     | Forme du code TypeScript, Java et Bash ; les deux premiers aussi en local via `lint-staged`                                                                                                                                         | `lint` + hooks pre-commit               | **oui**                                               |
-| **`lint-k8s`, `lint-helm`**                            | Linting d'infrastructure                         | Rendu des overlays Kustomize et du chart Helm, et leur équivalence objet par objet                                                                                                                                                  | `lint`                                  | **oui**                                               |
-| **OWASP Dependency-Check**                             | **SCA**                                          | Confronte l'arbre de dépendances Gradle à la base NVD. C'est le contrôle qui aurait détecté Log4Shell                                                                                                                               | `security`                              | **oui**, `failBuildOnCVSS = 7.0`                      |
-| **Trivy (`image`)**                                    | **Container scanning**                           | CVE des couches système de l'image finale : Alpine, JRE, Caddy — chacun avec ses propres CVE                                                                                                                                        | fin de `package-back` / `package-front` | **oui**, `--exit-code 1` sur HIGH,CRITICAL            |
-| **Trivy (`fs`)**                                       | **Secrets detection** + misconfig + CVE du dépôt | Secrets commités, mauvaises configurations de Dockerfile et de manifestes                                                                                                                                                           | `security`                              | **oui**, avec `--ignorefile .trivyignore.yaml`        |
+| Outil                                                  | Type d'analyse                                   | Rôle                                                                                                                                                                                                                                | Étape                                                       | Bloquant                                                                                      |
+| ------------------------------------------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **SonarQube / SonarCloud**                             | **SAST** + dette technique                       | Bonnes pratiques, bugs, duplication, complexité, code mort ; agrège la couverture back et front ; porte la Quality Gate                                                                                                             | `quality`                                                   | **oui** (`quality-gate`)                                                                      |
+| **SpotBugs + Find-Sec-Bugs**                           | **SAST** sur le **bytecode**                     | Ce qu'aucun linter de texte ne voit : déréférencement null sur un chemin précis, comparaison de `String` avec `==`, flux non fermés. Find-Sec-Bugs ajoute ~140 patterns de sécurité (injection, XSS, CORS permissif, crypto faible) | `quality`                                                   | **non** — `ignoreFailures = true`, publie en artefact                                         |
+| **ESLint, Checkstyle, Spotless, Prettier, ShellCheck** | **Linting** et mise en forme                     | Forme du code TypeScript, Java et Bash ; les deux premiers aussi en local via `lint-staged`                                                                                                                                         | `lint` + hooks pre-commit                                   | **oui**                                                                                       |
+| **`lint-k8s`, `lint-helm`**                            | Linting d'infrastructure                         | Rendu des overlays Kustomize et du chart Helm, et leur équivalence objet par objet                                                                                                                                                  | `lint`                                                      | **oui**                                                                                       |
+| **OWASP Dependency-Check**                             | **SCA**                                          | Confronte les jars du `runtimeClasspath` à la base NVD. C'est le contrôle qui aurait détecté Log4Shell — à condition de lire quelque chose : jusqu'au 2026-10-02 il n'analysait aucun jar                                           | `security`                                                  | **oui**, `failBuildOnCVSS = 7.0` ; rapport HTML, XML et JSON en artefact                      |
+| **Trivy (`image`)**                                    | **Container scanning**                           | CVE de l'image finale : couches système (Alpine, JRE, Caddy) et jar applicatif                                                                                                                                                      | `package-back` / `package-front`, entre le build et le push | **oui**, sur HIGH,CRITICAL (code 2) ; rapport JSON et tableau en artefact                     |
+| **Trivy (`fs`)**                                       | **Secrets detection** + misconfig + CVE du dépôt | Secrets commités, mauvaises configurations de Dockerfile et de manifestes                                                                                                                                                           | `security`                                                  | **oui**, avec `--ignorefile .trivyignore.yaml` (code 2) ; rapport JSON et tableau en artefact |
 
 **Trois lacunes de couverture, nommées plutôt que tues.**
 
@@ -728,11 +1063,62 @@ qui transforme une intention en processus (§6.4).
 - **Aucune signature d'image.** Les images sont taguées par SHA, pas signées ;
   il n'y a pas d'attestation de provenance (`schema.md`).
 
-**Ce que les scans trouvent aujourd'hui.** Le scan du dépôt sort en 0 une fois
-les exclusions appliquées, et les deux images ne portent plus aucune CVE HIGH ou
-CRITICAL depuis la montée de version du 2026-09-19 (Alpine 3.24, Spring Boot
-3.5.16, Caddy recompilé). **La porte se ferme donc sur du vide, et c'est voulu :
-ce qui arrêtera le pipeline, c'est ce qui sera introduit après.**
+**Comment les scans s'exécutent depuis le 2026-10-02.** Les trois scans Trivy
+passent par `scripts/ci/trivy_scan.sh`, qui fait deux passages : un **relevé**
+en JSON, sans porte, puis la **porte**, au format tableau. Il n'y a plus de
+`--exit-code 1` écrit en dur dans le pipeline : le script sort en `2` sur un
+constat bloquant et en `1` quand le scan n'a pas pu avoir lieu, pour qu'une
+panne ne se lise pas comme une vulnérabilité. Le job échoue dans les deux cas.
+
+| Job                     | Rapports publiés en artefact (`when: always`, une semaine)           |
+| ----------------------- | -------------------------------------------------------------------- |
+| `trivy-fs`              | `reports/trivy-fs.json`, `reports/trivy-fs.txt`                      |
+| `package-back`          | `reports/trivy-image-back.json`, `reports/trivy-image-back.txt`      |
+| `package-front`         | `reports/trivy-image-front.json`, `reports/trivy-image-front.txt`    |
+| `dependency-check-back` | `back/build/reports/dependency-check-report.html`, `.xml` et `.json` |
+
+Les rapports Trivy sont **filtrés comme la porte** : HIGH et CRITICAL seulement,
+exclusions appliquées. Ils décrivent ce que la porte a vu, pas tout ce que Trivy
+sait.
+
+**Le scan d'image a lieu avant le push, et c'est un défaut corrigé.** Il était
+une ligne placée après `build_and_push.sh` : l'image d'un job rouge était déjà
+au registry sous son SHA. Or la promotion par tag ne demande que l'existence de
+ce tag — un tag de version posé sur ce commit aurait promu une image refusée.
+Le scan est désormais fait dans `build_and_push.sh --scan`, entre la
+construction et l'envoi, et un test de `run_tests.sh` en vérifie l'ordre.
+
+**⚠️ Dependency-Check n'analysait aucun jar.** Le plugin Gradle écarte par
+défaut les configurations « de test » (`skipTestGroups = true`) et les reconnaît
+à leur nom ; le plugin Spring Boot fait hériter `runtimeClasspath` de
+`testAndDevelopmentOnly`. La seule configuration que le projet demandait
+d'analyser était donc écartée, et le rapport sortait avec une liste de
+dépendances vide : cinq secondes de Gradle, un fichier XML de 1,4 Ko, « 0
+vulnérabilité » à chaque pipeline. C'est l'explication de l'écart resté ouvert
+depuis le 2026-09-14 — Trivy trouvait dans le jar des CVE de Tomcat, puis de
+Jackson, que Dependency-Check ne signalait pas. Le correctif est une ligne,
+`skipTestGroups = false`, expliquée dans `back/build.gradle`.
+
+> **La leçon.** Une porte bloquante qui ne lit rien ne se distingue pas, à
+> l'œil, d'une porte qui n'a rien trouvé. Les versions précédentes de ce
+> document écrivaient que la porte « se fermait sur du vide » : c'était plus
+> vrai qu'elles ne le pensaient. Toute mention antérieure de « Dependency-Check :
+> 0 vulnérabilité » décrit un scan vide, pas un code sain.
+
+**Ce que les scans trouvent aujourd'hui** (relevés du 2026-10-02, tous en
+local) :
+
+| Scan                                                                       | Résultat                                                                                                                                                    |
+| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Trivy `fs`, dépôt                                                          | **0** constat HIGH ou CRITICAL une fois les 7 exclusions appliquées                                                                                         |
+| Trivy `image`, `back:5bf1d6a2` (au registry)                               | **5 HIGH**, 0 CRITICAL : cinq CVE de `jackson-core` et `jackson-databind` 2.21.4. C'est ce qui a arrêté `package-back` sur le dernier pipeline de `develop` |
+| Trivy `image`, `front:5bf1d6a2` (au registry)                              | **0** HIGH ou CRITICAL                                                                                                                                      |
+| Trivy `image`, images construites en local depuis la branche de correction | **0** HIGH ou CRITICAL pour le back (Jackson 2.21.7) et pour le front                                                                                       |
+| Dependency-Check, premier scan réel                                        | 82 dépendances, **13 CVE de score 7 ou plus** : 12 sur Spring Framework 6.2.19, 1 sur Log4j 2.24.3                                                          |
+| Dependency-Check, après traitement                                         | Log4j forcé à 2.25.5, 12 CVE exceptées (§6.4) : **0** CVE de score 7 ou plus ouverte. Six CVE de score inférieur à 7 restent visibles, non bloquantes       |
+
+**Aucune image corrigée n'a été publiée par un pipeline** : la branche de
+correction n'est pas fusionnée.
 
 ### 6.3 Gestion des secrets
 
@@ -807,9 +1193,9 @@ correction.
 
 | Porte                            | Ce qu'elle voit                                   | Seuil          | Étape      |
 | -------------------------------- | ------------------------------------------------- | -------------- | ---------- |
-| `dependency-check-back`          | CVE des dépendances Java                          | **CVSS ≥ 7**   | `security` |
+| `dependency-check-back`          | CVE des 82 dépendances Java du `runtimeClasspath` | **CVSS ≥ 7**   | `security` |
 | `trivy-fs`                       | Secrets commités, misconfigurations, CVE du dépôt | HIGH, CRITICAL | `security` |
-| `package-back` / `package-front` | CVE des couches système de l'image                | HIGH, CRITICAL | `package`  |
+| `package-back` / `package-front` | CVE de l'image, couches système et jar applicatif | HIGH, CRITICAL | `package`  |
 
 Le seuil de Dependency-Check est `failBuildOnCVSS = 7` (`back/build.gradle`),
 soit la borne basse de la sévérité HIGH du CVSS v3 : les deux familles d'outils
@@ -848,9 +1234,33 @@ passe de l'autre.
 3. **Arrêter la livraison** — quand ni l'un ni l'autre n'est possible. Ne rien
    livrer reste une décision valable.
 
-**Exemple vécu, issue n° 1.** Le 2026-09-19, Trivy a bloqué sur des CVE des
+**Exemples vécus, issue n° 1.** Le 2026-09-19, Trivy a bloqué sur des CVE des
 couches système. La réponse a été de monter Spring Boot de 3.2.5 à 3.5.16 et de
-recompiler Caddy — commit `df1634f` — et non d'inscrire une exception.
+recompiler Caddy — commit `df1634f` — et non d'inscrire une exception. La porte
+s'est refermée depuis sur des CVE publiées après coup, et la réponse a été la
+même : une version forcée dans `back/build.gradle` au-dessus de celle que gère
+Spring Boot — Tomcat 10.1.59, Jackson 2.21.7 (commit `9c157ae`), Log4j 2.25.5.
+
+**Exemple vécu, issue n° 2.** Le 2026-10-02, le premier scan réel de
+Dependency-Check a relevé 12 CVE sur Spring Framework 6.2.19. **Aucune montée de
+version gratuite ne les lève** : la version corrigée de la branche 6.2, la
+6.2.20, est réservée au support payant de Spring ; le correctif en source
+ouverte est Spring Framework 7.0.9, c'est-à-dire Spring Boot 4 — une migration
+majeure. Les douze ont été exceptées, chacune sur un fait vérifiable dans le
+dépôt.
+
+**Et l'issue n° 3 s'est produite une fois** : le dernier pipeline de `develop`
+(`#2902337581`, 2026-10-01) s'est arrêté sur `package-back`, pour les cinq CVE
+de Jackson. Aucune image n'a été publiée pour ce commit.
+
+> ⚠️ **Les trois derniers pipelines de `develop` sont rouges, pour trois raisons
+> différentes** — il serait faux de tout attribuer à Jackson. `#2892321711`
+> (29/09) : tous les jobs en `stuck_pending_no_matching_runners`, aucun runner
+> disponible. `#2901472002` (01/10) : `trivy-fs` et `terraform-plan` en échec ;
+> la cause de `terraform-plan` n'a pas été recherchée. `#2902337581` (01/10) :
+> `package-back`, les cinq CVE de Jackson. Rien n'a donc été déployé depuis le
+> 2026-09-23, et une seule de ces trois causes est une porte de sécurité qui
+> fait son travail.
 
 #### Qui arbitre, et où s'écrit une exception
 
@@ -860,11 +1270,34 @@ que sous la forme d'une entrée dans un fichier versionné. Elle arrive donc dan
 une MR, avec sa justification, et ne peut pas être posée en silence par la
 personne que le pipeline dérange.
 
-| Registre                                        | Ce qu'il couvre                    | État actuel                        |
-| ----------------------------------------------- | ---------------------------------- | ---------------------------------- |
-| `.trivyignore.yaml`                             | Misconfigurations et CVE d'image   | **4 entrées**, revue au 2026-12-31 |
-| `back/config/dependency-check/suppressions.xml` | CVE de dépendances (faux positifs) | **vide**                           |
-| `.trivyignore` (format historique)              | —                                  | **conservé vide délibérément**     |
+| Registre                                        | Ce qu'il couvre                                  | État au 2026-10-02                                 |
+| ----------------------------------------------- | ------------------------------------------------ | -------------------------------------------------- |
+| `.trivyignore.yaml`                             | Misconfigurations et CVE relevées par Trivy      | **7 entrées**, revue au 2026-12-31                 |
+| `back/config/dependency-check/suppressions.xml` | CVE de dépendances relevées par Dependency-Check | **3 entrées couvrant 12 CVE**, jusqu'au 2026-12-31 |
+| `.trivyignore` (format historique)              | —                                                | **conservé vide délibérément**                     |
+
+**Les exceptions en cours.** Les deux fichiers font foi ; ce tableau en est le
+résumé.
+
+| Identifiant                                       | Où                                                  | Pourquoi l'exception est accordée                                                                                                                           |
+| ------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `KSV-0056`, `KSV-0041`                            | `.gitlab/agents/microcrm/rbac.yaml`                 | Droits de l'agent GitLab sur les ressources réseau et sur les Secrets : assumés, à l'échelle du cluster, sans `list` ni `delete` sur les Secrets            |
+| `KSV-0014`                                        | `k8s/elk/elasticsearch-deployment.yaml`             | Elasticsearch ne démarre pas avec une racine en lecture seule                                                                                               |
+| `KSV-0014`, `KSV-0118`                            | `k8s/overlays/production/back-resources-patch.yaml` | Un patch partiel, que Trivy lit comme un manifeste complet                                                                                                  |
+| `DS-0031`                                         | `back/Dockerfile`                                   | Faux positif : deux variables dont le nom contient `KEY` désignent une clé de MDC                                                                           |
+| `KSV-0109`                                        | `k8s/elk/apm-server-config.yaml`                    | Faux positif : le mot « secret » figure dans un commentaire                                                                                                 |
+| CVE-2026-47885, 47888, 47889, 47891, 47892, 47893 | Spring Framework 6.2.19                             | Spring WebFlux et RSocket : ces modules ne sont pas sur le `runtimeClasspath`                                                                               |
+| CVE-2026-47884, 47890, 59313                      | Spring Framework 6.2.19                             | `XsltView`, Server-Sent Events, framework web fonctionnel : l'application n'a aucun contrôleur                                                              |
+| CVE-2026-47886, 59282, 59283                      | Spring Framework 6.2.19                             | SpEL et liaison de données : au moins une condition de chaque avis de Spring manque. Contrôlé par exécution sur staging — trois `PATCH` forgés, trois `400` |
+
+> ⚠️ **La dernière ligne est une analyse, pas une preuve que Spring 6.2.19 est
+> sain.** Ces trois CVE — dont une de score 9,1 — avaient d'abord été laissées
+> bloquantes : l'application expose ses dépôts par Spring Data REST, dont le
+> `PATCH` JSON Patch traduit en SpEL des chemins fournis par le client.
+> L'exception tombe le jour où le modèle reçoit un champ `BigDecimal` ou
+> `BigInteger`, une liste auto-peuplée, où le compilateur SpEL est activé, ou où
+> du code applicatif évalue une expression venue d'une requête. **La sortie
+> propre est la migration vers Spring Boot 4**, qui n'est pas planifiée.
 
 Trois règles de forme, et elles ne sont pas décoratives :
 
@@ -906,11 +1339,15 @@ publication d'une CVE majeure sans attendre le pipeline suivant.
   n'est pas un choix argumenté, c'est une absence. Renovate est l'option adaptée,
   parce qu'il couvre Gradle, npm **et** les images Docker d'un fichier CI GitLab
   — les trois registres, là où Dependabot ignorerait le troisième.
-- **Un écart entre Dependency-Check et Trivy n'a jamais été expliqué.**
-  Dependency-Check ne remontait pas des CVE Tomcat que Trivy voyait. Les deux
-  outils regardent des périmètres différents — dépendances déclarées pour l'un,
-  couches d'image pour l'autre — ce qui explique peut-être tout, **mais ne l'a
-  pas été**.
+- **Rien ne vérifie automatiquement qu'un scan a lu quelque chose.** L'écart
+  entre Dependency-Check et Trivy, resté inexpliqué du 2026-09-14 au 2026-10-02,
+  a été levé en lisant un rapport, pas par un test (§6.2). Un contrôle du nombre
+  de dépendances analysées reste à écrire.
+- **Les CVE sous le seuil ne sont suivies par rien** : le dernier rapport de
+  Dependency-Check en porte six, de score 3,7 à 6,5.
+- **Les rapports ne sont pas indexés par la CI.** `collect_security.py` sait
+  les envoyer au tableau de bord « sécurité », mais aucun job ne l'appelle :
+  l'Elasticsearch du cluster n'est pas joignable depuis un conteneur de job.
 
 ---
 
@@ -949,33 +1386,62 @@ une préférence.**
 
 ### 7.2 Pipeline de release — du tag jusqu'à la notification
 
+**Le plan d'automatisation des releases, en une table.** Chaque ligne est
+détaillée dans la suite de ce chapitre et dans `RELEASE.md`.
+
+| Volet          | Ce qui est automatisé                                                                                               | Ce qui reste un geste humain                    | Où         |
+| -------------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | ---------- |
+| Construction   | Une image par application, scannée puis poussée sous le SHA du commit                                               | —                                               | §5.5, §6.2 |
+| Versioning     | Le tag Git SemVer est contrôlé contre trois fichiers, puis posé sur l'image **par retag**                           | Poser le tag                                    | §7.3       |
+| Publication    | Le job `release` crée la Release GitLab : commit, pipeline, les deux tags de chaque image                           | —                                               | ci-dessous |
+| Déploiement    | Overlay éphémère, `apply`, attente du rollout                                                                       | Cliquer `deploy-staging` ou `deploy-production` | §7.1, §5.3 |
+| Retour arrière | Automatique si le rollout n'aboutit pas ; outillé (`rollback-production`) après un déploiement réussi               | Décider du rollback manuel                      | §7.4       |
+| Traçabilité    | Image immuable par SHA, Release par version, environnements GitLab, rapports de scan en artefacts, indicateurs DORA | —                                               | §7.7       |
+| Notification   | Chaque déploiement et chaque pipeline en échec sont annoncés sur le webhook d'équipe, s'il est configuré            | —                                               | §7.7       |
+
 ```mermaid
 flowchart LR
     A[Commit / MR] --> B[lint + test]
     B --> C[quality<br/>Sonar + contrôles]
     C --> D[security<br/>Trivy + Dep-Check]
     D --> E[build]
-    E --> F[package<br/>image :SHA vers le registry]
+    E --> F[package<br/>scan Trivy puis image :SHA<br/>vers le registry]
     F --> P[perf<br/>k6 sur l'image construite]
     P --> G{Quelle branche ?}
     G -- develop --> H[deploy-staging<br/>manuel]
     G -- main --> I[deploy-production<br/>manuel]
     G -- tag --> V[promote<br/>retag :X.Y.Z, sans rebuild]
+    V --> R[release<br/>Release GitLab]
     V --> I
     I -. si problème .-> J[rollback-production<br/>manuel]
     I --> N[after_script<br/>notify.py → canal d'équipe]
     J --> N
 ```
 
-**Les sept étapes d'une mise en production** (`RELEASE.md` §7) :
+Le schéma se lit de gauche à droite : un commit traverse la vérification, la
+construction, le scan et l'envoi de l'image, puis la mesure de performance. La
+suite dépend de la branche : `develop` propose le déploiement en staging, `main`
+celui de production, et un tag promeut l'image, crée la Release GitLab, puis
+propose la production. Un déploiement ou un rollback se termine par une
+notification.
 
-1. **Merger sur `main`** via une MR au pipeline vert. **C'est ce pipeline qui
-   construit l'image** et la pousse sous le SHA du commit.
-2. **Créer le tag** : `git tag vX.Y.Z && git push origin vX.Y.Z`.
+**Deux préalables** (`RELEASE.md` §7.1) : les trois fichiers de version portent
+déjà le numéro visé — ce changement se fait sur `develop`, avant la fusion — et
+le pipeline de `develop` est vert jusqu'à `package`.
+
+**Les sept étapes d'une mise en production** (`RELEASE.md` §7.2) :
+
+1. **Merger sur `main`** par une Pull Request. **C'est ce pipeline qui construit
+   l'image**, la scanne et la pousse sous le SHA du commit. Il ne passe jamais
+   « success » : il s'arrête sur `deploy-production`, manuel et bloquant. Ce
+   qu'il faut voir en vert, ce sont `package-back`, `package-front` et `perf`.
+2. **Créer le tag sur ce commit**, une fois les deux images présentes au
+   registry : `git tag -a vX.Y.Z -m "MicroCRM X.Y.Z" && git push origin vX.Y.Z`.
 3. **`version-consistency` s'exécute dès la première étape** du pipeline de tag,
    avant qu'on ait construit ou scanné quoi que ce soit.
 4. **`promote-back` et `promote-front` retaguent** l'image déjà publiée pour ce
-   commit. Si l'étape 1 n'a pas abouti, le `docker pull` échoue et le job avec —
+   commit, puis le job **`release`** crée la Release GitLab correspondante
+   (`RELEASE.md` §2.2). Si l'étape 1 n'a pas abouti, le `docker pull` échoue et le job avec —
    c'est voulu : on ne publie pas un numéro de version qui ne désigne aucun
    artefact.
 5. **Lancer `deploy-production` à la main** et valider. Le job résout
@@ -994,6 +1460,30 @@ résolution de paquets — donc une image reconstruite au moment du tag aurait l
 mêmes sources mais ne serait plus celle que Trivy a scannée ni celle que k6 a
 mise sous charge. **En retaguant, `1.4.0` _est_ l'artefact éprouvé, pas un
 jumeau.**
+
+**La Release GitLab, et ce qu'elle apporte à la traçabilité.** Un tag Git dit
+« cette version existe » ; il ne dit ni quelles images la portent, ni depuis
+quel commit. Le job `release` (étape `package`, sur tag seulement) crée donc la
+Release correspondante. Il ne tourne qu'**après** `promote-back` **et**
+`promote-front` — une Release qui annoncerait des images absentes serait pire
+que pas de Release. Sa description est écrite par `scripts/ci/release_notes.sh` :
+le commit, le pipeline, et pour chaque image ses deux tags, `:X.Y.Z` et `:SHA`.
+Il s'authentifie avec le jeton du job, sans secret à créer ; l'outil est `glab`,
+dans une image figée (`GLAB_IMAGE`). La mise en production n'en est pas une
+condition : la Release dit « la version est publiée », le déploiement reste un
+geste séparé (`RELEASE.md` §2.2).
+
+**Ce qui fait échouer une promotion** (`RELEASE.md` §7.3). `promote-*` échoue
+sur « image introuvable » dès que le commit taggué n'a pas d'image `:SHA` : tag
+posé avant la fin du pipeline de `main`, tag posé sur une branche de travail,
+pipeline de `main` rouge avant `package`, ou image refusée par Trivy. Une seule
+réponse : ne jamais reconstruire à la main, reposer le tag au bon endroit.
+
+> ⚠️ **Ce chemin n'a jamais abouti, et le job `release` n'a jamais tourné.** Le
+> seul tag du dépôt, `v1.0.0`, a échoué avant la promotion (§7.3). Le job
+> `release`, écrit le 2026-10-02, n'est vérifié que par les tests de
+> `run_tests.sh` et par un contrôle de l'image `glab` ; la création réelle d'une
+> Release avec le jeton du job ne se prouvera qu'en poussant un tag.
 
 ### 7.3 Système de versioning
 
@@ -1023,7 +1513,20 @@ est un retag : déployer la version plutôt que le SHA ne change rien à ce qui
 tourne, ça change ce que le cluster affiche. Un `kubectl describe pod` en
 production nomme la version annoncée, sans table de correspondance à tenir.
 
-**État réel : un seul tag existe, `v1.0.0`.** Le mécanisme est en place et testé
+**État réel : un seul tag existe, `v1.0.0`, et il n'a jamais abouti** — aucune
+image `1.0.0` n'est au registry et aucune Release n'a été créée
+(`RELEASE.md` §7.4). **La cause est connue.** Son pipeline de tag, le 22
+septembre, a échoué sur `test-front`, avant la promotion :
+`Can not find the binary /opt/google/chrome/chrome`. Le runner du projet tourne
+sur Apple Silicon ; l'image Cypress, alors désignée par son tag, y résolvait
+vers sa variante arm64, qui n'embarque pas Chrome. Le correctif — l'image
+désignée par son digest amd64 — est arrivé dans un commit postérieur au tag. Un
+tag ne se déplace pas : `v1.0.0` reste où il est, comme trace.
+
+**La version suivante, `1.0.1`, est préparée et non taguée.** Les trois fichiers
+de version la portent, et `check_version.sh --version v1.0.1` sort en 0. Elle ne
+sera taguée qu'après fusion de la branche de correction vers `develop` puis
+`main`, sur un commit dont le pipeline aura publié les deux images. Le mécanisme est en place et testé
 (`run_tests.sh`, bloc `ci/promote_image.sh`, y compris l'assertion qui échoue si
 une promotion se met à construire) ; l'historique de versions, lui, tient en une
 ligne. **La génération automatique du changelog depuis les Conventional Commits
@@ -1100,26 +1603,32 @@ Toute la logique du pipeline vit dans `scripts/`, jamais dans des blocs YAML : u
 script est testable en local, relu par ShellCheck, et doublé de faux binaires qui
 permettent d'éprouver ses chemins d'échec.
 
-| Script               | Langage         | Objectif                                                                                                | Emplacement                     |
-| -------------------- | --------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `common.sh`          | Bash            | Fonctions communes : `log_info/warn/error`, `die`, `require_cmd`, `require_env`, `retry`                | `scripts/lib/common.sh`         |
-| `build_and_push.sh`  | Bash            | Construit une image Docker et l'envoie au registry ; deux tags (SHA + tag mobile), scan Trivy optionnel | `scripts/ci/build_and_push.sh`  |
-| `promote_image.sh`   | Bash            | Pose le numéro SemVer sur une image **déjà construite** : pull, retag, push. Ne construit rien          | `scripts/ci/promote_image.sh`   |
-| `check_version.sh`   | Bash            | Vérifie que les trois fichiers de version concordent avec le tag Git                                    | `scripts/ci/check_version.sh`   |
-| `terraform_check.sh` | Bash            | `fmt`, `validate`, `plan` et `apply` par environnement, avec `--require-plan`                           | `scripts/ci/terraform_check.sh` |
-| `ansible_check.sh`   | Bash            | Contrôle les playbooks et les rôles (`ansible-lint`)                                                    | `scripts/ci/ansible_check.sh`   |
-| `deploy.sh`          | Bash            | Déploie sur Kubernetes, attend le rollout, **revient en arrière tout seul** si besoin                   | `scripts/deploy/deploy.sh`      |
-| `rollback.sh`        | Bash            | Revient à la révision précédente, ou à une révision nommée                                              | `scripts/deploy/rollback.sh`    |
-| `quality_gate.py`    | Python (stdlib) | Interroge l'API Sonar jusqu'au verdict, sort en **2** si la porte n'est pas franchie                    | `scripts/ci/quality_gate.py`    |
-| `check_coverage.py`  | Python (stdlib) | Vérifie le taux de couverture du back contre `COVERAGE_MIN`                                             | `scripts/ci/check_coverage.py`  |
-| `collect_dora.py`    | Python (stdlib) | Calcule les quatre indicateurs DORA depuis l'API GitLab ; injecte dans Elasticsearch                    | `scripts/ci/collect_dora.py`    |
-| `notify.py`          | Python (stdlib) | Annonce le résultat d'une étape sur un webhook d'équipe                                                 | `scripts/ci/notify.py`          |
-| `run_tests.sh`       | Bash            | **266 assertions** sur tous les scripts ci-dessus, sans cluster ni registry                             | `scripts/tests/run_tests.sh`    |
-| `validate_k8s.sh`    | Bash            | **96 assertions** sur les manifestes et le chart, sans cluster                                          | `scripts/tests/validate_k8s.sh` |
-| `run_k6.sh`          | Bash            | Lance les scénarios de performance en local, écrit un rapport JSON                                      | `scripts/tests/run_k6.sh`       |
+| Script                        | Langage         | Objectif                                                                                                                              | Emplacement                                 |
+| ----------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `common.sh`                   | Bash            | Fonctions communes : `log_info/warn/error`, `die`, `require_cmd`, `require_env`, `retry`                                              | `scripts/lib/common.sh`                     |
+| `build_and_push.sh`           | Bash            | Construit une image Docker, la **scanne avant de la pousser** (`--scan`), puis l'envoie au registry sous deux tags (SHA + tag mobile) | `scripts/ci/build_and_push.sh`              |
+| `promote_image.sh`            | Bash            | Pose le numéro SemVer sur une image **déjà construite** : pull, retag, push. Ne construit rien                                        | `scripts/ci/promote_image.sh`               |
+| `trivy_scan.sh`               | Bash            | Scan Trivy en deux passages : rapport JSON, puis porte bloquante. Sort en **2** sur un constat, en 1 sur une panne                    | `scripts/ci/trivy_scan.sh`                  |
+| `release_notes.sh`            | sh POSIX        | Écrit la description de la Release GitLab : commit, pipeline, les deux tags de chaque image                                           | `scripts/ci/release_notes.sh`               |
+| `check_version.sh`            | Bash            | Vérifie que les trois fichiers de version concordent avec le tag Git                                                                  | `scripts/ci/check_version.sh`               |
+| `terraform_check.sh`          | Bash            | `fmt`, `validate`, `plan` et `apply` par environnement, avec `--require-plan`                                                         | `scripts/ci/terraform_check.sh`             |
+| `ansible_check.sh`            | Bash            | Contrôle les playbooks et les rôles (`ansible-lint`)                                                                                  | `scripts/ci/ansible_check.sh`               |
+| `deploy.sh`                   | Bash            | Déploie sur Kubernetes, attend le rollout, **revient en arrière tout seul** si besoin                                                 | `scripts/deploy/deploy.sh`                  |
+| `rollback.sh`                 | Bash            | Revient à la révision précédente, ou à une révision nommée                                                                            | `scripts/deploy/rollback.sh`                |
+| `quality_gate.py`             | Python (stdlib) | Interroge l'API Sonar jusqu'au verdict, sort en **2** si la porte n'est pas franchie                                                  | `scripts/ci/quality_gate.py`                |
+| `check_coverage.py`           | Python (stdlib) | Vérifie le taux de couverture du back contre `COVERAGE_MIN`                                                                           | `scripts/ci/check_coverage.py`              |
+| `collect_dora.py`             | Python (stdlib) | Calcule les quatre indicateurs DORA depuis l'API GitLab ; injecte dans Elasticsearch                                                  | `scripts/ci/collect_dora.py`                |
+| `collect_security.py`         | Python (stdlib) | Transforme les rapports Trivy et Dependency-Check en documents pour le tableau de bord « sécurité »                                   | `scripts/ci/collect_security.py`            |
+| `install_alerting.py`         | Python (stdlib) | Installe le modèle d'index et les huit règles d'alerte Kibana, de façon idempotente ; crée le Secret de la clé de chiffrement         | `scripts/monitoring/install_alerting.py`    |
+| `notify.py`                   | Python (stdlib) | Annonce le résultat d'une étape sur un webhook d'équipe                                                                               | `scripts/ci/notify.py`                      |
+| `run_tests.sh`                | Bash            | **430 assertions** sur tous les scripts ci-dessus, sans cluster ni registry                                                           | `scripts/tests/run_tests.sh`                |
+| `validate_k8s.sh`             | Bash            | **151 assertions** sur les manifestes et le chart, sans cluster                                                                       | `scripts/tests/validate_k8s.sh`             |
+| `run_k6.sh`                   | Bash            | Lance les scénarios de performance en local, écrit un rapport JSON                                                                    | `scripts/tests/run_k6.sh`                   |
+| `check_accessibilite_docs.py` | Python (stdlib) | Contrôle mécanique de l'accessibilité des documents livrables                                                                         | `scripts/tests/check_accessibilite_docs.py` |
+| `build_pdf.sh`                | Bash            | Produit les PDF balisés des livrables et vérifie leur balisage                                                                        | `scripts/docs/build_pdf.sh`                 |
 
 **Deux partis pris expliquent ce tableau.** **Bash et Python stdlib**, parce que
-les deux sont présents dans toutes les images CI, ne demandent aucune
+les deux sont présents dans presque toutes les images CI, ne demandent aucune
 compilation, et restent lisibles par n'importe quel membre de l'équipe — et
 parce que se limiter à la bibliothèque standard évite tout `pip install` en CI,
 donc toute dépendance supplémentaire à auditer. Et **`set -euo pipefail`
@@ -1187,50 +1696,105 @@ une sauvegarde, c'est une croyance.
 ### 7.7 Monitoring et alerting
 
 **Il faut distinguer deux choses que le mot « alerting » confond : la
-surveillance de la chaîne, et la surveillance de l'application.**
+surveillance de la chaîne, et la surveillance de l'application.** Les deux
+existent désormais, et aucune des deux n'est complète.
 
-#### Ce qui existe : la supervision par les logs
+#### Ce qui existe : logs, tableaux de bord, règles d'alerte — et des traces à déployer
 
-| Brique                | Rôle                                                                                                                                                    |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Filebeat**          | DaemonSet, provider `autodiscover kubernetes`. Filtre **deux fois** sur le namespace observé : ce cluster héberge aussi des namespaces tiers            |
-| **Elasticsearch**     | Data stream `microcrm-logs-AAAA.MM.JJ`, PVC de 5 Gio                                                                                                    |
-| **Kibana**            | **6 panneaux** — volume, latence, erreurs applicatives et HTTP, statuts, logs récents — exportés en NDJSON et **versionnés dans `k8s/elk/dashboards/`** |
-| **`collect_dora.py`** | Les 4 indicateurs DORA, calculés depuis l'API GitLab, injectables dans l'index `microcrm-dora`                                                          |
-| **Sondes K8s**        | `startupProbe`, `livenessProbe`, `readinessProbe` sur les deux Deployments, via Actuator                                                                |
+| Brique                               | Rôle                                                                                                                                                                                     |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Filebeat**                         | DaemonSet, provider `autodiscover kubernetes`. Filtre **deux fois** sur le namespace observé : ce cluster héberge aussi des namespaces tiers. **Ne collecte que `microcrm-staging`**     |
+| **Elasticsearch**                    | Data stream `microcrm-logs-AAAA.MM.JJ`, PVC de 5 Gio ; index `microcrm-dora`, `microcrm-security` et `microcrm-alerts`                                                                   |
+| **Kibana — tableaux de bord**        | **Cinq tableaux de bord** exportés en NDJSON et **versionnés dans `k8s/elk/dashboards/`** (69 objets) : supervision, DORA, sécurité, disponibilité, suivi des alertes                    |
+| **Kibana — règles d'alerte**         | **Huit règles** en ES\|QL, versionnées dans `k8s/elk/alerting/`, installées par `scripts/monitoring/install_alerting.py`                                                                 |
+| **`collect_dora.py`**                | Les 4 indicateurs DORA, calculés depuis l'API GitLab, injectables dans l'index `microcrm-dora`. Exécuté par le job `dora-metrics`, qui publie `reports/dora.json`                        |
+| **`collect_security.py`**            | Transforme les rapports JSON de Trivy et de Dependency-Check en documents de l'index `microcrm-security`. Lancé depuis un poste ; aucun job ne l'appelle                                 |
+| **Agent OpenTelemetry + APM Server** | Traces de l'API : latence, débit et taux d'échec par route, logs reliés par `trace.id`. **Écrit et éprouvé depuis le poste, pas encore déployé dans le cluster** (`MONITORING.md` §10.4) |
+| **Sondes K8s**                       | `startupProbe`, `livenessProbe`, `readinessProbe` sur les deux Deployments, via Actuator                                                                                                 |
+
+**Les cinq tableaux de bord** (`k8s/elk/dashboards/README.md` en donne le détail
+panneau par panneau, chaque valeur confrontée à Elasticsearch) :
+
+| Fichier                | Ce qu'il montre                                                                 | Ce qu'il ne faut pas lui faire dire                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `microcrm.ndjson`      | Volume de logs, latence du front, erreurs applicatives et HTTP, logs récents    | La latence est celle du serveur web, pas de l'API                                                      |
+| `dora.ndjson`          | Les quatre indicateurs, sur 30 jours, lus sur la dernière collecte              | L'index est alimenté à la main ; neuf tentatives ne font pas une tendance                              |
+| `securite.ndjson`      | Constats par sévérité, par cible et dans le temps ; exceptions et leur échéance | L'historique est **rejoué** le 2026-10-02 sur huit commits, pas vécu ; aucun rapport de la CI collecté |
+| `disponibilite.ndjson` | Sondes servies par le front, démarrages du back, débit et latence vus par APM   | C'est une présence de logs, en staging, sur un minikube éteint la nuit — pas un taux de disponibilité  |
+| `alertes.ndjson`       | Déclenchements par famille et par règle, journal des changements d'état         | Un écran vide ne prouve rien si Kibana est arrêté                                                      |
+
+#### L'alerting applicatif : huit règles, trois familles
+
+Depuis le 2026-10-02, huit règles Kibana natives surveillent l'application
+(`MONITORING.md` §11, `k8s/elk/alerting/README.md`). Elles s'évaluent chaque
+minute et écrivent, à chaque changement d'état, un document dans l'index
+`microcrm-alerts` et une ligne dans le journal de Kibana.
+
+| Règle                          | Famille       | Source                | Seuil                                              | Justification du seuil                                                              |
+| ------------------------------ | ------------- | --------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `dispo-front-muet`             | disponibilité | logs Caddy, staging   | moins de 1 requête en 3 min                        | Les sondes en produisent 54 en 3 minutes : zéro n'est jamais un creux               |
+| `dispo-back-redemarrages`      | disponibilité | logs du back, staging | 2 démarrages ou plus en 15 min                     | 12 démarrages en 47 jours, un seul par déploiement normal                           |
+| `dispo-back-echecs-requetes`   | disponibilité | logs du back, staging | 1 exception ou plus en 5 min                       | 0 ligne `ERROR` en 47 jours                                                         |
+| `dispo-api-5xx`                | disponibilité | traces APM            | 1 réponse 5xx ou plus en 5 min                     | 0 sur 401 transactions relevées                                                     |
+| `perf-front-p95`               | performance   | logs Caddy, staging   | p95 > 100 ms en 5 min, sur 20 requêtes ou plus     | p95 médian de 1,54 ms sur 624 tranches de 5 minutes                                 |
+| `perf-api-p95`                 | performance   | traces APM            | p95 > 250 ms en 5 min, sur 20 transactions ou plus | Maximum observé 97 ms sur 401 transactions — échantillon petit, **seuil à recaler** |
+| `secu-front-chemins-sensibles` | sécurité      | logs Caddy, staging   | 1 requête ou plus en 5 min                         | Sur 68 493 requêtes en 30 jours, le seul chemin demandé est `/`                     |
+| `secu-api-rafale-4xx`          | sécurité      | traces APM            | 20 réponses 4xx ou plus en 5 min                   | 0 en trafic nominal ; 40 et 64 lors d'une énumération                               |
+
+**Trois choix expliquent ce dispositif.** Des **règles natives** plutôt
+qu'ElastAlert : elles s'exécutent sur cette stack sans composant de plus. De
+l'**ES|QL** plutôt que le seuil sur index, qui ne calcule pas de percentile. Et
+des **fichiers** plutôt que des règles créées à la souris : une règle qui ne vit
+que dans une instance disparaît avec elle, et une alerte disparue ne prévient
+pas qu'elle a disparu. La clé de chiffrement que Kibana exige pour l'alerting
+est dans un Secret créé hors dépôt, jamais dans un fichier.
+
+**Preuve.** Les huit règles ont été déclenchées puis se sont rétablies le
+2026-10-02, entre 19:37 et 19:54 UTC : 16 documents dans `microcrm-alerts`, le
+tableau complet en `MONITORING.md` §11.3. Les cinq règles sur logs l'ont été sur
+le staging du cluster ; les trois règles sur traces, sur un conteneur lancé sur
+le poste. L'essai a aussi révélé un défaut de l'application : `GET /persons/abc`
+répond 500 au lieu de 400.
 
 **Les métriques et seuils réellement disponibles :**
 
-| Métrique                       | Source                    | Valeur observée                                | Seuil                                                            |
-| ------------------------------ | ------------------------- | ---------------------------------------------- | ---------------------------------------------------------------- |
-| Latence du front (p50/p95/p99) | Journal d'accès de Caddy  | **0,14 ms / 1,60 ms / 3,11 ms** (105 requêtes) | aucun seuil d'alerte                                             |
-| Volume de logs par conteneur   | Kibana                    | —                                              | aucun                                                            |
-| Erreurs applicatives           | `log.level` du back (ECS) | —                                              | aucun                                                            |
-| p95 des lectures / écritures   | k6, en CI                 | —                                              | **500 ms / 800 ms** — bloquants en pipeline, pas en exploitation |
-| DORA (4 indicateurs)           | `collect_dora.py`         | 0,1667/j · 1,38 h · 2,14 h · 66,67 %           | cibles au §2.2, non automatisées                                 |
+| Métrique                       | Source                    | Valeur observée                                                                                   | Seuil                                                                |
+| ------------------------------ | ------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Latence du front (p50/p95/p99) | Journal d'accès de Caddy  | **0,14 ms / 1,60 ms / 3,11 ms** (105 requêtes, à la mise en service)                              | alerte au-delà de **100 ms** de p95 (`perf-front-p95`)               |
+| Requêtes servies par le front  | Journal d'accès de Caddy  | 18 par minute en temps normal, toutes des sondes du kubelet                                       | alerte à **zéro** en 3 minutes (`dispo-front-muet`)                  |
+| Erreurs applicatives           | `log.level` du back (ECS) | 325 `INFO`, 49 `WARN`, 0 `ERROR` en 47 jours                                                      | alerte à la **première** exception (`dispo-back-echecs-requetes`)    |
+| p95 des lectures / écritures   | k6, en CI                 | —                                                                                                 | **500 ms / 800 ms** — bloquants en pipeline, pas en exploitation     |
+| DORA (4 indicateurs)           | `collect_dora.py`         | 0,1667/j · 1,38 h · 2,14 h · 66,67 %                                                              | cibles au §2.2 ; collecte automatisée, sans seuil                    |
+| Latence de l'API (p50/p95/p99) | Traces OpenTelemetry      | **4,20 / 5,65 / 8,60 ms** sur `GET /{repository}` (200 requêtes, **conteneur local**, 2026-10-02) | alerte au-delà de **250 ms** de p95 ; aucune valeur venue du cluster |
+| Constats de sécurité ouverts   | `collect_security.py`     | 0 CRITICAL, 5 HIGH (image du back publiée), 80 constats toutes sévérités, scans rejoués           | aucun seuil d'alerte : la porte est dans le pipeline (§6.4)          |
 
-> ⚠️ **La latence mesurée est celle du serveur web, pas de l'API.** Caddy sert le
-> bundle Angular et `/config.json` ; les appels à l'API partent du navigateur vers
-> un hôte distinct et ne passent pas par lui. Mesurer la latence de l'API
-> demanderait de l'instrumenter — c'est le domaine des métriques, et ces
-> métriques n'existent pas.
+> ⚠️ **La latence mesurée en service est celle du serveur web, pas de l'API.**
+> Caddy sert le bundle Angular et `/config.json` ; les appels à l'API partent du
+> navigateur vers un hôte distinct et ne passent pas par lui. La latence de
+> l'API, elle, vient des traces — et la seule valeur disponible sort d'un
+> conteneur lancé sur le poste, pas des pods du cluster, où la chaîne n'est pas
+> encore déployée. **Le CPU et la mémoire des pods ne sont mesurés par rien.**
 
-#### Ce qui n'existe pas
+#### Ce qui n'existe pas, ou pas encore complètement
 
-| Volet                                           | État               | Raison                                                                                                                                              |
-| ----------------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Métriques système (CPU, mémoire, latence d'API) | **Non implémenté** | Ni Prometheus, ni `metrics-server`, ni `micrometer-registry-prometheus`. **Le projet collecte des logs, pas des métriques**                         |
-| **Alerting applicatif**                         | **Non implémenté** | Rien ne prévient : la supervision se consulte, elle ne réveille personne (`QUALITY.md` §6)                                                          |
-| Seuils d'alerte en exploitation                 | **Non définis**    | Conséquence directe de la ligne précédente : il n'y a pas de règle à seuiller                                                                       |
-| Montée en charge automatique                    | **Non implémenté** | Sans métriques, il manque jusqu'au signal sur lequel un autoscaler déciderait                                                                       |
-| Rétention des logs (ILM)                        | **Non implémenté** | Les données s'accumulent jusqu'aux seuils disque d'Elasticsearch                                                                                    |
-| Sécurité de la stack ELK                        | **Désactivée**     | `xpack.security.enabled: false`, aucun Ingress sur Kibana, accès par `port-forward`. Assumé pour une stack locale, inacceptable ailleurs            |
-| Collecte DORA automatisée                       | **Non implémenté** | **Aucun job de CI n'exécute `collect_dora.py`** — vérifié, aucun fichier de `.gitlab/ci/` ne l'appelle. Il se lance à la main (action A3.3 du plan) |
+| Volet                                                                         | État                      | Raison                                                                                                                                                        |
+| ----------------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Notification des alertes applicatives                                         | **Non implémenté**        | Les alertes s'écrivent dans un index et un journal : il faut ouvrir Kibana pour les voir. Les connecteurs webhook, Slack et e-mail exigent une licence `gold` |
+| Surveillance de l'alerting lui-même                                           | **Non implémenté**        | Si Kibana ou Elasticsearch tombe, les règles ne s'évaluent plus et rien ne le dit                                                                             |
+| Supervision de la production                                                  | **Non implémenté**        | Filebeat ne collecte que staging ; aucun pod déployé n'émet de trace. Tableaux de bord et règles ne voient pas `microcrm-production`                          |
+| Métriques de ressources (CPU, mémoire, JVM)                                   | **Non implémenté**        | Ni Prometheus, ni `metrics-server` (`kubectl top` : `Metrics API not available`), et les métriques de l'agent OpenTelemetry sont coupées                      |
+| Traces de l'API en service dans le cluster                                    | **Non déployé**           | Les images déployées datent du 2026-09-23, avant l'agent ; `traces-apm*` ne contenait aucun document venu du cluster le 2026-10-02 (`MONITORING.md` §10.4)    |
+| Règles d'alerte sur traces, en conditions réelles                             | **Prouvées hors cluster** | Conséquence de la ligne précédente : les trois règles APM ont sonné sur un conteneur local, pas sur un pod                                                    |
+| Installation de l'alerting par la CI                                          | **Manuelle**              | Aucun job ne lance `install_alerting.py`                                                                                                                      |
+| Montée en charge automatique                                                  | **Non implémenté**        | Sans métriques de ressources, il manque jusqu'au signal sur lequel un autoscaler déciderait                                                                   |
+| Rétention des logs et des alertes (ILM)                                       | **Non implémenté**        | Les données s'accumulent jusqu'aux seuils disque d'Elasticsearch                                                                                              |
+| Sécurité de la stack ELK                                                      | **Désactivée**            | `xpack.security.enabled: false`, aucun Ingress sur Kibana, accès par `port-forward`. Assumé pour une stack locale, inacceptable ailleurs                      |
+| Injection des indicateurs DORA et des rapports de sécurité dans Elasticsearch | **Manuelle**              | Les jobs publient des artefacts ; ils n'atteignent pas l'Elasticsearch du cluster. Écrits le 2026-10-02, ils n'ont encore tourné dans aucun pipeline          |
 
-#### Ce qui existe depuis peu : la notification de pipeline
+#### La notification de pipeline
 
-C'est le seul mécanisme d'alerte du projet, et il porte sur la **chaîne**, pas
-sur l'application.
+C'est le seul mécanisme du projet qui **pousse** une information vers l'équipe,
+et il porte sur la **chaîne**, pas sur l'application.
 
 | Mécanisme                                | Quand il se déclenche                                                                             | Vers où                                                     |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
@@ -1258,9 +1822,11 @@ précédentes. Placé plus tôt, il ne verrait que ce qui le précède, et un
 déploiement raté passerait sous silence.
 
 > **En résumé, la distinction à ne pas perdre.** Un pipeline qui casse prévient
-> quelqu'un depuis aujourd'hui. **Une application qui tombe en production ne
-> prévient toujours personne.** Les deux sont des sujets différents, et seul le
-> premier est traité.
+> quelqu'un. **Une application qui tombe est désormais détectée et consignée —
+> en staging — mais ne prévient toujours personne** : l'alerte attend dans
+> Kibana qu'on vienne la lire. Le pont entre les deux, un programme qui relirait
+> `microcrm-alerts` et passerait par `notify.py`, n'est pas fait. C'est la suite
+> logique, et elle est écrite comme telle.
 
 ---
 
@@ -1268,27 +1834,29 @@ déploiement raté passerait sous silence.
 
 ### 8.1 Les documents détaillés du dépôt
 
-| Document                               | Ce qu'on y trouve                                                                                                                             |
-| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AUDIT.md`                             | Audit du processus initial, SWOT, frictions, **plan de sécurité** (§7), traitement des vulnérabilités (§7.4), politique de dépendances (§7.5) |
-| `VEILLE.md`                            | Veille technologique : chaque outil comparé, justifié, chiffré                                                                                |
-| `schema.md`                            | Chaîne cible, table de normalisation cycle → GitLab CI, et **ce que la chaîne ne fait pas encore**                                            |
-| `QUALITY.md`                           | Plan de tests et de sécurité : Sonar, SpotBugs, Dependency-Check, Trivy, k6, couverture et mutation                                           |
-| `ARCHITECTURE.md`                      | Architecture applicative et plateforme, schémas IaC, **option locale (§9) et transposition cloud (§10-11)**                                   |
-| `RELEASE.md`                           | Versionnage SemVer, déploiement, rollback, **sauvegarde et restauration (§9)**                                                                |
-| `K8S.md`                               | Manifestes, overlays, sondes, sécurité des conteneurs, accès au registry (§12), **campagnes de déploiement réel (§14)**                       |
-| `HELM.md`                              | Le chart, et pourquoi il vient en plus de Kustomize                                                                                           |
-| `TERRAFORM.md`                         | Modules, état partagé, frontière de responsabilité, limites assumées                                                                          |
-| `ANSIBLE.md`                           | Provisionnement du poste et du cluster                                                                                                        |
-| `MONITORING.md`                        | Stack ELK, tableaux de bord, **indicateurs DORA (§9)**                                                                                        |
-| `SCRIPTS.md`                           | Chaque script : but, fonctionnement, paramètres, codes de sortie                                                                              |
-| `VARIABILISATION.md`                   | Ce qui est externalisé, et pourquoi                                                                                                           |
-| `GUIDE.md`                             | Prise en main rapide du dépôt                                                                                                                 |
-| `docs/pipeline-ci.md`                  | Le découpage du pipeline et les pièges de `include:` / `extends:`                                                                             |
-| `docs/plan-optimisation-release.md`    | Plan d'optimisation par vagues, avec porteur, effort et preuve d'atteinte                                                                     |
-| `docs/documentation-infrastructure.md` | Livrable d'infrastructure (PDF associé)                                                                                                       |
-| `docs/rapport-performance.md`          | Livrable de performance : DORA, tests, sécurité, supervision, gains (PDF associé)                                                             |
-| `docs/schema-architecture.md`          | Les huit schémas de l'**architecture cible** — à ne pas confondre avec l'état implémenté                                                      |
+| Document                               | Ce qu'on y trouve                                                                                                                                                                                |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `AUDIT.md`                             | Audit du processus initial, retours des équipes (§2.3), SWOT, frictions, **plan de sécurité** (§7), traitement des vulnérabilités et exceptions en cours (§7.4), politique de dépendances (§7.5) |
+| `VEILLE.md`                            | Veille technologique : chaque outil comparé, justifié, chiffré                                                                                                                                   |
+| `schema.md`                            | Chaîne cible, table de normalisation cycle → GitLab CI, et **ce que la chaîne ne fait pas encore**                                                                                               |
+| `QUALITY.md`                           | Plan de tests et de sécurité : Sonar, SpotBugs, Dependency-Check, Trivy, k6, couverture et mutation                                                                                              |
+| `ARCHITECTURE.md`                      | Architecture applicative et plateforme, schémas IaC, **option locale (§9) et transposition cloud (§10-11)**                                                                                      |
+| `RELEASE.md`                           | Versionnage SemVer, déploiement, rollback, **sauvegarde et restauration (§9)**                                                                                                                   |
+| `K8S.md`                               | Manifestes, overlays, sondes, sécurité des conteneurs, accès au registry (§12), **campagnes de déploiement réel (§14)**                                                                          |
+| `HELM.md`                              | Le chart, et pourquoi il vient en plus de Kustomize                                                                                                                                              |
+| `TERRAFORM.md`                         | Modules, état partagé, frontière de responsabilité, limites assumées                                                                                                                             |
+| `ANSIBLE.md`                           | Provisionnement du poste et du cluster                                                                                                                                                           |
+| `MONITORING.md`                        | Stack ELK, tableaux de bord (§8), **indicateurs DORA (§9)**, **traces OpenTelemetry et Elastic APM (§10)**, **alerting (§11)**                                                                   |
+| `SCRIPTS.md`                           | Chaque script : but, fonctionnement, paramètres, codes de sortie                                                                                                                                 |
+| `VARIABILISATION.md`                   | Ce qui est externalisé, et pourquoi                                                                                                                                                              |
+| `GUIDE.md`                             | Prise en main rapide du dépôt                                                                                                                                                                    |
+| `k8s/elk/alerting/README.md`           | Les huit règles d'alerte, leurs requêtes, leurs seuils, leur installation                                                                                                                        |
+| `k8s/elk/dashboards/README.md`         | Les cinq tableaux de bord, panneau par panneau, confrontés à Elasticsearch                                                                                                                       |
+| `docs/pipeline-ci.md`                  | Le découpage du pipeline et les pièges de `include:` / `extends:`                                                                                                                                |
+| `docs/plan-optimisation-release.md`    | Plan d'optimisation par vagues, avec porteur, effort et preuve d'atteinte                                                                                                                        |
+| `docs/documentation-infrastructure.md` | Livrable d'infrastructure (PDF associé)                                                                                                                                                          |
+| `docs/rapport-performance.md`          | Livrable de performance : DORA, tests, sécurité, supervision, gains (PDF associé)                                                                                                                |
+| `docs/schema-architecture.md`          | Les huit schémas de l'**architecture cible** — à ne pas confondre avec l'état implémenté                                                                                                         |
 
 **Sources des schémas.** `docs/schemas/*.mmd`, un fichier par schéma. Les rendre
 isolément :
@@ -1313,13 +1881,35 @@ docker run --rm -v "$PWD:/data" minlag/mermaid-cli \
 | **Shift-left**                 | Placer un contrôle au plus tôt : ici `security` s'exécute **avant** `build`                                                                 |
 | **Stub / faux binaire**        | Faux `kubectl`, `docker` ou `trivy` placés en tête de `PATH` par la suite de tests, pour éprouver les chemins d'échec sans cluster          |
 
+**Les sigles employés dans ce document**, développés ici une fois pour toutes —
+une synthèse vocale les épelle, et un sigle non développé reste alors une suite
+de lettres :
+
+| Sigle           | Développé                                                                                                                  |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| **APM**         | _Application Performance Monitoring_ — suivi des performances d'une application, ici par ses traces                        |
+| **CI/CD**       | _Continuous Integration / Continuous Delivery_ — intégration et livraison continues                                        |
+| **CNI**         | _Container Network Interface_ — le module réseau d'un cluster Kubernetes, qui applique ou non les `NetworkPolicy`          |
+| **CVE / CVSS**  | _Common Vulnerabilities and Exposures_ : identifiant d'une vulnérabilité publiée ; CVSS en est le score de gravité, sur 10 |
+| **ECS**         | _Elastic Common Schema_ — la convention de nommage des champs de logs d'Elasticsearch                                      |
+| **ELK**         | Elasticsearch, Logstash, Kibana — ici sans Logstash, remplacé par Filebeat                                                 |
+| **IaC**         | _Infrastructure as Code_ — l'infrastructure décrite dans des fichiers versionnés                                           |
+| **ILM**         | _Index Lifecycle Management_ — la politique de rétention des index Elasticsearch                                           |
+| **MR / PR**     | _Merge Request_ (GitLab) et _Pull Request_ (GitHub) : la demande de fusion d'une branche                                   |
+| **OTLP**        | _OpenTelemetry Protocol_ — le protocole par lequel l'agent envoie ses traces                                               |
+| **PSH**         | Personne en situation de handicap                                                                                          |
+| **PVC**         | _PersistentVolumeClaim_ — la demande de volume persistant d'un pod                                                         |
+| **RBAC**        | _Role-Based Access Control_ — les droits accordés par rôle dans Kubernetes                                                 |
+| **RGAA / WCAG** | Référentiel général d'amélioration de l'accessibilité, et _Web Content Accessibility Guidelines_ dont il découle           |
+| **RTO / RPO**   | _Recovery Time Objective_ : durée d'interruption tolérée ; _Recovery Point Objective_ : perte de données tolérée           |
+
 ### 8.3 Reproduire les vérifications de ce document
 
 ```shell
-# Les scripts du pipeline — 266 assertions, sans cluster ni registry
+# Les scripts du pipeline — 430 assertions, sans cluster ni registry
 bash scripts/tests/run_tests.sh
 
-# Les manifestes et le chart — 96 assertions, sans cluster
+# Les manifestes et le chart — 151 assertions, sans cluster
 bash scripts/tests/validate_k8s.sh
 
 # La couverture et la mutation du back
@@ -1330,53 +1920,125 @@ python3 scripts/ci/collect_dora.py --project 84606666 --days 30
 
 # L'infrastructure, hors cluster
 cd terraform/environments/staging && terraform init -backend=false && terraform validate
+
+# Les dépendances Java du back — 82 jars, exceptions comprises
+cd back && ./gradlew dependencyCheckAnalyze
+
+# Le scan du dépôt, par le script du pipeline, rapport JSON compris
+bash scripts/ci/trivy_scan.sh --mode fs --target . --report reports/trivy-fs.json \
+  --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --ignorefile .trivyignore.yaml
+
+# Les fichiers de règles d'alerte, sans réseau ; puis leur état sur le cluster
+python3 scripts/monitoring/install_alerting.py --dry-run
+python3 scripts/monitoring/install_alerting.py --etat   # port-forward Kibana requis
+
+# L'accessibilité des documents livrables
+python3 scripts/tests/check_accessibilite_docs.py
 ```
 
 ### 8.4 Écarts connus entre documents du dépôt
 
 Cette section existe parce qu'un document de synthèse qui masque les désaccords
-de ses sources ne vaut rien. Chacun a été vérifié dans le dépôt.
+de ses sources ne vaut rien. Elle listait jusqu'au 2026-09-24 une dizaine
+d'écarts. **La plupart ont été corrigés à la source le 2026-10-02**, plutôt que
+signalés ici ; chacun a été revérifié dans le dépôt.
 
-| Écart                                                                                                                                                                | Arbitrage retenu ici                                                                                                                                                                                              |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| L'état des déploiements : plusieurs documents de la copie de travail portent « aucun déploiement réussi depuis la CI », « 7 tentatives, 7 échecs », « quota épuisé » | **Périmé.** `develop` a été actualisée le 2026-09-23 (commit `c17249c`, PR #26) : 5 déploiements réussis, rollback joué, runner auto-hébergé. Les captures de `docs/captures/` datées du 2026-09-23 le confirment |
-| Nombre d'étapes du pipeline : `QUALITY.md` en tête annonce **8 stages**                                                                                              | **10 stages**, vérifié dans `.gitlab-ci.yml` (`infra` et `infra-apply` manquent à cette liste)                                                                                                                    |
-| Nombre d'assertions : `ARCHITECTURE.md`, `GUIDE.md`, `K8S.md` et `docs/rapport-performance.md` annoncent **151**                                                     | **266**, obtenu en exécutant `run_tests.sh` le 2026-09-24. Le chiffre 151 est antérieur aux blocs de tests ajoutés depuis                                                                                         |
-| Nombre de jobs dans `docs/schemas/plateforme-deploiement.mmd` : **30** en copie de travail, **36** sur `develop`                                                     | **37**, compté job par job dans les 13 fichiers de `.gitlab/ci/` — `notify-echec` a été ajouté depuis                                                                                                             |
-| Seuil de mutation : `QUALITY.md` donne `MUTATION_MIN=90` « comme en CI » dans un exemple, et 80 % dans son tableau                                                   | **80**, valeur réelle de `.gitlab/ci/variables.yml` et défaut de `back/build.gradle`                                                                                                                              |
-| Taille de l'image back : **399 Mo** au §3 d'`ARCHITECTURE.md`, **377 Mo** dans ses limites connues                                                                   | Non tranché — les deux chiffres coexistent dans le même document, probablement pris à deux moments différents                                                                                                     |
-| `TERRAFORM.md` §9.4 : « l'`apply` n'a pas été joué » ; §9.5 : « les jobs de déploiement utilisent encore `$KUBE_CONFIG` »                                            | **Périmé.** `RELEASE.md` §9.5 consigne un `apply` réel le 2026-09-22 (6 ressources créées) et le passage des jobs de déploiement par l'agent est acté au 2026-09-23                                               |
-| `docs/rapport-performance.md` §8 : « la restauration complète d'un environnement est documentée, jamais jouée »                                                      | **Contredit** par `RELEASE.md` §9.4-9.5, qui en donne le compte rendu daté du 2026-09-22                                                                                                                          |
-| Namespace de production : `microcrm-prod` dans le schéma d'`ARCHITECTURE.md` §8.1, `microcrm-production` dans `terraform/environments/production/terraform.tfvars`   | **`microcrm-production`**, la valeur réellement appliquée                                                                                                                                                         |
-| `VEILLE.md` §8 range l'IaC dans les « pistes non retenues à ce stade »                                                                                               | **Périmé** : Terraform et Ansible sont implémentés. `VEILLE.md` décrit l'état de la veille au moment où elle a été faite                                                                                          |
-| `docs/schema-architecture.md` décrit PostgreSQL, un staging automatique et des images signées                                                                        | **Ce document décrit la cible, pas l'implémenté.** L'état réel est HSQLDB en mémoire, staging manuel, images non signées                                                                                          |
+| Écart, tel qu'il était listé                                                                          | Ce qui a été fait                                                                                                                     |
+| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Des documents portaient « aucun déploiement réussi », « 7 tentatives, 7 échecs », « quota épuisé »    | Plus aucun document de cette synthèse ne l'affirme comme état présent ; le tableau DORA, qui le portait dans son titre, a été refondu |
+| `QUALITY.md` annonçait **8 stages**                                                                   | Il annonce 10 étapes, comme `.gitlab-ci.yml`                                                                                          |
+| Nombre d'assertions : 151 ou 266 pour `run_tests.sh`                                                  | **430** partout (`GUIDE.md`, `K8S.md`, `SCRIPTS.md`, ce document) ; 151 est le total de `validate_k8s.sh`, 174 avec `--autotest`      |
+| Nombre de jobs : 30, 33, 36 ou 37                                                                     | **39** partout, schéma `plateforme-deploiement.mmd` compris                                                                           |
+| `QUALITY.md` donnait `MUTATION_MIN=90` « comme en CI »                                                | L'exemple pose 80, la valeur de `.gitlab/ci/variables.yml`                                                                            |
+| Taille de l'image du back : 399 puis 377 Mo                                                           | Tranché par mesure le 2026-10-02 : 390 Mo, 446 Mo avec l'agent (§5.5.1) ; `ARCHITECTURE.md` §3 explique l'écart                       |
+| `TERRAFORM.md` §9.4 « l'`apply` n'a pas été joué », §9.5 « les jobs utilisent encore `$KUBE_CONFIG` » | Les deux sections sont réécrites : trois environnements appliqués, déploiement par l'agent                                            |
+| `docs/documentation-infrastructure.md` : reconstruction « jamais jouée », variable `KUBE_CONFIG`      | Corrigé : compte rendu du 2026-09-22, variable retirée de la liste                                                                    |
+| Namespace `microcrm-prod` dans un schéma                                                              | Plus aucun schéma ne le porte ; `K8S.md` §4 le cite seulement comme l'erreur à ne pas commettre                                       |
+| `VEILLE.md` §8 rangeait l'IaC dans les pistes non retenues                                            | Annoté : réalisé ; la veille garde sa date                                                                                            |
+| `AUDIT.md` §7.4.5 : écart Dependency-Check / Trivy « jamais expliqué »                                | Expliqué et corrigé (§6.2)                                                                                                            |
+
+**Ceux qui restent vrais :**
+
+| Écart                                                                                                                   | Arbitrage retenu ici                                                                                                                                                                 |
+| ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `docs/schema-architecture.md` décrit PostgreSQL, un staging automatique, des images signées, des tests post-déploiement | **Il décrit la cible, pas l'implémenté**, et le dit en tête. L'état réel est HSQLDB en mémoire, staging manuel, images non signées, aucun test post-déploiement                      |
+| `docs/rapport-performance.md` est mis à jour séparément                                                                 | Ses chiffres n'ont pas été relus pour cette version ; en cas de désaccord, ceux de ce document sont datés et reliés à leur commande                                                  |
+| `docs/pipeline-ci.md` §5 : durées par étape                                                                             | Relevées **avant** la restructuration du pipeline ; le chemin critique annoncé (≈ 13 min) reste une prévision                                                                        |
+| Le pipeline commité et la copie de travail                                                                              | Les documents décrivent la copie de travail du 2026-10-02 (jobs `release` et `dora-metrics`, scan avant push). Tant qu'elle n'est pas fusionnée, `develop` exécute l'ancien pipeline |
 
 ### 8.5 Les limites que ce document n'a pas contournées
 
-Récapitulatif de tout ce qui porte « non implémenté » ou « non mesuré » dans les
-pages précédentes, avec le renvoi vers sa justification.
+Récapitulatif de tout ce qui porte « non implémenté », « non déployé » ou « non
+mesuré » dans les pages précédentes, avec le renvoi vers sa justification.
 
-| Sujet                                              | État                                  | Où c'est justifié |
-| -------------------------------------------------- | ------------------------------------- | ----------------- |
-| Tests E2E (Cypress, Playwright)                    | Non implémenté                        | §4.1              |
-| Environnement de développement déployé             | Non implémenté                        | §5.3              |
-| Fournisseur cloud, VPC, subnets, services managés  | Volontairement absent                 | §5.1              |
-| `npm audit` / SCA côté front                       | Non implémenté                        | §6.2              |
-| Signature d'images et attestation de provenance    | Non implémenté                        | §6.2              |
-| Politique de rotation des secrets                  | **Non formalisée**                    | §6.3              |
-| Délais de traitement des CVE MEDIUM et LOW         | **Non définis**                       | §6.4              |
-| Mise à jour automatisée des dépendances (Renovate) | Non implémenté                        | §6.4              |
-| Déploiement progressif (blue/green, canary)        | Non implémenté                        | §7.1              |
-| Génération automatique du changelog                | Non implémenté                        | §7.3              |
-| Déploiement staging automatique (`on_success`)     | Non implémenté                        | §5.3, §7.2        |
-| RTO                                                | **Non formalisé**                     | §7.6              |
-| RPO                                                | Sans objet                            | §7.6              |
-| Sauvegarde de données applicatives                 | Sans objet                            | §7.6              |
-| Métriques système (Prometheus, Grafana)            | Non implémenté                        | §7.7              |
-| **Alerting applicatif**                            | Non implémenté                        | §7.7              |
-| Rétention des logs (ILM)                           | Non implémenté                        | §7.7              |
-| Collecte DORA exécutée par la CI                   | Non implémenté                        | §7.7              |
-| Approbations et protection de branche              | Non formalisées                       | §3.2              |
-| Branches `release/*`                               | Jamais utilisées                      | §3.2              |
-| `NetworkPolicy` effectives                         | Décrites, non prouvées (CNI minikube) | §5.1              |
-| Chart Helm déployé                                 | Rendu et comparé, jamais appliqué     | §5.4              |
+| Sujet                                                           | État                                                       | Où c'est justifié |
+| --------------------------------------------------------------- | ---------------------------------------------------------- | ----------------- |
+| Collaboration entre équipes                                     | **Outillée, non observée** (un contributeur)               | §2.3              |
+| Tests E2E (Cypress, Playwright)                                 | Non implémenté                                             | §4.1              |
+| Environnement de développement déployé                          | Non implémenté                                             | §5.3              |
+| Fournisseur cloud, VPC, subnets, services managés               | Volontairement absent                                      | §5.1              |
+| `npm audit` / SCA côté front                                    | Non implémenté                                             | §6.2              |
+| Signature d'images et attestation de provenance                 | Non implémenté                                             | §6.2              |
+| Contrôle automatique qu'un scan a lu quelque chose              | Non implémenté                                             | §6.4              |
+| Politique de rotation des secrets                               | **Non formalisée**                                         | §6.3              |
+| Délais de traitement des CVE MEDIUM et LOW                      | **Non définis**                                            | §6.4              |
+| 12 CVE de Spring Framework 6.2.19                               | **Exceptées jusqu'au 2026-12-31** ; sortie : Spring Boot 4 | §6.4              |
+| Mise à jour automatisée des dépendances (Renovate)              | Non implémenté                                             | §6.4              |
+| Déploiement progressif (blue/green, canary)                     | Non implémenté                                             | §7.1              |
+| Génération automatique du changelog                             | Non implémenté                                             | §7.3              |
+| Release par tag (promotion, job `release`)                      | **Jamais aboutie** ; `1.0.1` préparée, non taguée          | §7.2, §7.3        |
+| Déploiement staging automatique (`on_success`)                  | Non implémenté                                             | §5.3, §7.2        |
+| RTO                                                             | **Non formalisé**                                          | §7.6              |
+| RPO                                                             | Sans objet                                                 | §7.6              |
+| Sauvegarde de données applicatives                              | Sans objet                                                 | §7.6              |
+| Notification des alertes applicatives hors de Kibana            | Non implémenté (licence `gold`)                            | §7.7              |
+| Surveillance de l'alerting lui-même                             | Non implémenté                                             | §7.7              |
+| Supervision de la production (logs, alertes)                    | Non implémenté                                             | §7.7              |
+| Traces de l'API en service dans le cluster                      | **Non déployé**                                            | §7.7              |
+| Métriques de ressources : CPU, mémoire, JVM                     | Non implémenté                                             | §7.7              |
+| Traces du front (navigateur)                                    | Non implémenté                                             | §7.7              |
+| Installation de l'alerting et indexation des rapports par la CI | Manuelles                                                  | §7.7              |
+| Injection des indicateurs DORA dans Elasticsearch               | Manuelle ; le job `dora-metrics` publie un artefact        | §7.7              |
+| Rétention des logs et des alertes (ILM)                         | Non implémenté                                             | §7.7              |
+| Scan des images Elastic, SBOM publié                            | Non implémenté                                             | §5.5              |
+| Essai avec un lecteur d'écran, validation PDF/UA                | **Non vérifié**                                            | §8.6              |
+| Approbations et protection de branche                           | Non formalisées                                            | §3.2              |
+| Branches `release/*`                                            | Jamais utilisées                                           | §3.2              |
+| `NetworkPolicy` effectives                                      | Décrites, non prouvées (CNI minikube)                      | §5.1              |
+| Chart Helm déployé                                              | Rendu et comparé, jamais appliqué                          | §5.4              |
+| Tout le lot du 2026-10-02 dans un pipeline                      | **Jamais exécuté par un runner**                           | en-tête           |
+
+### 8.6 Accessibilité de ce document
+
+Ce document et les quatre autres livrables de `docs/` doivent rester lisibles
+par toutes les parties prenantes, y compris les collaborateurs en situation de
+handicap (PSH). La démarche complète, critère par critère, est dans
+`RELEASE.md` §10 ; en voici l'essentiel.
+
+**Le référentiel** : RGAA 4.1 / WCAG 2.1 niveau AA, pour les critères qui ont un
+sens dans un document — images, couleurs, tableaux, liens, langue et titre,
+structure.
+
+**Ce qui est vérifié, par deux outils versionnés :**
+
+| Outil                                       | Ce qu'il contrôle                                                                                                                                                  | Résultat du 2026-10-02                                                                                                                               |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scripts/tests/check_accessibilite_docs.py` | Sur les sources Markdown : titres sans saut de niveau, texte alternatif des images, en-tête des tableaux, libellé des liens, schémas commentés, pictogrammes seuls | 6 documents, 216 titres, 130 tableaux, 21 schémas : **0 défaut** (relevé après la mise à jour du 2026-10-02 ; 3 corrections lors du premier passage) |
+| `scripts/docs/build_pdf.sh`                 | Sur le PDF produit : arbre de structure, marquage, langue `fr`, signets — le script échoue s'il en manque un                                                       | PDF balisé, constaté sur les documents de test                                                                                                       |
+
+Les trois corrections : une colonne de tableau sans nom, et deux pictogrammes
+qui portaient seuls une information dans le schéma du §5.2.2 (« ✋ » pour
+« manuel », « ✗ » pour « échec »), remplacés par le mot.
+
+**Les formats** : le Markdown source, lisible tel quel par un lecteur d'écran ;
+un PDF balisé, avec sa langue, son titre et ses signets ; le HTML intermédiaire,
+qui s'agrandit dans un navigateur.
+
+**Ce qui n'est pas vérifié** : aucun essai avec un lecteur d'écran réel, aucun
+validateur PDF/UA. Les schémas sont commentés par le texte voisin, pas tous
+décrits boîte par boîte. Les interfaces de GitLab et de Kibana, et les captures
+d'écran qui en sont tirées, ne sont pas sous notre contrôle. Les PDF de `docs/`
+produits avant ce script sont à régénérer.
+
+**Pour demander une adaptation** : une _issue_ sur le dépôt, libellé
+`accessibilité` (`RELEASE.md` §10.5).

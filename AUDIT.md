@@ -73,10 +73,39 @@ n'impose de seuil.
 
 ### 2.3 Retours des équipes Dev et Ops
 
-> 📌 **Section à compléter** à partir des deux sondages. Points à y faire figurer :
-> temps perçu entre un commit et un retour, fréquence des régressions détectées
-> tard, ressenti sur la fiabilité des mises en production, niveau de maîtrise des
-> outils par chacun, et répartition de la connaissance dans l'équipe.
+Les deux équipes d'Orion ont répondu au sondage « pratiques et technologies ».
+Les sondages eux-mêmes ne sont pas versionnés dans ce dépôt ; ce qui suit en
+reprend la restitution faite dans `docs/documentation-ci-cd-complete.md` §2.1 et
+`docs/plan-optimisation-release.md` §1-2.
+
+| Source          | Ce qui est dit                                                                                                                                              | Ce que ça révèle                                               |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Sondage Ops, Q3 | « La majorité des opérations sont aujourd'hui manuelles et mériteraient d'être automatisées, notamment les contrôles de sécurité ainsi que le déploiement » | Le déploiement dépend d'une personne et de sa disponibilité    |
+| Sondage Dev, Q2 | « Nous avons reçu dès le début un retour sur des CVEs présentes dans l'image, ce qui a retardé le premier déploiement »                                     | Le contrôle de sécurité arrive après la remise, donc trop tard |
+| Sondage Ops, Q4 | Besoin d'un dépôt d'images interne, et d'une analyse de sécurité des images **en amont**                                                                    | L'équipe Ops demande elle-même que le contrôle remonte         |
+| Sondage Dev, Q4 | Besoin d'analyse statique et d'aide à la conception                                                                                                         | L'équipe se dit débutante en Java, Spring Boot, Gradle, JUnit  |
+| Les deux        | Aucune compétence Kubernetes déclarée                                                                                                                       | La cible repose sur un savoir que personne n'a encore          |
+
+**Le cycle déclaré est deux cycles, reliés par un email.** Côté Dev, sept
+étapes, du backlog à la génération des images et à l'envoi de leurs références.
+Côté Ops, trois : réception d'un numéro de version, analyse Trivy de l'image,
+déploiement manuel en commandes Docker. Rien n'est partagé entre les deux — ni
+dépôt d'images, ni historique des déploiements, ni indicateur. Quand le scan
+trouve une CVE, l'image repart chez son auteur : c'est le « retour à
+l'envoyeur ».
+
+**Ce que la collaboration y perd.** Chaque équipe travaille sur ce qu'elle
+reçoit, sans voir ce que l'autre a fait ni pourquoi. L'équipe Dev n'apprend
+qu'une image est refusée qu'après l'avoir remise ; l'équipe Ops ne sait d'une
+version que son numéro. La réponse apportée par la chaîne — un dépôt unique, des
+portes dans le pipeline de l'auteur, des environnements et des indicateurs
+visibles de tous — est décrite dans `docs/documentation-ci-cd-complete.md` §2.3.
+
+**Ce que les sondages ne disent pas, d'après ce que le dépôt en restitue.**
+Aucun chiffre sur le temps perçu entre un commit et un retour, ni sur la
+fréquence des régressions découvertes tard, ni sur la répartition de la
+connaissance dans l'équipe. Ces points restent des constats d'audit (§4), pas
+des retours d'équipe.
 
 ---
 
@@ -264,8 +293,23 @@ Le détail de mise en œuvre de chaque contrôle est dans [QUALITY.md](QUALITY.m
 
 > **Mise à jour du 2026-09-22.** Le contrôle R6 est en place : la version d'une
 > release est un tag Git SemVer qui se propage jusqu'à l'image, par promotion et
-> non par reconstruction — `back:1.0.0` et `back:<sha>` désignent le même digest.
+> non par reconstruction — `back:X.Y.Z` et `back:<sha>` désignent le même digest.
 > Voir [RELEASE.md](RELEASE.md) §2.1.
+>
+> **Mise à jour du 2026-10-02.** Quatre changements, tous écrits dans l'arbre de
+> travail et **aucun encore passé dans un pipeline** :
+>
+> - **R1 n'était couvert qu'en apparence.** `dependency-check-back` n'analysait
+>   aucun jar ; il en lit 82 depuis le correctif (§7.4.5).
+> - **R2 et R4 : le scan d'image a lieu avant le push.** Une image refusée par
+>   Trivy n'atteint plus le registry (§7.4.1).
+> - **R6 : chaque tag de version crée une Release GitLab**, qui nomme le commit
+>   et les deux tags de chaque image (job `release`, [RELEASE.md](RELEASE.md)
+>   §2.2). Aucune version n'a encore été publiée : le tag `v1.0.0` n'a jamais
+>   abouti, et le dépôt prépare `1.0.1` sans l'avoir taguée.
+> - **Les scans laissent une trace.** Les rapports Trivy et Dependency-Check sont
+>   publiés en artefacts JSON, et un tableau de bord « sécurité » sait les lire
+>   ([MONITORING.md](MONITORING.md) §8).
 
 ---
 
@@ -276,13 +320,23 @@ Ce processus n'est pas une intention : il est **imposé par la chaîne** depuis 
 bloquantes. Avant cette date elles étaient en `allow_failure` et ne décidaient
 de rien.
 
+⚠️ **Bloquante ne veut pas dire efficace.** L'une des quatre,
+`dependency-check-back`, n'a analysé aucun jar jusqu'au 2026-10-02 : elle était
+bloquante et verte, sur une liste de dépendances vide (§7.4.5).
+
 ### 7.4.1 Ce qui déclenche
 
-| Porte                            | Ce qu'elle voit                                   | Seuil          | Étape      |
-| -------------------------------- | ------------------------------------------------- | -------------- | ---------- |
-| `dependency-check-back`          | CVE des dépendances Java                          | CVSS ≥ 7       | `security` |
-| `trivy-fs`                       | Secrets commités, misconfigurations, CVE du dépôt | HIGH, CRITICAL | `security` |
-| `package-back` / `package-front` | CVE des couches système de l'image                | HIGH, CRITICAL | `package`  |
+| Porte                            | Ce qu'elle voit                                               | Seuil          | Étape      |
+| -------------------------------- | ------------------------------------------------------------- | -------------- | ---------- |
+| `dependency-check-back`          | CVE des dépendances Java du `runtimeClasspath` (82 jars)      | CVSS ≥ 7       | `security` |
+| `trivy-fs`                       | Secrets commités, misconfigurations, CVE du dépôt             | HIGH, CRITICAL | `security` |
+| `package-back` / `package-front` | CVE de l'image construite : couches système et jar applicatif | HIGH, CRITICAL | `package`  |
+
+Les trois scans Trivy passent par `scripts/ci/trivy_scan.sh`, qui écrit un
+rapport JSON et un tableau en artefacts, et sort en `2` sur un constat bloquant
+— `1` étant réservé au scan qui n'a pas pu avoir lieu. Dans `package-*`, le scan
+se fait **entre la construction et le push** : l'image d'un job rouge ne reste
+plus au registry, où un tag de version aurait pu la promouvoir.
 
 Le seuil de Dependency-Check est `failBuildOnCVSS = 7` (`back/build.gradle`), ce
 qui correspond à la borne basse de la sévérité HIGH du CVSS v3. Les deux
@@ -310,10 +364,30 @@ il est préférable à une livraison qui ignore ce qu'elle emporte.
 3. **Arrêter la livraison** — quand ni l'un ni l'autre n'est possible. Ne rien
    livrer reste une décision valable.
 
-**Exemple vécu, issue n°1.** Le 2026-09-19, Trivy a bloqué sur des CVE des
+**Exemples vécus, issue n°1.** Le 2026-09-19, Trivy a bloqué sur des CVE des
 couches système. La réponse a été de monter Spring Boot de 3.2.5 à 3.5.16 et de
-recompiler Caddy, et non d'inscrire une exception — commit `df1634f`. Les deux
-images sortent depuis à zéro CVE HIGH ou CRITICAL.
+recompiler Caddy, et non d'inscrire une exception — commit `df1634f`. La porte
+s'est refermée depuis sur des CVE publiées après coup, et la réponse a été la
+même à chaque fois, par une version forcée dans `back/build.gradle` au-dessus
+de celle que gère Spring Boot : Tomcat 10.1.59 (trois CVE critiques), Jackson
+2.21.7 (cinq CVE hautes de `jackson-core` et `jackson-databind`, commit
+`9c157ae`), Log4j 2.25.5 (une CVE haute). Chaque ligne porte la mention « à
+retirer dès que le BOM de Spring Boot l'atteint ».
+
+**Exemple vécu, issue n°2.** Le 2026-10-02, le premier scan réel de
+Dependency-Check a relevé 12 CVE de score 7 ou plus sur Spring Framework
+6.2.19. Aucune montée de version ne les lève : la 6.2.20 est réservée au
+support payant de Spring, et le correctif en source ouverte est Spring
+Framework 7.0.9, donc Spring Boot 4 — une migration majeure. Les douze ont été
+exceptées, chacune avec un fait vérifiable dans le dépôt (§7.4.4).
+
+**L'issue n°3 s'est produite une fois.** Le dernier pipeline de `develop`
+(`#2902337581`, 2026-10-01) s'est arrêté sur `package-back` : cinq CVE de
+Jackson dans l'image, donc pas de livraison. ⚠️ Ce n'est pas la seule raison
+pour laquelle rien n'a été déployé depuis le 2026-09-23 : les deux exécutions
+précédentes ont échoué pour d'autres causes — aucun runner disponible le 29
+septembre, puis `trivy-fs` et `terraform-plan` le 1er octobre
+([MONITORING.md](MONITORING.md) §10.4).
 
 ### 7.4.4 Qui arbitre, et où s'écrit une exception
 
@@ -325,10 +399,32 @@ personne que le pipeline dérange.
 
 Deux registres, selon la nature :
 
-| Registre                                        | Ce qu'il couvre                    | État actuel |
-| ----------------------------------------------- | ---------------------------------- | ----------- |
-| `.trivyignore.yaml`                             | Misconfigurations et CVE d'image   | 4 entrées   |
-| `back/config/dependency-check/suppressions.xml` | CVE de dépendances (faux positifs) | **vide**    |
+| Registre                                        | Ce qu'il couvre                                  | État au 2026-10-02                                 |
+| ----------------------------------------------- | ------------------------------------------------ | -------------------------------------------------- |
+| `.trivyignore.yaml`                             | Misconfigurations et CVE relevées par Trivy      | **7 entrées**, revue au 2026-12-31                 |
+| `back/config/dependency-check/suppressions.xml` | CVE de dépendances relevées par Dependency-Check | **3 entrées couvrant 12 CVE**, jusqu'au 2026-12-31 |
+
+**Les exceptions en cours.** Les fichiers font foi ; ce tableau en est le
+résumé.
+
+| Identifiant                                       | Où                                                  | Pourquoi l'exception est accordée                                                                                                                                                                       |
+| ------------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `KSV-0056`, `KSV-0041`                            | `.gitlab/agents/microcrm/rbac.yaml`                 | Droits de l'agent GitLab sur les ressources réseau (les `NetworkPolicy` de Terraform) et sur les Secrets (celui du registry) : assumés, à l'échelle du cluster, sans `list` ni `delete` sur les Secrets |
+| `KSV-0014`                                        | `k8s/elk/elasticsearch-deployment.yaml`             | Elasticsearch ne démarre pas avec une racine en lecture seule                                                                                                                                           |
+| `KSV-0014`, `KSV-0118`                            | `k8s/overlays/production/back-resources-patch.yaml` | Un patch partiel, que Trivy lit comme un manifeste complet                                                                                                                                              |
+| `DS-0031`                                         | `back/Dockerfile`                                   | Faux positif : deux variables dont le nom contient `KEY` désignent une clé de MDC, pas un secret                                                                                                        |
+| `KSV-0109`                                        | `k8s/elk/apm-server-config.yaml`                    | Faux positif : le mot « secret » figure dans un commentaire                                                                                                                                             |
+| CVE-2026-47885, 47888, 47889, 47891, 47892, 47893 | Spring Framework 6.2.19                             | Spring WebFlux et RSocket : ces modules ne sont pas sur le `runtimeClasspath`                                                                                                                           |
+| CVE-2026-47884, 47890, 59313                      | Spring Framework 6.2.19                             | `XsltView`, Server-Sent Events, framework web fonctionnel : l'application n'a aucun contrôleur, seulement deux dépôts Spring Data REST                                                                  |
+| CVE-2026-47886 (7,5), 59282 (7,5), 59283 (9,1)    | Spring Framework 6.2.19                             | SpEL et liaison de données : pour chacune, au moins une des conditions de l'avis de Spring manque. Contrôlé par exécution sur staging : trois `PATCH` forgés, trois `400`                               |
+
+⚠️ **La dernière ligne est une analyse, pas une preuve que Spring 6.2.19 est
+sain.** Ces trois CVE avaient d'abord été laissées bloquantes : l'application
+expose ses dépôts par Spring Data REST, dont le `PATCH` JSON Patch traduit en
+SpEL des chemins fournis par le client. L'exception tombe le jour où le modèle
+reçoit un champ `BigDecimal` ou `BigInteger`, une liste auto-peuplée, où le
+compilateur SpEL est activé, ou où du code applicatif évalue une expression
+venue d'une requête. La sortie propre reste la migration vers Spring Boot 4.
 
 Trois règles de forme, et elles ne sont pas décoratives :
 
@@ -345,12 +441,39 @@ Trois règles de forme, et elles ne sont pas décoratives :
 
 ### 7.4.5 Ce que ce processus ne couvre pas encore
 
-**Un écart entre Dependency-Check et Trivy n'a jamais été expliqué** :
-Dependency-Check ne remontait pas des CVE Tomcat que Trivy voyait. Les deux
-outils regardent des périmètres différents — les dépendances déclarées pour l'un,
-les couches de l'image pour l'autre — ce qui explique peut-être tout, mais ne l'a
-pas été. Les deux portes étant désormais bloquantes, la première exécution réelle
-de la chaîne tranchera.
+**Un écart entre Dependency-Check et Trivy est resté inexpliqué du 2026-09-14 au
+2026-10-02** : Dependency-Check ne remontait pas des CVE de Tomcat, puis de
+Jackson, que Trivy voyait dans le jar. Cette section supposait que les deux
+outils regardaient des périmètres différents. **C'était faux : Dependency-Check
+n'analysait aucun jar.**
+
+Le plugin Gradle écarte par défaut les configurations « de test »
+(`skipTestGroups = true`) et les reconnaît à leur nom. Le plugin Spring Boot
+fait hériter `runtimeClasspath` de `testAndDevelopmentOnly` : la seule
+configuration que le projet demandait d'analyser était donc écartée, et le
+rapport sortait avec une liste de dépendances vide — cinq secondes de Gradle, un
+fichier XML de 1,4 Ko, « 0 vulnérabilité ». Le correctif est une ligne
+(`skipTestGroups = false`, expliquée dans `back/build.gradle`) ; le scan porte
+désormais sur 82 dépendances.
+
+**La leçon dépasse cet outil : une porte bloquante qui ne lit rien ne se
+distingue pas, à l'œil, d'une porte qui n'a rien trouvé.** Toute mention
+antérieure de « Dependency-Check : 0 vulnérabilité » dans ce dépôt décrit un
+scan vide, pas un code sain.
+
+Ce qui reste hors du processus :
+
+- **Rien ne vérifie automatiquement qu'un scan a lu quelque chose.** Le défaut a
+  été trouvé en lisant un rapport, pas par un test. Un contrôle du nombre de
+  dépendances analysées dans le job reste à écrire.
+- **Les CVE de score inférieur à 7 ne sont suivies par rien.** Le dernier
+  rapport en porte six, de 3,7 à 6,5 : visibles dans l'artefact, sous le seuil,
+  sans échéance.
+- **Les dépendances du front n'ont pas d'équivalent** : aucun `npm audit`, seul
+  `trivy-fs` lit le `package-lock.json`.
+- **Le lot du 2026-10-02 n'a tourné dans aucun pipeline.** Les scans corrigés,
+  le scan avant push et les rapports en artefacts ont été éprouvés sur le
+  poste et par les tests de `run_tests.sh`, pas par un runner.
 
 ---
 

@@ -15,11 +15,11 @@ flowchart LR
         direction LR
         C1["build<br/>Gradle<br/>Angular CLI"] --> C2["package<br/>2 images multi-stage<br/>tag = SHA"]
         C2 --> C3["perf<br/>k6 sur<br/>l'image construite"]
-        C3 --> D["deploy ✋<br/>staging · production<br/>rollback"]
+        C3 --> D["deploy — manuel<br/>staging · production<br/>rollback"]
         D --> E["EXPLOITATION<br/>ELK · indicateurs DORA"]
     end
     R1 --> R2
-    B5 -.->|"✗ retour immédiat"| A
+    B5 -.->|"échec : retour immédiat"| A
     E -.->|"incidents, dérives"| A
 
     classDef prod fill:#f5f8f8,stroke:#5b6c69,color:#13201e

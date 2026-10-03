@@ -22,11 +22,11 @@ flowchart LR
         direction LR
         C1["build<br/>Gradle<br/>Angular CLI"] --> C2["package<br/>2 images multi-stage<br/>tag = SHA"]
         C2 --> C3["perf<br/>k6 sur<br/>l'image construite"]
-        C3 --> D["deploy ✋<br/>staging · production<br/>rollback"]
+        C3 --> D["deploy — manuel<br/>staging · production<br/>rollback"]
         D --> E["EXPLOITATION<br/>ELK · indicateurs DORA"]
     end
     R1 --> R2
-    B5 -.->|"✗ retour immédiat"| A
+    B5 -.->|"échec : retour immédiat"| A
     E -.->|"incidents, dérives"| A
 
     classDef prod fill:#f5f8f8,stroke:#5b6c69,color:#13201e
@@ -55,24 +55,27 @@ flowchart LR
 
 ## Table de normalisation — cycle → GitLab CI
 
-Dix étapes, 37 jobs (dont trois dans un pipeline enfant). La colonne « bloquant » dit ce qui arrête réellement le
+Dix étapes, 39 jobs (dont trois dans un pipeline enfant). La colonne « bloquant » dit ce qui arrête réellement le
 pipeline aujourd'hui, pas ce qui devrait l'arrêter.
 
-| Étape du cycle          | Stage       | Outils                                    | Bloquant                     |
-| ----------------------- | ----------- | ----------------------------------------- | ---------------------------- |
-| Développement           | _(local)_   | husky, lint-staged, Prettier, commitlint  | oui, avant le push           |
-| Forme du code           | `lint`      | ESLint, Checkstyle, ShellCheck, Helm, K8s | **oui**, les 5 jobs          |
-| Comportement            | `test`      | JUnit sur PostgreSQL, Karma, BashUnit     | **oui**, les 3 jobs          |
-| Tenue du code           | `quality`   | SonarQube, SpotBugs, JaCoCo, PIT          | `coverage-gate` seul         |
-| Surface d'attaque       | `security`  | OWASP Dependency-Check, Trivy             | Dependency-Check seul        |
-| Infrastructure          | `infra`     | Terraform, Ansible                        | `validate` et `lint` seuls   |
-| Compilation             | `build`     | Gradle, Angular CLI                       | **oui**                      |
-| Construction des images | `package`   | Docker multi-stage, Registry GitLab       | **oui**, tag = SHA du commit |
-| Tenue en charge         | `perf`      | k6 sur l'image construite                 | `k6-smoke` seul              |
-| Déploiement staging     | `deploy`    | Kubernetes, Kustomize, `deploy.sh`        | manuel, sur `develop`        |
-| Déploiement production  | `deploy`    | Kubernetes, promotion de la même image    | manuel, sur `main` ou tag    |
-| Retour arrière          | `deploy`    | `rollback.sh`, historique des révisions   | automatique **et** manuel    |
-| Supervision             | _(hors CI)_ | Filebeat, Elasticsearch, Kibana, DORA     | —                            |
+| Étape du cycle           | Stage         | Outils                                          | Bloquant                                                  |
+| ------------------------ | ------------- | ----------------------------------------------- | --------------------------------------------------------- |
+| Développement            | _(local)_     | husky, lint-staged, Prettier, commitlint        | oui, avant le push                                        |
+| Forme du code            | `lint`        | ESLint, Checkstyle, ShellCheck, Helm, K8s       | **oui**, les 6 jobs (`version-consistency` sur tag seul)  |
+| Comportement             | `test`        | JUnit sur PostgreSQL, Karma, BashUnit           | **oui**, les 3 jobs                                       |
+| Tenue du code            | `quality`     | SonarQube, SpotBugs, JaCoCo, PIT                | **oui**, sauf `spotbugs-back` ; `quality-gate` sur `main` |
+| Surface d'attaque        | `security`    | OWASP Dependency-Check, Trivy                   | **oui**, les 2 jobs, rapports en artefacts                |
+| Infrastructure           | `infra`       | Terraform, Ansible                              | **oui** : `validate`, `ansible-lint`, `plan`              |
+| Compilation              | `build`       | Gradle, Angular CLI                             | **oui**                                                   |
+| Construction des images  | `package`     | Docker multi-stage, Trivy, Registry GitLab      | **oui** : scan avant push, tag = SHA du commit            |
+| Version livrée           | `package`     | promotion par retag, `glab` (Release GitLab)    | **oui**, sur tag seulement                                |
+| Tenue en charge          | `perf`        | k6 sur l'image construite                       | `k6-smoke` (et `k6-stress`, sur demande)                  |
+| Déploiement staging      | `deploy`      | Kubernetes, Kustomize, `deploy.sh`              | manuel, sur `develop`                                     |
+| Déploiement production   | `deploy`      | Kubernetes, promotion de la même image          | manuel, sur `main` ou tag                                 |
+| Retour arrière           | `deploy`      | `rollback.sh`, historique des révisions         | automatique **et** manuel                                 |
+| Indicateurs DORA         | `deploy`      | `collect_dora.py`, artefact `reports/dora.json` | non (`allow_failure`)                                     |
+| Infrastructure appliquée | `infra-apply` | `terraform apply` par environnement             | manuel ; notification d'échec non bloquante               |
+| Supervision              | _(hors CI)_   | Filebeat, Elasticsearch, Kibana, APM Server     | — ; huit règles d'alerte Kibana, sans notification        |
 
 Le détail des interdépendances entre jobs est dans
 [docs/pipeline-ci.md](docs/pipeline-ci.md).
@@ -84,13 +87,15 @@ Le détail des interdépendances entre jobs est dans
 Cette section est le pendant honnête de la précédente. Ce sont des écarts connus,
 pas des oublis.
 
-| Élément                                    | État                                                                                     |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| Tests E2E (Cypress/Playwright)             | **non implémenté** — aucun stage `integration`                                           |
-| `deploy-staging` automatique sur `develop` | en `when: manual` ; le passage en `on_success` est une ligne                             |
-| Métriques Prometheus / Grafana             | **non implémenté** — la supervision est faite par les logs (ELK) et les indicateurs DORA |
-| Signature des images                       | **non implémenté** — les images sont taguées par SHA, pas signées                        |
-| Déploiement progressif (canary)            | **non implémenté** — `RollingUpdate` avec `maxUnavailable: 0`                            |
+| Élément                                    | État                                                                                                                                              |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tests E2E (Cypress/Playwright)             | **non implémenté** — aucun stage `integration`                                                                                                    |
+| `deploy-staging` automatique sur `develop` | en `when: manual` ; le passage en `on_success` est une ligne                                                                                      |
+| Métriques Prometheus / Grafana             | **non implémenté** — la supervision est faite par les logs (ELK), huit règles d'alerte Kibana et les indicateurs DORA ; ni CPU ni mémoire mesurés |
+| Traces de l'API en service                 | **écrites, non déployées** — agent OpenTelemetry et APM Server éprouvés depuis le poste                                                           |
+| Notification des alertes applicatives      | **non implémenté** — les alertes restent dans Kibana (connecteurs webhook sous licence payante)                                                   |
+| Signature des images                       | **non implémenté** — les images sont taguées par SHA, pas signées                                                                                 |
+| Déploiement progressif (canary)            | **non implémenté** — `RollingUpdate` avec `maxUnavailable: 0`                                                                                     |
 
 Deux choix méritent d'être signalés plutôt que subis. **Snyk** figurait dans la
 cible initiale : il est remplacé par Trivy et OWASP Dependency-Check, qui

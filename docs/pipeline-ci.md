@@ -5,39 +5,48 @@ Ce document a commencé comme une **cartographie avant travaux** : décrire
 maintenant la structure en place, et garde de l'état précédent tout ce qui
 explique pourquoi elle est ainsi — les mesures, et les deux pistes écartées.
 
+**Mis à jour le 2026-10-02**, d'après les fichiers de `.gitlab/ci/` de la copie
+de travail : six jobs ont été ajoutés depuis la restructuration
+(`version-consistency`, `promote-back`, `promote-front`, `release`,
+`dora-metrics`, `notify-echec`), et les branches `fix/` et `docs/` sont
+désormais reconnues. Les jobs `release` et `dora-metrics` n'ont encore tourné
+dans aucun pipeline.
+
 ---
 
 ## 1. Ce que pèse le pipeline
 
-| Mesure            | Avant      | Après                     |
-| ----------------- | ---------- | ------------------------- |
-| Fichiers          | 1          | **13**                    |
-| Lignes totales    | 1071       | 1431                      |
-| dont commentaires | 484 (45 %) | 754 (53 %)                |
-| **YAML réel**     | **540**    | **626**                   |
-| Jobs              | 32         | 33 (30 parent + 3 enfant) |
-| Étapes            | 9          | **10**                    |
-| Ancres YAML       | 10         | **0**                     |
-| `extends:`        | **0**      | 30 jobs                   |
-| `include:`        | **0**      | 12 fichiers, 2 racines    |
-| `trigger:`        | **0**      | 1                         |
+| Mesure            | Avant      | Après la restructuration  | Au 2026-10-02                          |
+| ----------------- | ---------- | ------------------------- | -------------------------------------- |
+| Fichiers          | 1          | **13**                    | 14 (la racine + 13 dans `.gitlab/ci/`) |
+| Lignes totales    | 1071       | 1431                      | 1924                                   |
+| dont commentaires | 484 (45 %) | 754 (53 %)                | 1100 (57 %)                            |
+| **YAML réel**     | **540**    | **626**                   | **768** (hors lignes vides)            |
+| Jobs              | 32         | 33 (30 parent + 3 enfant) | **39** (36 parent + 3 enfant)          |
+| Étapes            | 9          | **10**                    | 10                                     |
+| Ancres YAML       | 10         | **0**                     | 0                                      |
+| `extends:`        | **0**      | 30 jobs                   | 35 jobs                                |
+| `include:`        | **0**      | 12 fichiers, 2 racines    | 12 fichiers, 2 racines                 |
+| `trigger:`        | **0**      | 1                         | 1                                      |
 
 **Le fichier n'a pas maigri, et c'est normal.** Le YAML réel a augmenté de 86
 lignes — les règles par périmètre (§4) et le pipeline enfant (§6.3) coûtent ce
 qu'ils coûtent. Ce qui a changé, c'est qu'aucun fichier ne dépasse 300 lignes et
-que chacun porte un domaine. Les commentaires, eux, sont passés de 45 % à 53 % :
+que chacun porte un domaine — à une exception près : `templates.yml` a grossi
+avec les gabarits et dépasse aujourd'hui 400 lignes, dont la moitié de
+commentaires. Les commentaires, eux, sont passés de 45 % à 53 % :
 la restructuration a produit des décisions, et une décision non écrite se paie
 plus tard.
 
 ```
 .gitlab-ci.yml                 étapes + include, aucun job
 .gitlab/ci/variables.yml       les variables globales
-.gitlab/ci/templates.yml       les 12 gabarits (ex-ancres)
-.gitlab/ci/lint.yml            5 jobs        .gitlab/ci/package.yml   4 jobs
-.gitlab/ci/test.yml            3 jobs        .gitlab/ci/deploy.yml    3 jobs
+.gitlab/ci/templates.yml       les 13 gabarits (ex-ancres, et ceux ajoutés depuis)
+.gitlab/ci/lint.yml            6 jobs        .gitlab/ci/package.yml   7 jobs
+.gitlab/ci/test.yml            3 jobs        .gitlab/ci/deploy.yml    4 jobs
 .gitlab/ci/quality.yml         6 jobs        .gitlab/ci/security.yml  2 jobs
-.gitlab/ci/infra.yml           6 jobs
-.gitlab/ci/perf-trigger.yml    le pont vers le pipeline enfant
+.gitlab/ci/infra.yml           6 jobs        .gitlab/ci/notify.yml    1 job
+.gitlab/ci/perf-trigger.yml    le pont vers le pipeline enfant (1 job)
 .gitlab/ci/perf-pipeline.yml   la racine de l'enfant
 .gitlab/ci/perf.yml            3 jobs, dans l'enfant
 ```
@@ -49,14 +58,21 @@ plus tard.
 ```mermaid
 flowchart LR
     subgraph V["Vérification — toutes branches + MR"]
-        l["lint<br/>5 jobs"] --> t["test<br/>3 jobs"] --> q["quality<br/>6 jobs"] --> s["security<br/>2 jobs"] --> i["infra<br/>3 jobs"]
+        l["lint<br/>6 jobs"] --> t["test<br/>3 jobs"] --> q["quality<br/>6 jobs"] --> s["security<br/>2 jobs"] --> i["infra<br/>3 jobs"]
     end
     subgraph C["Livraison — develop, release/, hotfix/, main, tag"]
-        b["build<br/>2 jobs"] --> p["package<br/>2 jobs"] --> f["perf<br/>enfant, 3 jobs"] --> d["deploy<br/>3 jobs"]
+        b["build<br/>2 jobs"] --> p["package<br/>2 jobs, + 3 sur un tag"] --> f["perf<br/>enfant, 3 jobs"] --> d["deploy<br/>4 jobs"]
     end
     V --> C
-    C --> a["infra-apply<br/>3 jobs manuels"]
+    C --> a["infra-apply<br/>3 jobs manuels + notification"]
 ```
+
+Le schéma se lit de gauche à droite : la vérification, qui tourne partout,
+puis la livraison, réservée aux branches qui produisent un artefact, puis
+l'application de l'infrastructure. `package` compte deux jobs sur une branche
+(`package-back`, `package-front`) et trois autres sur un tag (`promote-back`,
+`promote-front`, `release`) ; `deploy` compte les trois déploiements et
+`dora-metrics`.
 
 **La dixième étape, `infra-apply`, est un correctif.** Les trois
 `terraform-apply-<env>` sont manuels et **sans** `allow_failure` — un apply
@@ -77,10 +93,10 @@ la dernière étape utile : leur blocage ne coûte rien.
 
 ```mermaid
 flowchart LR
-    subgraph A["needs: [] — 14 jobs, démarrent immédiatement"]
+    subgraph A["needs: [] — 16 jobs, démarrent immédiatement"]
         a1["lint-front"] ~~~ a2["lint-back"] ~~~ a3["shellcheck"] ~~~ a4["test-front"] ~~~ a5["test-back"] ~~~ a6["dependency-check-back"]
     end
-    subgraph B["needs explicites — 8 jobs"]
+    subgraph B["needs explicites — 9 jobs"]
         tb["test-back"] --> cg["coverage-gate"]
         tb --> sb["sonar-back"]
         tb --> mb["mutation-back"]
@@ -88,20 +104,26 @@ flowchart LR
         sb --> qg["quality-gate"]
         sf --> qg
         tpl["terraform-plan"] --> tap["terraform-apply-&lt;env&gt;"]
+        pro["promote-back<br/>promote-front"] --> rel["release"]
     end
     subgraph C["barrière d'étape conservée — 11 jobs"]
         bu["build-*"] --> pk["package-*"] --> pf["perf"] --> dp["deploy-*"]
     end
 ```
 
-**14 jobs démarrent sans rien attendre.** Toute la phase de vérification : lint,
-tests, analyse, sécurité, validation d'infrastructure. Ils ne lisent que les
-sources. Un `lint-back` qui échoue n'empêche plus de voir dans la même exécution
+Le schéma range les 36 jobs du pipeline parent en trois groupes : ceux qui
+démarrent tout de suite, ceux qui attendent un job nommé, et ceux qui attendent
+la fin de l'étape précédente.
+
+**16 jobs démarrent sans rien attendre.** Toute la phase de vérification qui ne
+lit que les sources — lint, tests, SpotBugs, sécurité, validation
+d'infrastructure — et `dora-metrics`, qui ne lit que l'API GitLab. Un `lint-back` qui échoue n'empêche plus de voir dans la même exécution
 qu'un test échoue aussi — c'est la règle qui gouverne déjà
 `terraform_check.sh` : deux erreurs se lisent en une exécution au lieu de deux.
 
-**11 jobs gardent la barrière d'étape, et c'est délibéré.** `build`, `package`,
-`perf` et `deploy` n'ont pas de `needs:` : ils attendent donc que **toute** la
+**11 jobs gardent la barrière d'étape, et c'est délibéré** : `build-*`,
+`package-*`, `promote-*`, `perf`, les trois déploiements et `notify-echec`.
+`build`, `package`, `perf` et `deploy` n'ont pas de `needs:` : ils attendent donc que **toute** la
 phase de vérification soit verte. C'est la garantie « on ne construit, ne
 package ni ne déploie rien qui n'ait pas été vérifié ». Un DAG complet la
 ferait sauter : `package-back` démarrerait en parallèle des tests et pousserait
@@ -115,7 +137,7 @@ perte.
 
 ```mermaid
 flowchart LR
-    mr(["Merge request<br/>feature/"]) --> F{"quel<br/>périmètre ?"}
+    mr(["Merge request<br/>feature/, fix/, docs/"]) --> F{"quel<br/>périmètre ?"}
     F -->|"front/"| vf["vérification front"]
     F -->|"back/"| vb["vérification back"]
     F -->|"les deux, ou CI"| vt["tout"]
@@ -126,27 +148,37 @@ flowchart LR
     vb --> V
     vt --> V
     V --> G{"branche ?"}
-    G -->|"MR, feature/"| stop(["s'arrête là"])
+    G -->|"MR, feature/, fix/, docs/"| stop(["s'arrête là"])
     G -->|"develop, release/,<br/>hotfix/, main, tag"| L["Livraison<br/>build, package, perf"]
     L --> H{"branche ?"}
-    H -->|"develop"| st(["deploy-staging ✋"])
-    H -->|"main, tag"| pr(["deploy-production ✋<br/>rollback ✋"])
+    H -->|"develop"| st(["deploy-staging, manuel"])
+    H -->|"main, tag"| pr(["deploy-production, manuel<br/>rollback, manuel"])
+    H -->|"tag"| rl(["promotion et Release GitLab"])
     H -->|"release/, hotfix/"| rien(["aucun déploiement"])
-    H -->|"main"| ia(["terraform-apply ✋"])
+    H -->|"main"| ia(["terraform-apply, manuel"])
 ```
 
-Quatre familles de règles, et six jobs qui écrivent les leurs :
+Le schéma suit un commit : sur une branche de travail ou en merge request, la
+vérification est filtrée par périmètre puis s'arrête ; sur une branche de
+livraison, elle est complète et suivie de la construction, puis d'un
+déploiement proposé selon la branche.
 
-| Famille             | Jobs  | Ce qu'elle dit                                                     |
-| ------------------- | ----- | ------------------------------------------------------------------ |
-| `.rules_test`       | 7     | toute branche de travail + MR, sans condition de contenu           |
-| `.rules_test_front` | 3     | idem, mais en MR et sur `feature/` : seulement si `front/` a bougé |
-| `.rules_test_back`  | 7     | idem pour `back/`                                                  |
-| `.rules_build`      | 5 + 2 | `develop`, `release/`, `hotfix/`, `main`, tags                     |
+Cinq familles de règles couvrent 24 jobs ; les 15 autres écrivent les leurs :
 
-⚠️ **Seuls `feature/`, `release/`, `hotfix/`, `develop`, `main` et les tags
-déclenchent quoi que ce soit.** Une branche nommée `fix/…` ou `ci/…` ne lance
-aucun job — le nommage n'est pas cosmétique.
+| Famille             | Jobs | Ce qu'elle dit                                                                                                                                                                           |
+| ------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.rules_test`       | 7    | toute branche de travail + MR, sans condition de contenu                                                                                                                                 |
+| `.rules_test_front` | 3    | idem, mais en MR et sur `feature/`, `fix/`, `docs/` : seulement si `front/` a bougé                                                                                                      |
+| `.rules_test_back`  | 7    | idem pour `back/`                                                                                                                                                                        |
+| `.rules_build`      | 5    | `develop`, `release/`, `hotfix/`, `main`, tags                                                                                                                                           |
+| `.rules_package`    | 2    | les mêmes, **sans les tags** : un tag promeut, il ne reconstruit pas                                                                                                                     |
+| règles propres      | 15   | tag seul (`version-consistency`, `promote-*`, `release`), `main` seul (`quality-gate`, `terraform-apply-*`), déploiements, `terraform-plan`, `dora-metrics`, `notify-echec`, `k6-stress` |
+
+⚠️ **Seuls `feature/`, `fix/`, `docs/`, `release/`, `hotfix/`, `develop`,
+`main` et les tags déclenchent quoi que ce soit.** Une branche nommée `feat/…`
+ou `ci/…` ne lance aucun job — le nommage n'est pas cosmétique. `fix/` et
+`docs/` ont été ajoutés à la règle parce que le dépôt les employait : ses
+branches de correction ne déclenchaient rien jusque-là.
 
 ⚠️ **Le filtrage par périmètre s'arrête à la vérification.** `build-*`,
 `package-*` et les déploiements n'ont pas de `changes:`, et ce n'est pas un
@@ -261,4 +293,10 @@ C'est la raison d'être de `variables.yml` : les deux racines l'incluent.
   `script:` — par exemple le `build_deploy_overlay()` de `.deploy_template` —
   sans hériter du reste du gabarit.
 - **Mesurer à nouveau.** Les durées du §5 datent d'avant. Le chemin critique
-  annoncé (≈ 13 min) est une prévision, pas un relevé.
+  annoncé (≈ 13 min) est une prévision, pas un relevé. Et `dependency-check-back`,
+  qui dominait la phase de vérification, ne lisait alors aucun jar : sa durée
+  réelle, maintenant qu'il analyse 82 dépendances, n'a pas été mesurée en CI.
+- **Lint GitLab de la copie de travail.** Les modifications du 2026-10-02 ont été
+  contrôlées par un chargement YAML et un résolveur local des `extends` et des
+  `rules`, pas par l'API de lint de GitLab, qui ne valide que la configuration
+  commitée.

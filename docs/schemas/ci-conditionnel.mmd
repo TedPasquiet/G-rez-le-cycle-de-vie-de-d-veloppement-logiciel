@@ -3,7 +3,7 @@
 %% Le filtrage par périmètre (front/ ou back/) s'arrête à la vérification : les
 %% images étant taguées par SHA, sauter un package produirait un tag inexistant.
 flowchart LR
-    mr(["Merge request<br/>feature/"]) --> F{"quel<br/>périmètre ?"}
+    mr(["Merge request<br/>feature/, fix/, docs/"]) --> F{"quel<br/>périmètre ?"}
     F -->|"front/"| vf["vérification front"]
     F -->|"back/"| vb["vérification back"]
     F -->|"les deux, ou CI"| vt["tout"]
@@ -14,10 +14,11 @@ flowchart LR
     vb --> V
     vt --> V
     V --> G{"branche ?"}
-    G -->|"MR, feature/"| stop(["s'arrête là"])
+    G -->|"MR, feature/, fix/, docs/"| stop(["s'arrête là"])
     G -->|"develop, release/,<br/>hotfix/, main, tag"| L["Livraison<br/>build, package, perf"]
     L --> H{"branche ?"}
-    H -->|"develop"| st(["deploy-staging ✋"])
-    H -->|"main, tag"| pr(["deploy-production ✋<br/>rollback ✋"])
+    H -->|"develop"| st(["deploy-staging, manuel"])
+    H -->|"main, tag"| pr(["deploy-production, manuel<br/>rollback, manuel"])
+    H -->|"tag"| rl(["promotion et Release GitLab"])
     H -->|"release/, hotfix/"| rien(["aucun déploiement"])
-    H -->|"main"| ia(["terraform-apply ✋"])
+    H -->|"main"| ia(["terraform-apply, manuel"])
