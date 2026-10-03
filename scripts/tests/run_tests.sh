@@ -1198,6 +1198,173 @@ verifie_fichier_contient "$WORK_DIR/dora-fab.txt" 'mean_time_to_restore defini' 
 verifie_fichier_contient "$WORK_DIR/dora-fab.txt" 'deployment_frequency defini' 'la fréquence se calcule sur des succès'
 
 # ==========================================================================
+# ci/collect_security.py
+# ==========================================================================
+# Le collecteur transforme les rapports de Trivy et de Dependency-Check en
+# documents pour le tableau de bord Kibana « sécurité ». Il est testé hors
+# ligne, sur des fixtures FABRIQUÉES (identifiants en CVE-2099-…, voir
+# fixtures/security/README.md) : un rapport réel change à chaque mise à jour de
+# la base de vulnérabilités, et ferait dériver les tests sans que le code bouge.
+#
+# `--date` et `--commit` sont fixés partout. Sans eux, l'échéance des exceptions
+# se comparerait à la date du jour : le test « l'exception échue ne couvre plus
+# rien » changerait de sens le 1er janvier 2027, tout seul.
+titre 'ci/collect_security.py'
+
+secu_fix="$TESTS_DIR/fixtures/security"
+# SC2329 = « cette fonction n'est jamais appelée ». Elle l'est, mais toujours
+# comme ARGUMENT de `verifie_code` (qui lance "$@"), jamais en début de ligne :
+# ShellCheck ne suit pas cet appel indirect.
+# shellcheck disable=SC2329
+secu() {
+  python3 "$ROOT_DIR/scripts/ci/collect_security.py" \
+    --commit abcdef1234567890 --date 2026-10-02T12:00:00Z "$@"
+}
+
+verifie_code 0 '--help fonctionne' \
+  python3 "$ROOT_DIR/scripts/ci/collect_security.py" --help
+verifie_contient '--trivy-report' "l'aide mentionne les rapports Trivy"
+verifie_contient '--dependency-check-report' "l'aide mentionne le rapport Dependency-Check"
+
+verifie_code 1 'aucune source -> erreur (1), pas un rapport vide' \
+  secu --no-trivyignore
+verifie_contient 'aucune source' 'le message dit ce qui manque'
+
+# --- Cas nominal : un scan du dépôt, avec ses exceptions --------------------
+sortie_secu="$WORK_DIR/secu-fs.json"
+verifie_code 0 'collecte sur un rapport Trivy du système de fichiers' \
+  secu --trivy-report "$secu_fix/trivy-fs.json" \
+  --trivyignore "$secu_fix/trivyignore.yaml" --output "$sortie_secu"
+
+python3 - "$sortie_secu" <<'PYTEST' >"$WORK_DIR/secu-fs.txt"
+import json, sys
+d = json.load(open(sys.argv[1]))
+r = d["resume"]
+print("total", r["total"], "ouverts", r["ouverts"], "exceptes", r["exceptes"])
+print("severites", " ".join(f"{k}={v}" for k, v in r["par_severite"].items()))
+print("categories", " ".join(f"{k}={v}" for k, v in r["par_categorie"].items()))
+for c in d["constats"]:
+    print("constat", c["identifiant"], c["cible"], c["composant"], c["statut"],
+          "corrigeable" if c["corrigeable"] else "non-corrigeable", c["commit"])
+for e in d["exceptions"]:
+    print("exception", e["identifiant"], "echeance", e["echeance"], "jours", e["jours_restants"],
+          "expiree" if e["expiree"] else "valide", "couverts", e["constats_couverts"])
+print("ids-uniques", len({c["_id"] for c in d["constats"]}) == len(d["constats"]))
+PYTEST
+secu_txt="$WORK_DIR/secu-fs.txt"
+verifie_fichier_contient "$secu_txt" 'total 7 ouverts 6 exceptes 1' 'les 7 constats sont lus, un seul est excepté'
+verifie_fichier_contient "$secu_txt" 'CRITICAL=2 HIGH=2 MEDIUM=1 LOW=1 UNKNOWN=0' 'le décompte par sévérité ne compte que les constats ouverts'
+verifie_fichier_contient "$secu_txt" 'vulnerabilite=2 misconfiguration=3 secret=1' 'les trois catégories de constats sont distinguées'
+verifie_fichier_contient "$secu_txt" 'constat CVE-2099-0001 front/package-lock.json front ouvert corrigeable abcdef12' 'une vulnérabilité porte composant, statut, correctif et commit'
+verifie_fichier_contient "$secu_txt" 'constat CVE-2099-0002 front/package-lock.json front ouvert non-corrigeable' 'sans version corrigée, le constat n est pas dit corrigeable'
+verifie_fichier_contient "$secu_txt" 'constat regle-fictive back/src/main/resources/application.properties back ouvert' 'un secret est rattaché au back par son chemin'
+# ⚠️ Le cœur du format « un identifiant ET un chemin » : la même règle KSV-0014
+# est exceptée dans un fichier et reste ouverte dans l'autre.
+verifie_fichier_contient "$secu_txt" 'constat KSV-0014 k8s/elk/elasticsearch-deployment.yaml depot excepte' "l'exception couvre le fichier qu'elle nomme"
+verifie_fichier_contient "$secu_txt" 'constat KSV-0014 k8s/base/back-deployment.yaml depot ouvert' "la même règle reste ouverte dans un autre fichier"
+verifie_fichier_contient "$secu_txt" 'constat KSV-0099 k8s/base/back-deployment.yaml depot ouvert' 'une exception échue ne couvre plus rien'
+verifie_fichier_contient "$secu_txt" 'exception KSV-0014 echeance 2026-12-31 jours 90 valide couverts 1' "l'échéance et les jours restants sont calculés"
+verifie_fichier_contient "$secu_txt" 'exception KSV-0099 echeance 2026-01-31 jours -244 expiree couverts 0' "l'exception échue est signalée comme telle"
+verifie_fichier_contient "$secu_txt" 'exception CVE-2099-9999 echeance None jours None valide' 'sans échéance : null, ni zéro jour ni expirée'
+verifie_fichier_contient "$secu_txt" 'ids-uniques True' 'chaque constat a un identifiant de document distinct'
+verifie_contient 'Exception échue depuis le 2026-01-31' "l'exception échue est aussi annoncée dans le journal"
+# Trivy masque le secret dans `Match`, mais le collecteur ne recopie pas le
+# champ du tout : l'index Elasticsearch n'a pas d'authentification.
+verifie_fichier_contient_pas "$sortie_secu" 'NE-DOIT-PAS-SORTIR-DU-COLLECTEUR' "l'extrait d'un secret n'est jamais recopié"
+
+# --- Plusieurs rapports : dépôt, image, Dependency-Check --------------------
+sortie_secu="$WORK_DIR/secu-tout.json"
+verifie_code 0 'collecte sur trois rapports à la fois' \
+  secu --trivy-report "$secu_fix/trivy-fs.json" --trivy-report "$secu_fix/trivy-image.json" \
+  --dependency-check-report "$secu_fix/dependency-check.json" \
+  --no-trivyignore --output "$sortie_secu"
+python3 - "$sortie_secu" <<'PYTEST' >"$WORK_DIR/secu-tout.txt"
+import json, sys
+d = json.load(open(sys.argv[1]))
+for s in d["scans"]:
+    print("scan", s["type_scan"], s["composant"], "ouverts", s["ouverts"])
+for c in d["constats"]:
+    print("constat", c["type_scan"], c["identifiant"], c["severite"], c["composant"], c["paquet"], c["version"])
+print("exceptions", d["exceptions"])
+PYTEST
+secu_txt="$WORK_DIR/secu-tout.txt"
+verifie_fichier_contient "$secu_txt" 'scan trivy-fs depot ouverts 7' 'sans fichier d exceptions, tout est ouvert'
+verifie_fichier_contient "$secu_txt" 'scan trivy-image back ouverts 2' "le composant d'une image est déduit de son nom"
+verifie_fichier_contient "$secu_txt" 'scan dependency-check back ouverts 2' 'le rapport Dependency-Check est lu'
+verifie_fichier_contient "$secu_txt" 'constat trivy-image CVE-2099-0004 LOW back' 'une sévérité en minuscules est normalisée'
+verifie_fichier_contient "$secu_txt" 'constat dependency-check CVE-2099-0006 MEDIUM back org.exemple:fictif-core 1.2.3' '« moderate » devient MEDIUM, le paquet vient du purl'
+verifie_fichier_contient "$secu_txt" 'exceptions None' '--no-trivyignore : aucune exception, et non une liste vide'
+
+# --- ⚠️ Absence de donnée ≠ zéro --------------------------------------------
+# Les trois cas qu'un tableau de bord ne doit jamais confondre :
+#   rapport vide     -> le scanner a tourné, n'a rien trouvé : un 0 MESURÉ ;
+#   rapport absent   -> aucune mesure, donc aucun document `scan` ;
+#   rapport invalide -> erreur. Surtout pas « 0 vulnérabilité ».
+sortie_secu="$WORK_DIR/secu-vide.json"
+verifie_code 0 'rapport vide -> code 0, c est un résultat' \
+  secu --trivy-report "$secu_fix/trivy-vide.json" --no-trivyignore --output "$sortie_secu"
+verifie_fichier_contient "$sortie_secu" '"total": 0' 'rapport vide : un zéro mesuré, porté par un document scan'
+verifie_fichier_contient "$sortie_secu" '"type": "scan"' 'rapport vide : le scan est bien enregistré'
+verifie_fichier_contient "$sortie_secu" '"constats": []' 'rapport vide : aucun constat inventé'
+
+verifie_code 0 'Dependency-Check sans dépendance vulnérable -> zéro mesuré' \
+  secu --dependency-check-report "$secu_fix/dependency-check-vide.json" --no-trivyignore
+verifie_contient '"total": 0' 'le zéro de Dependency-Check est lui aussi une mesure'
+
+verifie_code 1 'rapport JSON tronqué -> erreur (1), jamais un zéro' \
+  secu --trivy-report "$secu_fix/trivy-invalide.json" --no-trivyignore
+verifie_contient 'JSON invalide' 'le message nomme la cause'
+verifie_contient_pas '"total"' 'aucun décompte n est produit sur un rapport invalide'
+
+verifie_code 1 'JSON valide qui n est pas un rapport Trivy -> erreur (1)' \
+  secu --trivy-report "$secu_fix/pas-un-rapport-trivy.json" --no-trivyignore
+verifie_contient "n'est pas un rapport JSON de Trivy" 'un {} n est pas pris pour un rapport sans constat'
+
+verifie_code 1 'un rapport Dependency-Check donné pour un rapport Trivy -> erreur (1)' \
+  secu --trivy-report "$secu_fix/dependency-check.json" --no-trivyignore
+
+verifie_code 1 'rapport introuvable -> erreur (1) par défaut' \
+  secu --trivy-report "$WORK_DIR/nexiste-pas.json" --no-trivyignore
+verifie_contient 'introuvable' 'le message nomme le fichier manquant'
+
+sortie_secu="$WORK_DIR/secu-optionnel.json"
+verifie_code 0 'rapport introuvable avec --optional -> ignoré, code 0' \
+  secu --trivy-report "$WORK_DIR/nexiste-pas.json" --optional \
+  --trivyignore "$secu_fix/trivyignore.yaml" --output "$sortie_secu"
+verifie_contient 'Aucune mesure pour ce scan' "l'absence de mesure est dite dans le journal"
+verifie_fichier_contient "$sortie_secu" '"resume": null' 'sans aucun scan lu : pas de décompte, et non un décompte à zéro'
+verifie_fichier_contient "$sortie_secu" '"scans": []' 'sans aucun scan lu : aucun document scan'
+verifie_fichier_contient "$sortie_secu" '"constats_couverts": null' 'sans scan, on ne sait pas ce que couvre une exception'
+
+verifie_code 1 '--optional ne couvre pas un rapport présent mais invalide' \
+  secu --trivy-report "$secu_fix/trivy-invalide.json" --optional --no-trivyignore
+
+verifie_code 1 "fichier d'exceptions avec une entrée sans id -> erreur (1)" \
+  secu --trivyignore "$secu_fix/trivyignore-invalide.yaml"
+verifie_contient "n'a pas d'\`id\`" "l'entrée fautive est décrite"
+
+verifie_code 1 '--date illisible -> erreur (1)' \
+  python3 "$ROOT_DIR/scripts/ci/collect_security.py" --date 'hier' \
+  --trivy-report "$secu_fix/trivy-vide.json" --no-trivyignore
+
+# --- Le vrai .trivyignore.yaml du dépôt -------------------------------------
+# L'analyseur est maison (pas de PyYAML dans python:3.12-slim) : ce test est le
+# filet qui prévient le jour où le fichier réel prend une forme qu'il ne
+# comprend plus. Le nombre d'entrées est relu dans le fichier, pas codé en dur.
+nb_exceptions="$(grep -c '^  - id:' "$ROOT_DIR/.trivyignore.yaml")"
+verifie_code 0 'le .trivyignore.yaml du dépôt est compris' \
+  secu --trivyignore "$ROOT_DIR/.trivyignore.yaml"
+verifie_contient "$nb_exceptions exception(s) lue(s)" "toutes les entrées du fichier réel sont lues ($nb_exceptions)"
+verifie_contient '"echeance": "20' 'chaque entrée réelle porte son échéance'
+
+# --- Envoi Elasticsearch ----------------------------------------------------
+# Le port 9 (discard) n'écoute pas : la connexion est refusée immédiatement.
+verifie_code 1 'Elasticsearch injoignable -> erreur (1)' \
+  secu --trivy-report "$secu_fix/trivy-fs.json" --no-trivyignore \
+  --output "$WORK_DIR/secu-es.json" --elasticsearch 'http://127.0.0.1:9'
+verifie_contient 'envoi Elasticsearch impossible' "l'échec d'envoi est dit, il ne passe pas pour une collecte réussie"
+
+# ==========================================================================
 # ci/notify.py
 # ==========================================================================
 titre 'ci/notify.py'

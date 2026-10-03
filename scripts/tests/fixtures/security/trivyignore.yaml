@@ -1,0 +1,20 @@
+# Exceptions FABRIQUÉES pour les tests de collect_security.py. Même forme que le
+# .trivyignore.yaml du dépôt : une entrée = un identifiant ET un chemin.
+misconfigurations:
+  - id: KSV-0014
+    paths:
+      - k8s/elk/elasticsearch-deployment.yaml
+    statement: >-
+      Exception valide : elle couvre le constat de ce fichier, et de ce
+      fichier seulement.
+    expiredAt: 2026-12-31
+
+  - id: KSV-0099
+    paths:
+      - k8s/base/back-deployment.yaml
+    statement: Exception échue, qui ne doit plus rien couvrir.
+    expiredAt: 2026-01-31
+
+vulnerabilities:
+  - id: CVE-2099-9999
+    statement: Sans chemin ni échéance, pour éprouver les valeurs absentes.

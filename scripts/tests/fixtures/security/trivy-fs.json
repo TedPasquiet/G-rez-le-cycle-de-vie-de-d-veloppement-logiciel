@@ -1,0 +1,89 @@
+{
+  "SchemaVersion": 2,
+  "CreatedAt": "2026-10-02T10:00:00Z",
+  "ArtifactName": ".",
+  "ArtifactType": "filesystem",
+  "Results": [
+    {
+      "Target": "front/package-lock.json",
+      "Class": "lang-pkgs",
+      "Type": "npm",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2099-0001",
+          "PkgName": "paquet-fictif",
+          "InstalledVersion": "1.0.0",
+          "FixedVersion": "1.0.1",
+          "Severity": "HIGH",
+          "Title": "Constat fabriqué pour les tests : corrigeable",
+          "PrimaryURL": "https://exemple.invalid/CVE-2099-0001"
+        },
+        {
+          "VulnerabilityID": "CVE-2099-0002",
+          "PkgName": "autre-paquet-fictif",
+          "InstalledVersion": "2.3.4",
+          "Severity": "MEDIUM",
+          "Title": "Constat fabriqué pour les tests : sans version corrigée"
+        }
+      ]
+    },
+    {
+      "Target": "k8s/elk/elasticsearch-deployment.yaml",
+      "Class": "config",
+      "Type": "kubernetes",
+      "Misconfigurations": [
+        {
+          "ID": "KSV-0014",
+          "Title": "Root file system is not read-only",
+          "Severity": "HIGH",
+          "Status": "FAIL"
+        },
+        {
+          "ID": "KSV-0020",
+          "Title": "Runs with UID <= 10000",
+          "Severity": "LOW",
+          "Status": "FAIL"
+        }
+      ]
+    },
+    {
+      "Target": "k8s/base/back-deployment.yaml",
+      "Class": "config",
+      "Type": "kubernetes",
+      "Misconfigurations": [
+        {
+          "ID": "KSV-0014",
+          "Title": "Root file system is not read-only",
+          "Severity": "HIGH",
+          "Status": "FAIL"
+        },
+        {
+          "ID": "KSV-0099",
+          "Title": "Constat fabriqué couvert par une exception ÉCHUE",
+          "Severity": "CRITICAL",
+          "Status": "FAIL"
+        }
+      ]
+    },
+    {
+      "Target": "back/src/main/resources/application.properties",
+      "Class": "secret",
+      "Secrets": [
+        {
+          "RuleID": "regle-fictive",
+          "Category": "Fabriqué",
+          "Severity": "CRITICAL",
+          "Title": "Constat de secret fabriqué pour les tests",
+          "StartLine": 12,
+          "EndLine": 12,
+          "Match": "NE-DOIT-PAS-SORTIR-DU-COLLECTEUR"
+        }
+      ]
+    },
+    {
+      "Target": "k8s/base/ingress.yaml",
+      "Class": "config",
+      "Type": "kubernetes"
+    }
+  ]
+}

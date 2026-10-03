@@ -1,0 +1,15 @@
+{
+  "reportSchema": "1.1",
+  "projectInfo": { "name": "orion-fictif", "reportDate": "2026-10-02T10:15:00Z" },
+  "dependencies": [
+    {
+      "fileName": "fictif-core-1.2.3.jar",
+      "packages": [{ "id": "pkg:maven/org.exemple/fictif-core@1.2.3" }],
+      "vulnerabilities": [
+        { "name": "CVE-2099-0005", "severity": "HIGH", "description": "Constat fabriqué pour les tests." },
+        { "name": "CVE-2099-0006", "severity": "moderate", "description": "Sévérité au vocabulaire de Dependency-Check." }
+      ]
+    },
+    { "fileName": "sain-4.5.6.jar", "packages": [{ "id": "pkg:maven/org.exemple/sain@4.5.6" }] }
+  ]
+}
