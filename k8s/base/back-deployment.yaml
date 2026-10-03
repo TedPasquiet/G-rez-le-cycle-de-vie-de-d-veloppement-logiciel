@@ -94,9 +94,16 @@ spec:
           #
           # ⚠️ L'agent OpenTelemetry s'ajoute au HORS-TAS (ses propres classes
           # en metaspace, le bytecode réécrit en cache de code, sa file de
-          # spans) : typiquement quelques dizaines de Mio, que la marge
-          # ci-dessus absorbe. Non mesuré ici — à vérifier sur un pod réel
-          # (`memory.current` du cgroup) avant de toucher à ces chiffres.
+          # spans). Ce commentaire l'estimait à « quelques dizaines de Mio » :
+          # la seule mesure disponible dit davantage. Le 2026-10-02, même
+          # image et même série de 303 requêtes, dans un conteneur Docker
+          # local SANS limite mémoire (`docker stats`) : 408 Mio avec l'agent,
+          # 292 Mio sans — environ 116 Mio de plus (MONITORING.md §10.4).
+          # Une seule mesure, hors cluster : c'est un ordre de grandeur, pas un
+          # dimensionnement. Les valeurs ci-dessous n'ont donc pas été
+          # changées ; elles restent à confronter à un pod réel
+          # (`memory.current` du cgroup) sous la limite de 768 Mio, où la JVM
+          # dimensionne son tas autrement que dans un conteneur sans limite.
           #
           # CPU : le démarrage d'une JVM est le moment le plus gourmand du cycle
           # de vie (chargement de classes, compilation JIT). Une limite basse
