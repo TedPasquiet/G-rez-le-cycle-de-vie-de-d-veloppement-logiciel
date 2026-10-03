@@ -1,0 +1,97 @@
+{
+  "name": "MicroCRM - performance - latence p95 de l'API (traces APM)",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "enabled": true,
+  "tags": ["microcrm", "famille:performance", "severite:moyenne"],
+  "schedule": {
+    "interval": "1m"
+  },
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM traces-apm* | WHERE processor.event == \"transaction\" AND transaction.type == \"request\" AND service.name == \"microcrm\" | STATS p95 = PERCENTILE(transaction.duration.us, 95), n = COUNT(*) BY service.environment | WHERE n >= 20 AND p95 > 250000 | SORT p95 DESC | LIMIT 1 | EVAL valeur = ROUND(p95 / 1000, 1), detail = CONCAT(\"environnement \", service.environment, \", p95 calculé sur \", TO_STRING(n), \" transactions\") | KEEP valeur, detail"
+    },
+    "timeField": "@timestamp",
+    "timeWindowSize": 5,
+    "timeWindowUnit": "m",
+    "threshold": [0],
+    "thresholdComparator": ">",
+    "size": 10
+  },
+  "actions": [
+    {
+      "id": "microcrm-alerts-index",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "performance",
+            "severite": "moyenne",
+            "seuil": "p95 > 250 ms sur 5 min (20 transactions au moins), par environnement",
+            "unite": "ms",
+            "statut": "declenchee",
+            "valeur": "{{#context.hits}}{{_source.valeur}}{{/context.hits}}",
+            "detail": "{{#context.hits}}{{_source.detail}}{{/context.hits}}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "warn",
+        "message": "ALERTE [performance/moyenne] {{rule.name}} - valeur {{#context.hits}}{{_source.valeur}}{{/context.hits}} ms (seuil : p95 > 250 ms sur 5 min (20 transactions au moins), par environnement) - {{#context.hits}}{{_source.detail}}{{/context.hits}}"
+      }
+    },
+    {
+      "id": "microcrm-alerts-index",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "performance",
+            "severite": "moyenne",
+            "seuil": "p95 > 250 ms sur 5 min (20 transactions au moins), par environnement",
+            "unite": "ms",
+            "statut": "retablie",
+            "detail": "la condition n'est plus remplie"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "info",
+        "message": "RETABLIE [performance] {{rule.name}}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "name": "MicroCRM - sécurité - rafale de réponses 4xx de l'API (traces APM)",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "enabled": true,
+  "tags": ["microcrm", "famille:securite", "severite:moyenne"],
+  "schedule": {
+    "interval": "1m"
+  },
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM traces-apm* | WHERE processor.event == \"transaction\" AND transaction.type == \"request\" AND service.name == \"microcrm\" AND http.response.status_code >= 400 AND http.response.status_code < 500 | STATS valeur = COUNT(*) BY service.environment | WHERE valeur >= 20 | SORT valeur DESC | LIMIT 1 | EVAL detail = CONCAT(\"environnement \", service.environment) | KEEP valeur, detail"
+    },
+    "timeField": "@timestamp",
+    "timeWindowSize": 5,
+    "timeWindowUnit": "m",
+    "threshold": [0],
+    "thresholdComparator": ">",
+    "size": 10
+  },
+  "actions": [
+    {
+      "id": "microcrm-alerts-index",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "securite",
+            "severite": "moyenne",
+            "seuil": "20 réponses 4xx ou plus en 5 min, par environnement",
+            "unite": "réponses 4xx",
+            "statut": "declenchee",
+            "valeur": "{{#context.hits}}{{_source.valeur}}{{/context.hits}}",
+            "detail": "{{#context.hits}}{{_source.detail}}{{/context.hits}}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "warn",
+        "message": "ALERTE [securite/moyenne] {{rule.name}} - valeur {{#context.hits}}{{_source.valeur}}{{/context.hits}} réponses 4xx (seuil : 20 réponses 4xx ou plus en 5 min, par environnement) - {{#context.hits}}{{_source.detail}}{{/context.hits}}"
+      }
+    },
+    {
+      "id": "microcrm-alerts-index",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "securite",
+            "severite": "moyenne",
+            "seuil": "20 réponses 4xx ou plus en 5 min, par environnement",
+            "unite": "réponses 4xx",
+            "statut": "retablie",
+            "detail": "la condition n'est plus remplie"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "info",
+        "message": "RETABLIE [securite] {{rule.name}}"
+      }
+    }
+  ]
+}

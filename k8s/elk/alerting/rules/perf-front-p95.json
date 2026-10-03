@@ -1,0 +1,97 @@
+{
+  "name": "MicroCRM - performance - latence p95 du front de staging",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "enabled": true,
+  "tags": ["microcrm", "famille:performance", "severite:moyenne"],
+  "schedule": {
+    "interval": "1m"
+  },
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM microcrm-logs-* | WHERE kubernetes.namespace == \"microcrm-staging\" AND kubernetes.container.name == \"front\" AND caddy.duration IS NOT NULL | STATS p95 = PERCENTILE(caddy.duration, 95), n = COUNT(*) | WHERE n >= 20 AND p95 > 0.1 | EVAL valeur = ROUND(p95 * 1000, 1), detail = CONCAT(\"p95 calculé sur \", TO_STRING(n), \" requêtes\") | KEEP valeur, detail"
+    },
+    "timeField": "@timestamp",
+    "timeWindowSize": 5,
+    "timeWindowUnit": "m",
+    "threshold": [0],
+    "thresholdComparator": ">",
+    "size": 10
+  },
+  "actions": [
+    {
+      "id": "microcrm-alerts-index",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "performance",
+            "severite": "moyenne",
+            "seuil": "p95 > 100 ms sur 5 min (20 requêtes au moins)",
+            "unite": "ms",
+            "statut": "declenchee",
+            "valeur": "{{#context.hits}}{{_source.valeur}}{{/context.hits}}",
+            "detail": "{{#context.hits}}{{_source.detail}}{{/context.hits}}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "warn",
+        "message": "ALERTE [performance/moyenne] {{rule.name}} - valeur {{#context.hits}}{{_source.valeur}}{{/context.hits}} ms (seuil : p95 > 100 ms sur 5 min (20 requêtes au moins)) - {{#context.hits}}{{_source.detail}}{{/context.hits}}"
+      }
+    },
+    {
+      "id": "microcrm-alerts-index",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "performance",
+            "severite": "moyenne",
+            "seuil": "p95 > 100 ms sur 5 min (20 requêtes au moins)",
+            "unite": "ms",
+            "statut": "retablie",
+            "detail": "la condition n'est plus remplie"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "info",
+        "message": "RETABLIE [performance] {{rule.name}}"
+      }
+    }
+  ]
+}

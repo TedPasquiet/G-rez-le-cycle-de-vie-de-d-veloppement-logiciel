@@ -1,0 +1,97 @@
+{
+  "name": "MicroCRM - disponibilité - requêtes du back de staging terminées en exception",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "enabled": true,
+  "tags": ["microcrm", "famille:disponibilite", "severite:haute"],
+  "schedule": {
+    "interval": "1m"
+  },
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM microcrm-logs-* | WHERE kubernetes.namespace == \"microcrm-staging\" AND kubernetes.container.name == \"back\" AND (log.level == \"ERROR\" OR error.type IS NOT NULL) | STATS valeur = COUNT(*), types = VALUES(error.type) | WHERE valeur >= 1 | EVAL detail = MV_CONCAT(types, \" \") | KEEP valeur, detail"
+    },
+    "timeField": "@timestamp",
+    "timeWindowSize": 5,
+    "timeWindowUnit": "m",
+    "threshold": [0],
+    "thresholdComparator": ">",
+    "size": 10
+  },
+  "actions": [
+    {
+      "id": "microcrm-alerts-index",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "disponibilite",
+            "severite": "haute",
+            "seuil": "1 exception journalisée ou plus en 5 min",
+            "unite": "exceptions",
+            "statut": "declenchee",
+            "valeur": "{{#context.hits}}{{_source.valeur}}{{/context.hits}}",
+            "detail": "{{#context.hits}}{{_source.detail}}{{/context.hits}}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "warn",
+        "message": "ALERTE [disponibilite/haute] {{rule.name}} - valeur {{#context.hits}}{{_source.valeur}}{{/context.hits}} exceptions (seuil : 1 exception journalisée ou plus en 5 min) - {{#context.hits}}{{_source.detail}}{{/context.hits}}"
+      }
+    },
+    {
+      "id": "microcrm-alerts-index",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "disponibilite",
+            "severite": "haute",
+            "seuil": "1 exception journalisée ou plus en 5 min",
+            "unite": "exceptions",
+            "statut": "retablie",
+            "detail": "la condition n'est plus remplie"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "info",
+        "message": "RETABLIE [disponibilite] {{rule.name}}"
+      }
+    }
+  ]
+}
