@@ -144,6 +144,9 @@ la **Release GitLab** correspondante (Deploy → Releases) :
 La mise en production n'est **pas** une condition : la Release dit « la version
 est publiée », `deploy-production` reste manuel et vient après.
 
+Le job a tourné pour la première fois le 2026-10-05, sur le tag `v1.0.1` : la
+Release `v1.0.1` existe, avec ses deux paires d'images (§7.5).
+
 Deux pièges :
 
 - **Si la Release existe déjà, le job échoue.** Rejouer un pipeline de tag ne
@@ -344,7 +347,90 @@ arrivé une heure et demie plus tard, dans un commit postérieur au tag.
 
 Un tag ne se déplace pas : `v1.0.0` reste où il est, comme trace. **La première
 version réellement livrable est la suivante**, d'où le passage des fichiers de
-version à `1.0.1`.
+version à `1.0.1` — qui a abouti, §7.5.
+
+### 7.5 Compte rendu d'exécution — release 1.0.1, 2026-10-05
+
+**Contexte.** Le lot du 2 octobre (correctif Jackson, scan avant le push, jobs
+`release` et `dora-metrics`, règles d'alerte, fichiers de version en `1.0.1`) a
+été fusionné dans `develop` le 3 octobre par les PR #31 à #35. Runner
+auto-hébergé sur le poste (`gitlab-runner run`, `concurrent = 1`), cluster
+minikube sur Docker Desktop (8 Go, dont 6 réservés à minikube). Horaires en UTC,
+relevés dans l'API publique du projet GitLab ; les journaux de jobs, eux, ne
+sont pas lisibles sans jeton.
+
+| Étape de §7.2                 | Pipeline, commit                    | Résultat                                                                                                                                    |
+| ----------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prérequis : `develop` vert    | `#2909284076`, `5296658a`           | vert sur tous ses jobs automatiques (3 octobre, `terraform-plan` repassé le 5) ; `deploy-staging` lancé à la main le 5 : succès en 54 s     |
+| 1. `develop` → `main`         | PR #36, commit de fusion `08a216b0` | pipeline `#2912362926` vert sur tous ses jobs automatiques, dont `quality-gate` (qui ne tourne que sur `main`) et le pipeline enfant `perf` |
+| (production sur le SHA)       | `#2912362926`, `deploy-production`  | échec à 7 h 57 (38 s), succès à 12 h 07 (49 s)                                                                                              |
+| 3. Tag annoté `v1.0.1`        | `#2913490784`, `08a216b0`           | `version-consistency` vert (7 s), puis tests, qualité, sécurité, `build-*` ; aucun `package-*`                                              |
+| 4. Promotion                  | `promote-back`, `promote-front`     | 44 s et 32 s                                                                                                                                |
+| 4. Release                    | `release`                           | 24 s : Release GitLab `v1.0.1` créée à 12 h 44 — **première exécution réelle du job**                                                       |
+| 5. `deploy-production` du tag | `#2913490784`                       | échecs à 13 h 55 (39 s) et 14 h 00 (48 s), **succès à 14 h 10** (45 s)                                                                      |
+| 6. Vérification               | cluster, API GitLab                 | voir ci-dessous                                                                                                                             |
+
+**La promotion n'a rien reconstruit, et les empreintes le prouvent.** Lues dans
+le registry après la promotion :
+
+| Image            | Digest                                                                    |
+| ---------------- | ------------------------------------------------------------------------- |
+| `back:1.0.1`     | `sha256:6d62a515d6d7bc6d27af9b8c2a8e6ae58eeb816836724b9bac0b0ede6337f32f` |
+| `back:08a216b0`  | `sha256:6d62a515d6d7bc6d27af9b8c2a8e6ae58eeb816836724b9bac0b0ede6337f32f` |
+| `front:1.0.1`    | `sha256:74474e9b81ebc2c8241bf04d2095b0729de5e31b62418b8419edc0dbe5e0e99e` |
+| `front:08a216b0` | `sha256:74474e9b81ebc2c8241bf04d2095b0729de5e31b62418b8419edc0dbe5e0e99e` |
+
+L'image en production est donc celle que `package-back` et `package-front` ont
+construite et scannée dans `#2912362926` : leurs rapports Trivy, relus dans les
+artefacts, portent 0 constat HIGH ou CRITICAL. La Release relie le numéro de
+version au commit, au pipeline et aux deux paires d'images ; sa description a
+été écrite par `release_notes.sh`, pas à la main.
+
+**Ce que la vérification a renvoyé** : en production, `back:1.0.1` (1 replica)
+et `front:1.0.1` (2 replicas) ; `/actuator/health` à `UP` ; `GET /persons` en
+`200` ; la ConfigMap porte les clés OpenTelemetry, et l'index `traces-apm*`
+reçoit des traces `service.environment=production` (`MONITORING.md` §10).
+Staging tourne `back:5296658a` et `front:5296658a`.
+
+#### Quatre incidents, tous de la plateforme
+
+Aucun incident n'est venu de l'application ni d'un contrôle de la chaîne. Tous
+ont la même origine : Docker Desktop, qui porte le runner et minikube, a
+décroché ou redémarré à plusieurs reprises du 2 au 5 octobre, laissant minikube
+à moitié arrêté.
+
+1. **Runner figé, 3 octobre.** Après un redémarrage de Docker, le runner ne
+   prenait plus de jobs : `spotbugs-back` d'une branche de travail est resté
+   bloqué 36 minutes avant de finir en `runner_interrupted`. Avec
+   `concurrent = 1`, tout attendait derrière lui ; le pipeline de `develop`,
+   créé à 14 h 00, n'a démarré qu'à 14 h 58. Relancé à la main.
+2. **`terraform-plan` en échec, 3 octobre**, deux fois (environ 75 s chacune) :
+   le cluster était figé. Relancé le 5 après redémarrage de minikube, le job
+   passe en 22 s.
+3. **`deploy-production` en échec, 5 octobre 7 h 57.** Cluster arrêté après un
+   redémarrage de Docker ; l'agent GitLab journalisait
+   `dial tcp 10.96.0.1:443: i/o timeout`. Rien n'a été écrit dans le namespace
+   de production. Après `minikube start`, le même job passe à 12 h 07.
+4. **`deploy-production` du tag en échec, 13 h 55 et 14 h 00.** Le conteneur
+   minikube avait été arrêté puis redémarré à 13 h 07 **sans `minikube start`** :
+   Docker le montrait en marche, mais kubelet et l'API Kubernetes étaient
+   `Stopped`. Relancé, le job passe à 14 h 10.
+
+**Leur coût sur les indicateurs.** Les trois `deploy-production` en échec
+comptent dans le taux d'échec des changements DORA (60 % sur 30 jours, 9 échecs
+sur 15 tentatives), au même titre qu'un changement défectueux : GitLab les
+classe en `script_failure`, et le collecteur n'a aucun moyen de les distinguer
+(`MONITORING.md` §9). C'est une limite du poste de développement comme
+environnement, pas du code livré.
+
+**Ce que l'exercice a révélé dans la procédure.** La séquence de §7.2 a été
+suivie telle quelle et n'a pas eu à être corrigée. Ce qui lui manque est en
+amont : rien ne vérifie que le cluster répond avant de lancer un déploiement.
+Une étape `kubectl get --raw /readyz` en tête des jobs de déploiement (ou
+`minikube status` sur le poste) aurait transformé trois échecs opaques en un
+diagnostic immédiat. Les autres recommandations — runner à `concurrent` > 1,
+alerte sur l'indisponibilité du cluster, cluster dédié — sont dans
+`docs/rapport-performance.md` §7.3.
 
 ---
 

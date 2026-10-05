@@ -92,7 +92,7 @@ pas des oublis.
 | Tests E2E (Cypress/Playwright)             | **non implémenté** — aucun stage `integration`                                                                                                    |
 | `deploy-staging` automatique sur `develop` | en `when: manual` ; le passage en `on_success` est une ligne                                                                                      |
 | Métriques Prometheus / Grafana             | **non implémenté** — la supervision est faite par les logs (ELK), huit règles d'alerte Kibana et les indicateurs DORA ; ni CPU ni mémoire mesurés |
-| Traces de l'API en service                 | **écrites, non déployées** — agent OpenTelemetry et APM Server éprouvés depuis le poste                                                           |
+| Traces de l'API en service                 | **en service depuis le 2026-10-05** en staging et en production — sans recul, aucune latence en service relevée                                   |
 | Notification des alertes applicatives      | **non implémenté** — les alertes restent dans Kibana (connecteurs webhook sous licence payante)                                                   |
 | Signature des images                       | **non implémenté** — les images sont taguées par SHA, pas signées                                                                                 |
 | Déploiement progressif (canary)            | **non implémenté** — `RollingUpdate` avec `maxUnavailable: 0`                                                                                     |

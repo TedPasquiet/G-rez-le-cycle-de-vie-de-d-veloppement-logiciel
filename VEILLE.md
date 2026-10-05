@@ -211,7 +211,7 @@ en montée en compétence, pas en budget logiciel.
   **Réalisé en partie, par une autre voie** : Actuator et les trois sondes sont
   en place ([K8S.md](K8S.md) §5), les logs sont centralisés dans une stack ELK
   avec cinq tableaux de bord et huit règles d'alerte, et des traces
-  OpenTelemetry sont écrites mais pas encore déployées
+  OpenTelemetry sont en service depuis le 2026-10-05
   ([MONITORING.md](MONITORING.md)). Prometheus et Grafana ne sont pas installés :
   le CPU et la mémoire des pods ne sont toujours mesurés par rien.
 - **Déploiement progressif** (blue/green, canary) — limite le rayon d'impact d'une

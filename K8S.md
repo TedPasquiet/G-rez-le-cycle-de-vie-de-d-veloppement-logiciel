@@ -1198,9 +1198,9 @@ disponibilité du processus, pas sur celle des données.
 - **Les valeurs de `resources`.** `metrics-server` n'est pas activé
   (`kubectl top` renvoie `Metrics API not available`), donc les requests et
   limits du §11 restent des estimations. Aucun `OOMKill` n'a été observé, ce qui
-  est un indice, pas une mesure. C'est toujours vrai au 2026-10-02 : les traces
-  OpenTelemetry écrites depuis mesurent la latence de l'API, pas la
-  consommation des pods, et elles ne sont pas déployées. Le seul chiffre de
+  est un indice, pas une mesure. C'est toujours vrai au 2026-10-05 : les traces
+  OpenTelemetry, en service depuis ce jour-là, mesurent la latence de l'API, pas
+  la consommation des pods. Le seul chiffre de
   mémoire disponible est le surcoût de l'agent, mesuré une fois hors cluster
   (408 Mio contre 292, `MONITORING.md` §10.4).
 

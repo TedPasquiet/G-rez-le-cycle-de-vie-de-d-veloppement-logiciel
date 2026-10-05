@@ -6,8 +6,8 @@
 > déploiement automatique en staging (il est manuel), la signature des images
 > (elles sont taguées par SHA, pas signées), les tests post-déploiement en
 > TestInfra (aucun), et des indicateurs DORA injectés par le pipeline (ils sont
-> calculés par un job mais injectés depuis un poste). Les traces de l'API sont
-> écrites mais pas déployées. L'état réel, et l'écart avec cette cible, sont dans
+> calculés par un job mais injectés depuis un poste). Les traces de l'API sont,
+> elles, en service depuis le 2026-10-05. L'état réel, et l'écart avec cette cible, sont dans
 > `docs/documentation-ci-cd-complete.md` (§8.4 et §8.5) ; le chemin pour s'en
 > rapprocher est dans `docs/plan-optimisation-release.md`.
 

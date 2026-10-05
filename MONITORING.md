@@ -9,9 +9,9 @@ qu'elle ne fait pas, et les pièges qu'il a fallu écarter pour qu'elle
 fonctionne.
 
 Les trois volets n'en sont pas au même point. **Les logs sont en service**
-depuis le 2026-08-16. **Les traces sont écrites et éprouvées depuis le poste,
-mais pas encore déployées** : au 2026-10-02, les pods du cluster n'en émettent
-aucune (§10.4). **L'alerting est installé sur le cluster et ses huit règles ont
+depuis le 2026-08-16. **Les traces sont en service depuis le 2026-10-05** :
+éprouvées d'abord depuis le poste, elles arrivent désormais des pods de staging
+et de production, sans recul encore (§10.4). **L'alerting est installé sur le cluster et ses huit règles ont
 été déclenchées une fois, volontairement** (§11) ; il n'envoie aucune
 notification hors de Kibana.
 
@@ -43,6 +43,17 @@ d'une minute à l'autre, la collecte étant continue :
 | Index `microcrm-security`                  | 966 documents, produits par `collect_security.py` sur des scans rejoués (§8)                   |
 | Index `microcrm-dora`                      | 26 documents ; réalimenté le 2026-10-02, il ne l'avait pas été depuis le 2026-08-16 (§9)       |
 | Tableaux de bord versionnés                | **5** fichiers NDJSON, 69 objets sauvegardés (§8)                                              |
+
+Ce qui a changé le 2026-10-05, avec la livraison du lot du 2 octobre et la
+release 1.0.1 (`RELEASE.md` §7.5) :
+
+| Vérification                | Résultat                                                                                                                          |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Images en service           | staging `back:5296658a` / `front:5296658a` ; production `back:1.0.1` / `front:1.0.1`, toutes avec l'agent OpenTelemetry côté back |
+| Traces venues du cluster    | **reçues** : 534 documents `staging` en 15 min le matin, puis 187 `production` et 180 `staging` en 10 min (§10.4)                 |
+| Corrélation logs ↔ traces   | des logs du back portent un `trace.id`                                                                                            |
+| Index `microcrm-dora`       | réalimenté à la main le 2026-10-05 à 14 h 39 UTC, 21 documents, après le dernier déploiement (§9)                                 |
+| Documents `microcrm-logs-*` | toujours de `microcrm-staging` seulement : la production n'est pas collectée par Filebeat                                         |
 
 ## 1. Le manque que ça comble
 
@@ -151,7 +162,7 @@ p50 = 0,14 ms     p95 = 1,60 ms     p99 = 3,11 ms
 bundle Angular et `/config.json` ; les appels à l'API partent du navigateur vers
 un hôte distinct et ne passent pas par lui. Mesurer la latence de l'API
 demandait de l'instrumenter elle-même : c'est l'objet des traces (§10), écrites
-depuis le 2026-10-01 et pas encore déployées. Les deux mesures ne se remplacent
+depuis le 2026-10-01 et en service depuis le 2026-10-05. Les deux mesures ne se remplacent
 pas — celle-ci reste la seule qui voie le front.
 
 ⚠️ **Le front ne produira quasiment jamais de 4xx.** C'est une application
@@ -253,12 +264,15 @@ l'agrégation Elasticsearch équivalente, sont dans
   est **rejoué** : huit commits scannés le 2026-10-02 avec la base de
   vulnérabilités du jour, datés du commit. Aucun rapport Dependency-Check réel
   n'y a été collecté, et le collecteur n'a jamais lu les rapports publiés par un
-  pipeline — ces jobs n'ont pas encore tourné.
+  pipeline. Ces rapports existent depuis le 2026-10-03 en artefacts de
+  `trivy-fs`, `package-*` et `dependency-check-back` ; aucun job ne les passe au
+  collecteur, et l'index n'a pas été réalimenté depuis le 2026-10-02.
 - **Le tableau de disponibilité ne mesure pas une disponibilité.** Il montre une
   présence de logs, en staging seulement, sur un minikube éteint la nuit : 189
   heures sur 360 portent au moins une sonde, et ce n'est pas un taux de service.
-  Ses panneaux APM décrivent les conteneurs d'essai lancés sur le poste, pas les
-  pods déployés.
+  Jusqu'au 2026-10-05, ses panneaux APM ne décrivaient que les conteneurs
+  d'essai lancés sur le poste ; ils reçoivent depuis les traces des pods de
+  staging et de production.
 - **Le tableau DORA a été refondu.** Construit le 2026-08-16, quand rien n'avait
   été déployé, il affirmait encore « aucun déploiement réussi » dans son titre et
   « Non mesurable » dans deux panneaux de texte écrits en dur. Il s'intitule
@@ -319,23 +333,34 @@ miroite vers un projet GitLab **public**, où le pipeline tourne réellement.
 
 ### 9.1 Ce que les chiffres disent, et il faut l'entendre
 
-Mesuré le 2026-09-23, sur les 50 pipelines des 30 derniers jours. Rejoué le
-2026-10-02 sur 57 pipelines : **les quatre valeurs sont identiques**, parce
-qu'aucun déploiement n'a eu lieu entre les deux relevés — le pipeline de
-`develop` était rouge sur ses trois dernières exécutions, pour trois raisons
-différentes (§10.4).
+Recalculé le 2026-10-05 à 14 h 39 UTC, après le dernier déploiement de la
+release 1.0.1, sur les **67 pipelines** des 30 derniers jours, puis réinjecté
+dans `microcrm-dora` (21 documents). La colonne de gauche est la mesure du
+2026-09-23 (50 pipelines), rejouée à l'identique le 2026-10-02 sur 57 pipelines
+et le 2026-10-03 par le job `dora-metrics` (66 pipelines) : aucun déploiement
+n'avait eu lieu entre-temps.
 
-| Indicateur                            | Valeur                           | Observations |
-| ------------------------------------- | -------------------------------- | ------------ |
-| Fréquence de déploiement              | **0,1667** par jour              | 5            |
-| Délai de mise en production (médiane) | **1,38 h** (min 0,64 / max 4,87) | 5            |
-| Temps de rétablissement (médiane)     | **2,14 h** (min 0,09 / max 4,18) | 2            |
-| Taux d'échec des changements          | **66,67 %**                      | 9            |
+| Indicateur                            | 2026-09-23                   | 2026-10-05                        | Observations |
+| ------------------------------------- | ---------------------------- | --------------------------------- | ------------ |
+| Fréquence de déploiement              | 0,1667 par jour              | **0,2667** par jour               | 5 → 8        |
+| Délai de mise en production (médiane) | 1,38 h (min 0,64 / max 4,87) | **4,76 h** (min 0,64 / max 40,88) | 5 → 8        |
+| Temps de rétablissement (médiane)     | 2,14 h (min 0,09 / max 4,18) | **2,21 h** (min 0,09 / max 4,18)  | 2 → 4        |
+| Taux d'échec des changements          | 66,67 % (6 sur 9)            | **60 %** (9 sur 15)               | 9 → 15       |
 
-**La chaîne aboutit depuis le 2026-09-22.** Neuf jobs de déploiement ont
-réellement tourné sur la fenêtre, cinq ont réussi, et deux rollbacks ont été
-joués. Staging et production tournent aujourd'hui avec des images du registry
-GitLab, posées par la CI et non à la main depuis le poste.
+**La chaîne aboutit depuis le 2026-09-22.** Quinze jobs de déploiement ont
+réellement tourné sur la fenêtre, huit ont réussi, et deux rollbacks ont été
+joués. Staging et production tournent avec des images du registry GitLab,
+posées par la CI ; la production en `1.0.1` depuis le 2026-10-05.
+
+⚠️ **Le taux d'échec du 2026-10-05 compte des pannes de la plateforme.** Les
+trois `deploy-production` en échec ce jour-là (07:57, 13:55, 14:00) sont tombés
+sur un minikube arrêté par un redémarrage de Docker Desktop ; aucun n'a rien
+écrit en production, et le même job est passé ensuite sans changement. DORA les
+compte comme des échecs de changement, et le collecteur ne peut pas faire
+autrement : GitLab les classe en `script_failure`, comme un manifeste faux. Sans
+eux, le taux serait de 50 % (6 sur 12). Le chiffre publié reste 60 % — c'est
+une limite du poste de développement comme environnement, pas une erreur de
+mesure à corriger après coup.
 
 Ce n'est pas le mécanisme qui a changé — il n'a pas bougé — mais une contrainte
 et trois défauts :
@@ -358,14 +383,17 @@ et trois défauts :
   qu'un déploiement qui n'a pas lieu.
 
 ⚠️ **Ces chiffres n'ont pas de valeur statistique, et il faut le dire avant de
-les commenter.** Un taux d'échec sur 9 tentatives, un MTTR sur 2 observations :
-ce sont des faits, pas des tendances. Les cinq déploiements réussis — un tous
-les six jours en moyenne — sont en réalité concentrés sur deux journées
-consécutives, celles où la chaîne a été débloquée. Quant au délai de mise en
-production de 1,38 h, il mesure surtout l'intervalle entre un commit et le clic
-qui déclenche le déploiement : les deux jobs restent `when: manual`.
+les commenter.** Un taux d'échec sur 15 tentatives, un MTTR sur 4 observations :
+ce sont des faits, pas des tendances. Les huit déploiements réussis tiennent
+sur trois journées : les 22 et 23 septembre, quand la chaîne a été débloquée,
+et le 5 octobre. Le délai de mise en production mesure surtout l'intervalle
+entre un commit et le clic qui déclenche le déploiement — les deux jobs restent
+`when: manual` : son maximum de 40,88 h est le `deploy-staging` de `5296658a`,
+fusionné le samedi 3 octobre et déployé le lundi 5. Les deux temps de
+rétablissement nouveaux (4,17 h et 0,25 h) mesurent la relance d'un cluster,
+pas la réparation d'une application.
 
-Les onze jobs retenus, dans l'ordre :
+Les dix-sept jobs retenus, dans l'ordre :
 
 ```
 2026-09-22T14:36:39  deploy-production    failed   main
@@ -379,10 +407,19 @@ Les onze jobs retenus, dans l'ordre :
 2026-09-23T13:29:06  deploy-staging       success  develop
 2026-09-23T13:34:44  rollback-production  success  main
 2026-09-23T13:42:13  deploy-production    success  main
+2026-10-05T06:52:31  deploy-staging       success  develop   (5296658a)
+2026-10-05T07:58:13  deploy-production    failed   main      (cluster arrêté)
+2026-10-05T12:08:40  deploy-production    success  main      (08a216b0)
+2026-10-05T13:56:33  deploy-production    failed   v1.0.1    (cluster arrêté)
+2026-10-05T14:00:58  deploy-production    failed   v1.0.1    (cluster arrêté)
+2026-10-05T14:11:11  deploy-production    success  v1.0.1
 ```
 
-Le rollback de production a donc été exercé pour de bon, puis suivi d'un
-redéploiement : la production est en révision 4, sur l'image `9f4168b3`.
+Les horaires sont ceux de fin de job, en UTC, tels que l'index les porte ; les
+annotations entre parenthèses ne sont pas produites par le collecteur. Le
+rollback de production a été exercé pour de bon le 2026-09-23, puis suivi d'un
+redéploiement ; la production est passée ensuite sur `08a216b0`, puis sur
+`1.0.1`, la même image sous son numéro de version.
 
 ### 9.2 ⚠️ Zéro mesuré et absence de donnée ne sont pas la même chose
 
@@ -410,7 +447,7 @@ dégradé la production. Ces cas sont comptés à part dans la sortie, pour qu'o
 puisse les distinguer d'un job simplement rouge :
 
 ```json
-"details": { "tentatives": 9, "echecs_directs": 4, "reussites_annulees": 2 }
+"details": { "tentatives": 15, "echecs_directs": 7, "reussites_annulees": 2 }
 ```
 
 Le collecteur retient par ailleurs les jobs en `success` **et** en `failed`
@@ -432,7 +469,8 @@ issue ni son environnement n'entrent en ligne de compte. Les deux
 
 Une seule annulation a donc réellement eu lieu, là où le collecteur en compte
 deux. Un appariement exact — rollback abouti, et même environnement — ramènerait
-le taux d'échec de **66,67 % à 55,56 %** (5 échecs sur 9).
+le taux d'échec de **60 % à 53,33 %** (8 échecs sur 15) ; au 2026-09-23, de
+66,67 % à 55,56 %.
 
 **Ce comptage est assumé, pas corrigé**, et le choix se justifie dans un seul
 sens. Un collecteur pessimiste surévalue le taux d'échec ; l'erreur inverse
@@ -498,11 +536,12 @@ traitée par le back : un agent OpenTelemetry dans la JVM, APM Server dans la
 stack ELK, et l'application APM de Kibana pour lire le tout. Aucune ligne du
 code Java n'a changé.
 
-⚠️ **État au 2026-10-02 : la chaîne est écrite, éprouvée depuis le poste, et pas
-encore en service dans le cluster.** APM Server tourne, mais les pods `back` de
-staging et de production exécutent des images du 2026-09-23, antérieures à
-l'agent : aucune trace n'en sort. Le relevé complet est au §10.4 ; tout ce qui
-suit décrit ce que le code fait, et le §10.4 dit ce qui a été observé.
+**État au 2026-10-05 : la chaîne est en service dans le cluster.** Jusqu'au
+2026-10-02, elle n'était éprouvée que depuis le poste : les pods `back`
+exécutaient des images du 2026-09-23, antérieures à l'agent. Le 2026-10-05,
+staging a reçu `back:5296658a` et la production `back:1.0.1`, avec la ConfigMap
+qui active l'agent ; des traces arrivent des deux environnements. Le §10.4 dit
+ce qui a été observé à chaque étape ; tout le reste décrit ce que le code fait.
 
 ### 10.1 Ce que ça comble, et ce que ça ne comble pas
 
@@ -690,10 +729,32 @@ double rollout Kibana + APM Server, observé le 2026-09-29, il affichait
 `limits.memory 5888Mi/6Gi`. **La marge restante est donc mince** — 256 Mio — et
 le prochain composant ajouté à `logging` devra relever le quota.
 
-### 10.4 Ce qui arrive réellement — relevé du 2026-10-02
+### 10.4 Ce qui arrive réellement — relevés du 2026-10-02 et du 2026-10-05
 
-**Dans le cluster : rien encore.** C'est le constat le plus important de cette
-section, et il contredit ce qu'on croirait en lisant les manifestes.
+**Dans le cluster, le 2026-10-05 : les traces arrivent.** Après le déploiement
+de `5296658a` en staging (06:52 UTC), puis de `08a216b0` en production (12:07
+UTC, promue `1.0.1` à 14:10), des requêtes ont été envoyées aux deux API :
+
+| Ce qui a été regardé                       | Ce qui a été trouvé                                                                                            |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| Images du back                             | staging `back:5296658a`, production `back:1.0.1` (même digest que `back:08a216b0`), agent compris              |
+| ConfigMap `microcrm-config`                | 11 clés dans chaque namespace, dont `JAVA_TOOL_OPTIONS` et `OTEL_RESOURCE_ATTRIBUTES=deployment.environment=…` |
+| `traces-apm*`, matin                       | **534** documents `service.environment=staging` en 15 minutes                                                  |
+| `traces-apm*`, après la mise en production | **187** documents `production` et **180** `staging` en 10 minutes                                              |
+| Logs portant un `trace.id`                 | présents dans les logs du back                                                                                 |
+| Pod `back` de production                   | `Running`, 0 redémarrage à 14 h 50 UTC ; `/actuator/health` à `UP`                                             |
+| `NetworkPolicy` d'APM Server               | toujours **absente** (`terraform-apply-logging` non rejoué)                                                    |
+
+⚠️ **Ce que ce relevé ne dit pas.** Le trafic est provoqué, pas celui
+d'utilisateurs : il prouve que la chaîne fonctionne de bout en bout dans le
+cluster, il ne fournit pas une latence de référence en service, qui n'a pas été
+relevée. Les chiffres de latence ci-dessous restent ceux de l'essai local du
+2026-10-02. La consommation mémoire du pod avec l'agent n'est pas mesurée
+davantage (pas de `metrics-server`) ; il n'a simplement pas été tué.
+
+**Dans le cluster, le 2026-10-02 : rien encore.** C'était alors le constat le
+plus important de cette section, et il contredisait ce qu'on croirait en lisant
+les manifestes.
 
 | Ce qui a été regardé                            | Ce qui a été trouvé                                                                            |
 | ----------------------------------------------- | ---------------------------------------------------------------------------------------------- |
@@ -707,10 +768,10 @@ section, et il contredit ce qu'on croirait en lisant les manifestes.
 | `NetworkPolicy` d'APM Server dans `logging`     | **absente** : `kubectl -n logging get networkpolicy` ne renvoie rien                           |
 | `kubectl top pods`                              | `Metrics API not available` — pas de `metrics-server`                                          |
 
-L'explication tient en une ligne : le commit des traces est sur `develop`, et
-rien n'a été déployé depuis le 2026-09-23. Le pipeline n'a pas abouti depuis :
-ses trois dernières exécutions sur `develop` ont échoué pour **trois raisons
-différentes**, relevées job par job dans l'API GitLab :
+L'explication tenait en une ligne : le commit des traces était sur `develop`,
+et rien n'avait été déployé depuis le 2026-09-23. Les trois exécutions
+suivantes de `develop` avaient échoué pour **trois raisons différentes**,
+relevées job par job dans l'API GitLab :
 
 | Pipeline              | Ce qui a échoué                                                                                             |
 | --------------------- | ----------------------------------------------------------------------------------------------------------- |
@@ -718,11 +779,11 @@ différentes**, relevées job par job dans l'API GitLab :
 | `#2901472002` (01/10) | `trivy-fs` et `terraform-plan` ; la cause de l'échec de `terraform-plan` n'a pas été recherchée             |
 | `#2902337581` (01/10) | `package-back` : cinq CVE HIGH de Jackson dans l'image, corrigées sur la branche `fix/jackson-databind-cve` |
 
-Seul le troisième tient à Jackson, et son correctif (Jackson 2.21.7) n'est pas
-encore fusionné. Il n'existe donc aucune image du back qui embarque l'agent
-dans le registry, et les manifestes qui l'activent n'ont jamais été appliqués. De même, le
-`terraform apply` de `logging` n'a pas été rejoué depuis l'ajout de la
-`NetworkPolicy`.
+Seul le troisième tenait à Jackson. Son correctif (Jackson 2.21.7) a été
+fusionné le 2026-10-03 ; le pipeline suivant de `develop` (`#2909284076`) a été
+vert, et c'est lui qui a produit la première image du back avec l'agent au
+registry. Le `terraform apply` de `logging`, lui, n'a toujours pas été rejoué
+depuis l'ajout de la `NetworkPolicy`.
 
 **La chaîne elle-même, éprouvée depuis le poste.** Pour ne pas en rester à une
 lecture de manifestes, l'image `microcrm-back:otel` — construite le 2026-09-29
@@ -904,14 +965,15 @@ Elastic partagent leur version, et chaque overlay pose son environnement.
   `microcrm-staging`. Les traces de production arrivent dans Kibana ; leur
   onglet « Logs » reste vide.
 - **Aucune authentification sur APM Server**, et la `NetworkPolicy` qui borne
-  son accès n'existe pas encore dans le cluster (§10.4) ; une fois créée, le
+  son accès n'existe toujours pas dans le cluster (§10.4) ; une fois créée, le
   CNI par défaut de minikube ne l'appliquerait de toute façon pas. Sur ce
   cluster, n'importe quel pod peut y écrire des traces.
 - **Aucun échantillonnage n'est réglé** : l'agent garde son comportement par
   défaut et trace toutes les requêtes, sondes du kubelet comprises. Sans
   conséquence à ce débit ; à régler avant toute charge réelle.
-- **La chaîne n'est pas en service dans le cluster** (§10.4) : elle le sera au
-  premier déploiement d'une image construite après le commit `143adb7`.
+- **La chaîne est en service depuis le 2026-10-05, sans recul** (§10.4) : seul
+  du trafic provoqué l'a traversée, et aucune latence en service n'a été
+  relevée.
 - **Les noms de transaction sont ceux des routes de Spring Data REST**, pas
   ceux des ressources : `/persons` et `/organizations` sont confondus sous
   `GET /{repository}`. Les séparer demande de filtrer sur `url.path`.
@@ -1121,9 +1183,16 @@ Pour modifier une règle : éditer son fichier, relancer
 - **L'alerting ne se surveille pas lui-même.** Si Kibana ou Elasticsearch tombe,
   les règles ne s'évaluent plus et aucune alerte ne le dit. Un tableau de bord
   vide se lit alors comme « tout va bien ».
-- **La production n'est pas couverte.** Les cinq règles sur logs ne voient que
-  staging ; les trois règles sur traces ne verront un environnement déployé
-  qu'après la mise en service d'un back instrumenté.
+- **La production n'est couverte qu'à moitié.** Les cinq règles sur logs ne
+  voient que staging. Les trois règles sur traces, qui regroupent par
+  `service.environment`, portent depuis le 2026-10-05 sur les traces réelles de
+  staging **et** de production — mais n'ont sonné que sur un conteneur local
+  (§11.3) : elles n'ont pas été re-déclenchées sur les pods déployés.
+- **L'indisponibilité du cluster lui-même n'est détectée par rien.** Kibana vit
+  dans ce cluster : quand minikube s'arrête — quatre fois du 2 au 5 octobre,
+  après des redémarrages de Docker Desktop —, l'alerting s'arrête avec lui. Ces
+  arrêts n'ont été découverts qu'à l'échec d'un déploiement. Une sonde externe
+  au cluster est la seule réponse.
 - **Un back arrêté sans redémarrer n'est détecté par rien.** À zéro replica, il
   n'écrit rien : le back n'a pas de battement de cœur dans ses logs.
 - **Aucune métrique d'infrastructure** : ni CPU, ni mémoire, ni disque, ni état
@@ -1148,8 +1217,9 @@ Pour modifier une règle : éditer son fichier, relancer
 que le script n'existe, et seuls la branche « existe déjà », la syntaxe en
 `--dry-run=client` et le chemin complet contre le faux `kubectl` des tests ont
 été éprouvés. Le démarrage de Kibana **sans** le Secret, sur un cluster neuf,
-n'a pas été rejoué. Et aucune règle fondée sur les traces n'a été éprouvée sur
-un pod du cluster.
+n'a pas été rejoué. Et aucune règle fondée sur les traces n'a été déclenchée sur
+un pod du cluster : depuis le 2026-10-05, elles en reçoivent les traces, mais
+aucun essai n'y a été refait.
 
 ## 12. Ce qui n'est pas fait
 
@@ -1182,20 +1252,22 @@ Deployments restent des estimations. Les traces (§10) apportent la latence et
 le débit de l'API, pas la consommation des pods ; et les métriques de la JVM
 que l'agent pourrait envoyer sont coupées (`OTEL_METRICS_EXPORTER=none`).
 
-**Les traces ne sont pas déployées.** Le code est là, APM Server tourne, et
-aucun pod du cluster n'émet de trace (§10.4). Leurs autres limites sont au
-§10.7.
+**Les traces sont en service depuis le 2026-10-05, sans recul.** Seul du trafic
+provoqué les a traversées ; aucune latence en service n'a été relevée (§10.4).
+Leurs autres limites sont au §10.7.
 
 **L'alerting ne notifie personne hors de Kibana, et ne se surveille pas
 lui-même.** Ses dix limites sont au §11.5.
 
-**La production n'est pas observée.** Filebeat ne collecte que
-`microcrm-staging`, et aucun pod n'émet de trace : ni les tableaux de bord ni
-les règles d'alerte ne voient le namespace `microcrm-production`.
+**La production n'est observée que par ses traces.** Filebeat ne collecte que
+`microcrm-staging` : les tableaux de bord et les cinq règles fondés sur les
+logs ne voient pas `microcrm-production`. Ses traces, elles, arrivent depuis le
+2026-10-05.
 
 **Presque rien n'est automatisé.** Aucun job de CI ne déploie ni ne teste cette
 stack, ni n'installe ses règles d'alerte. Le seul qui la concerne de loin,
-`dora-metrics`, calcule les indicateurs sans les y injecter (§9.5) ; les
+`dora-metrics` — en CI depuis le 2026-10-03 —, calcule les indicateurs sans les
+y injecter (§9.5) ; les
 rapports de sécurité publiés par `trivy-fs` et `package-*` ne sont pas non plus
 envoyés à `microcrm-security` par un job.
 
