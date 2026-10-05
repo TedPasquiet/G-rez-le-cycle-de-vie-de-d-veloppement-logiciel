@@ -59,16 +59,16 @@ frontière traverse une boîte mail.
 ### 1.2 Le chiffre qui cadre tout le reste
 
 Le collecteur d'indicateurs DORA (`scripts/ci/collect_dora.py`), mesuré le
-**2026-09-23** sur les **50 pipelines** des trente derniers jours, puis rejoué le
-2026-10-02 sur 57 pipelines avec **les mêmes valeurs** — aucun déploiement
-n'ayant eu lieu entre les deux :
+**2026-09-23** sur les **50 pipelines** des trente derniers jours (valeurs
+rejouées à l'identique le 2026-10-02), puis recalculé le **2026-10-05** sur
+**67 pipelines**, après la release 1.0.1 :
 
-| Indicateur DORA              | Valeur mesurée       | Lecture                                                 |
-| ---------------------------- | -------------------- | ------------------------------------------------------- |
-| Fréquence de déploiement     | **0,1667** / jour    | 5 déploiements réussis, concentrés sur deux journées    |
-| Délai de mise en production  | **1,38 h** (médiane) | 5 observations ; le déclenchement est manuel            |
-| Temps de rétablissement      | **2,14 h** (médiane) | 2 observations                                          |
-| Taux d'échec des changements | **66,67 %**          | 6 échecs sur 9 tentatives, dont 2 comptés comme annulés |
+| Indicateur DORA              | 2026-09-23 | 2026-10-05           | Lecture au 2026-10-05                                                                      |
+| ---------------------------- | ---------- | -------------------- | ------------------------------------------------------------------------------------------ |
+| Fréquence de déploiement     | 0,1667 / j | **0,2667** / jour    | 8 déploiements réussis, sur trois journées                                                 |
+| Délai de mise en production  | 1,38 h     | **4,76 h** (médiane) | 8 observations ; le déclenchement est manuel, et le maximum (40,88 h) contient un week-end |
+| Temps de rétablissement      | 2,14 h     | **2,21 h** (médiane) | 4 observations ; les deux nouvelles mesurent la relance d'un cluster                       |
+| Taux d'échec des changements | 66,67 %    | **60 %**             | 9 échecs sur 15 tentatives, dont 2 comptés comme annulés et 3 sur un cluster arrêté        |
 
 **Ce tableau a changé le 2026-09-22, et c'est le fait marquant de l'itération.**
 Il affichait jusque-là `0,0` déploiement par jour, deux `null` et 100 % d'échec
@@ -84,8 +84,10 @@ sortie ; elle redevient visible dès qu'on interroge une fenêtre sans
 déploiement.
 
 **Conséquence directe sur ce plan :** la question n'est plus « la chaîne
-aboutit-elle ? » mais « à quel prix ? ». Avec **deux tentatives sur trois qui
-échouent**, optimiser la vitesse du cycle reste prématuré : on fiabilise
+aboutit-elle ? » mais « à quel prix ? ». Avec **six tentatives sur dix qui
+échouent** — dont, le 2026-10-05, trois sur un cluster arrêté par un redémarrage
+de Docker Desktop, sans rapport avec le code —, optimiser la vitesse du cycle
+reste prématuré : on fiabilise
 d'abord, on accélère ensuite. La vague 1 devient donc l'entrée réelle du plan,
 et les quatre chiffres ci-dessus deviennent une ligne de base — ce qu'ils ne
 pouvaient pas être tant qu'ils valaient `null`.
@@ -99,16 +101,16 @@ lisant le dépôt. La colonne « établi par » distingue les deux, parce qu'un
 irritant vécu et un irritant constaté ne se traitent pas de la même façon : le
 premier a déjà l'adhésion de l'équipe, le second doit d'abord être partagé.
 
-| #      | Irritant                                                        | Établi par                     | Ce qu'il coûte aujourd'hui                                                                                                                                      |
-| ------ | --------------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **I1** | Deux déploiements sur trois échouent depuis la CI               | Dépôt — DORA                   | **Requalifié le 2026-09-22** : la chaîne aboutit (5 réussites sur 9), elle n'est pas fiable. Taux d'échec à 66,67 %, sur 9 observations seulement.              |
-| **I2** | Les CVE se découvrent **chez Ops**, après remise                | Les deux sondages              | Le premier déploiement de démonstration a été retardé. Retravail non planifié en fin d'itération, au pire moment.                                               |
-| **I3** | Les scans existent dans la CI mais **ne bloquent rien**         | Dépôt                          | `trivy-fs` et les scans d'image tournent en `--exit-code 0`. Une image vulnérable est publiée comme une image saine. I2 semble traité alors qu'il ne l'est pas. |
-| **I4** | Le déploiement est **manuel**, en commandes Docker              | Sondage Ops                    | Non reproductible, non traçable, indisponible quand la personne qui sait ne l'est pas. Cité comme irritant n°1 par l'équipe Ops.                                |
-| **I5** | **Rupture de parité** : HyperSQL en dev, PostgreSQL en prod     | Croisement des deux sondages   | Le code n'a jamais vu sa base de production. Le schéma est généré par Hibernate sans migration. Le back est plafonné à 1 replica.                               |
-| **I6** | La frontière Dev↔Ops est un **email**                           | Sondage Ops                    | Aucune traçabilité, aucun horodatage, aucune réponse rapide à « quelle version tourne ? ».                                                                      |
-| **I7** | **Trois artefacts** dont une image tout-en-un                   | Sondage Dev                    | Couple les cadences front et back, empêche la montée en charge, triple la surface à scanner.                                                                    |
-| **I8** | **Aucune compétence Kubernetes** déclarée dans les deux équipes | Absence dans les deux sondages | La cible repose sur une compétence que personne n'a. Risque non pas de lenteur, mais d'incident non diagnosticable.                                             |
+| #      | Irritant                                                        | Établi par                     | Ce qu'il coûte aujourd'hui                                                                                                                                                                                            |
+| ------ | --------------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **I1** | Deux déploiements sur trois échouent depuis la CI               | Dépôt — DORA                   | **Requalifié le 2026-09-22** : la chaîne aboutit, elle n'est pas fiable. Au 2026-10-05 : 8 réussites sur 15, taux d'échec à 60 %. Les trois derniers échecs viennent de la plateforme (minikube arrêté), pas du code. |
+| **I2** | Les CVE se découvrent **chez Ops**, après remise                | Les deux sondages              | Le premier déploiement de démonstration a été retardé. Retravail non planifié en fin d'itération, au pire moment.                                                                                                     |
+| **I3** | Les scans existent dans la CI mais **ne bloquent rien**         | Dépôt                          | `trivy-fs` et les scans d'image tournent en `--exit-code 0`. Une image vulnérable est publiée comme une image saine. I2 semble traité alors qu'il ne l'est pas.                                                       |
+| **I4** | Le déploiement est **manuel**, en commandes Docker              | Sondage Ops                    | Non reproductible, non traçable, indisponible quand la personne qui sait ne l'est pas. Cité comme irritant n°1 par l'équipe Ops.                                                                                      |
+| **I5** | **Rupture de parité** : HyperSQL en dev, PostgreSQL en prod     | Croisement des deux sondages   | Le code n'a jamais vu sa base de production. Le schéma est généré par Hibernate sans migration. Le back est plafonné à 1 replica.                                                                                     |
+| **I6** | La frontière Dev↔Ops est un **email**                           | Sondage Ops                    | Aucune traçabilité, aucun horodatage, aucune réponse rapide à « quelle version tourne ? ».                                                                                                                            |
+| **I7** | **Trois artefacts** dont une image tout-en-un                   | Sondage Dev                    | Couple les cadences front et back, empêche la montée en charge, triple la surface à scanner.                                                                                                                          |
+| **I8** | **Aucune compétence Kubernetes** déclarée dans les deux équipes | Absence dans les deux sondages | La cible repose sur une compétence que personne n'a. Risque non pas de lenteur, mais d'incident non diagnosticable.                                                                                                   |
 
 **Trois irritants sont traités et il serait malhonnête de les recompter.**
 I7 est réglé : l'image tout-en-un a été scindée au commit `2931df3` puis
@@ -177,22 +179,32 @@ Chaque action porte un identifiant, l'irritant traité, un porteur, un effort
 (S ≤ 1 j, M ≤ 3 j, L > 3 j) et **une preuve d'atteinte** — ce qu'on regarde pour
 dire que c'est fait.
 
-**État des vagues au 2026-10-02.** « Écrit » veut dire présent dans le dépôt
-mais jamais exécuté par un pipeline : le travail de ce jour-là n'est ni commité
-ni passé dans un runner.
+**État des vagues au 2026-10-05.** Le travail du 2026-10-02 a été fusionné le
+2026-10-03 (PR #31 à #35) puis livré : pipelines `#2909284076` (`develop`),
+`#2912362926` (`main`) et `#2913490784` (tag `v1.0.1`) verts sur leurs jobs
+automatiques, release 1.0.1 en production. Plus aucune action n'est « écrite
+sans avoir tourné ».
 
-| Vague | Actions faites               | En partie, ou écrites sans avoir tourné | Pas commencées                  |
-| ----- | ---------------------------- | --------------------------------------- | ------------------------------- |
-| 0     | A0.1, A0.2, A0.3 — **close** | —                                       | —                               |
-| 1     | A1.1, A1.2, A1.3             | —                                       | A1.4 ; A1.5 n'est pas mesurable |
-| 2     | A2.1                         | —                                       | A2.2, A2.3, A2.4, A2.5          |
-| 3     | —                            | A3.3 (écrite)                           | A3.1, A3.2, A3.4, A3.5          |
-| 4     | A4.3                         | A4.2 (Release sans changelog)           | A4.1, A4.4                      |
+| Vague | Actions faites               | En partie                     | Pas commencées                        |
+| ----- | ---------------------------- | ----------------------------- | ------------------------------------- |
+| 0     | A0.1, A0.2, A0.3 — **close** | —                             | —                                     |
+| 1     | A1.1, A1.2, A1.3             | —                             | A1.4, A1.6 ; A1.5 n'est pas mesurable |
+| 2     | A2.1                         | —                             | A2.2, A2.3, A2.4, A2.5                |
+| 3     | A3.3                         | —                             | A3.1, A3.2, A3.4, A3.5                |
+| 4     | A4.3                         | A4.2 (Release sans changelog) | A4.1, A4.4                            |
 
 Hors plan, deux chantiers ont avancé et changent la lecture des vagues 3 et 4 :
-**huit règles d'alerte Kibana** couvrent désormais disponibilité, performance et
-sécurité en staging, sans notification hors de Kibana (`MONITORING.md` §11) ; et
-les **traces de l'API** sont écrites mais pas déployées (§10 du même document).
+**huit règles d'alerte Kibana** couvrent disponibilité, performance et sécurité,
+sans notification hors de Kibana (`MONITORING.md` §11) ; et les **traces de
+l'API** sont en service en staging et en production depuis le 2026-10-05 (§10
+du même document).
+
+**Un enseignement nouveau de la release 1.0.1, d'où A1.6.** Du 2 au 5 octobre,
+Docker Desktop a décroché ou redémarré quatre fois, laissant minikube à moitié
+arrêté : un runner figé (`concurrent = 1`) qui a retenu `develop` près d'une
+heure, deux `terraform-plan` en échec, trois `deploy-production` en échec. Aucun
+contrôle de la chaîne n'a failli ; c'est la plateforme. Le compte rendu est dans
+`RELEASE.md` §7.5.
 
 ### Vague 0 — Faire aboutir la chaîne une fois — **close le 2026-09-22**
 
@@ -225,20 +237,21 @@ plus.
 > l'autre avant la réussite de 18:47, sont précisément le matériel que ce binôme
 > devait voir passer. La montée en compétence I8 commence ici, pas en vague 3.
 >
-> ⚠️ **Close ne veut pas dire acquise.** Cinq déploiements réussis sur neuf
-> tentatives, sur deux journées : la chaîne aboutit, elle n'est pas fiable. Le
+> ⚠️ **Close ne veut pas dire acquise.** Huit déploiements réussis sur quinze
+> tentatives, sur trois journées : la chaîne aboutit, elle n'est pas fiable. Le
 > bloquant suivant n'est plus l'exécution, c'est le taux d'échec — ce que
 > traitent la vague 1 et A3.1.
 
 ### Vague 1 — Rendre les contrôles contraignants
 
-| ID   | Action                                                                                                                   | Irritant           | Porteur        | Effort | Preuve d'atteinte                                                                                                                                                                                                                                                                                                                      |
-| ---- | ------------------------------------------------------------------------------------------------------------------------ | ------------------ | -------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A1.1 | Passer les scans Trivy en mode bloquant sur `HIGH,CRITICAL` (`trivy-fs`, `package-back`, `package-front`)                | I3, I2             | Maïa           | S      | **Fait le 2026-09-19.** Une image porteuse d'une CVE critique fait échouer `package-*`. Depuis le 2026-10-02 (écrit) : le scan d'image a lieu **avant** le push, et chaque scan publie un rapport JSON en artefact (`scripts/ci/trivy_scan.sh`)                                                                                        |
-| A1.2 | Tenir un fichier d'exceptions **daté et justifié** : une entrée = un identifiant, un chemin, une raison, une date        | I3                 | Maïa + Roubina | S      | **Fait le 2026-09-19** — `.trivyignore.yaml`, 7 entrées au 2026-10-02, bornées par chemin, revue au 2026-12-31 ; et depuis le 2026-10-02, `suppressions.xml` pour Dependency-Check : 12 CVE de Spring Framework, même échéance                                                                                                         |
-| A1.3 | Rendre `dependency-check-back` bloquant au-delà d'un score CVSS convenu                                                  | I2                 | Sylvain        | S      | **Bloquant depuis le 2026-09-19, effectif depuis le 2026-10-02 seulement.** Le job n'analysait aucun jar (`skipTestGroups`) ; il en lit 82, et a échoué en local sur 13 CVE réelles avant traitement. La preuve prévue — une dépendance vulnérable introduite exprès — n'a pas été jouée : c'est une vraie qui a fait la démonstration |
-| A1.4 | Miroiter les images de base dans le registry interne et n'y référencer qu'elles                                          | I6, souhait Ops C8 | Nico           | M      | Aucun `FROM` ne pointe vers DockerHub ; le build passe DockerHub coupé                                                                                                                                                                                                                                                                 |
-| A1.5 | Remplacer l'email par le pipeline comme canal : un déploiement se désigne par un tag d'image, jamais par un numéro dicté | I6                 | Roubina + Nico | S      | Aucun échange de version par email sur une itération complète                                                                                                                                                                                                                                                                          |
+| ID   | Action                                                                                                                             | Irritant           | Porteur        | Effort | Preuve d'atteinte                                                                                                                                                                                                                                                                                                                                                                               |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------ | -------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1.1 | Passer les scans Trivy en mode bloquant sur `HIGH,CRITICAL` (`trivy-fs`, `package-back`, `package-front`)                          | I3, I2             | Maïa           | S      | **Fait le 2026-09-19.** Une image porteuse d'une CVE critique fait échouer `package-*`. Depuis le 2026-10-03 (en CI) : le scan d'image a lieu **avant** le push, et chaque scan publie un rapport JSON en artefact (`scripts/ci/trivy_scan.sh`)                                                                                                                                                 |
+| A1.2 | Tenir un fichier d'exceptions **daté et justifié** : une entrée = un identifiant, un chemin, une raison, une date                  | I3                 | Maïa + Roubina | S      | **Fait le 2026-09-19** — `.trivyignore.yaml`, 7 entrées au 2026-10-02, bornées par chemin, revue au 2026-12-31 ; et depuis le 2026-10-02, `suppressions.xml` pour Dependency-Check : 12 CVE de Spring Framework, même échéance                                                                                                                                                                  |
+| A1.3 | Rendre `dependency-check-back` bloquant au-delà d'un score CVSS convenu                                                            | I2                 | Sylvain        | S      | **Bloquant depuis le 2026-09-19, effectif depuis le 2026-10-02 seulement.** Le job n'analysait aucun jar (`skipTestGroups`) ; il en lit 82 — en CI depuis le 2026-10-03, rapport relu en artefact —, et a échoué en local sur 13 CVE réelles avant traitement. La preuve prévue — une dépendance vulnérable introduite exprès — n'a pas été jouée : c'est une vraie qui a fait la démonstration |
+| A1.4 | Miroiter les images de base dans le registry interne et n'y référencer qu'elles                                                    | I6, souhait Ops C8 | Nico           | M      | Aucun `FROM` ne pointe vers DockerHub ; le build passe DockerHub coupé                                                                                                                                                                                                                                                                                                                          |
+| A1.5 | Remplacer l'email par le pipeline comme canal : un déploiement se désigne par un tag d'image, jamais par un numéro dicté           | I6                 | Roubina + Nico | S      | Aucun échange de version par email sur une itération complète                                                                                                                                                                                                                                                                                                                                   |
+| A1.6 | Vérifier que le cluster répond (`kubectl get --raw /readyz`) en tête des jobs de déploiement ; passer le runner à `concurrent` > 1 | I1                 | Nico           | S      | Un cluster arrêté fait échouer le job avec un message qui le nomme, avant tout `apply` ; un runner figé ne bloque plus tous les pipelines                                                                                                                                                                                                                                                       |
 
 > **A1.3 enseigne ce qu'une preuve d'atteinte doit regarder.** Le job était
 > bloquant et vert ; la case aurait pu être cochée le 2026-09-19. Il ne lisait
@@ -270,13 +283,13 @@ plus.
 
 ### Vague 3 — Automatiser le déploiement et combler l'angle mort
 
-| ID   | Action                                                                                       | Irritant | Porteur                      | Effort | Preuve d'atteinte                                                                                                                                                                                                                    |
-| ---- | -------------------------------------------------------------------------------------------- | -------- | ---------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| A3.1 | Passer `deploy-staging` de `when: manual` à `when: on_success`                               | I4       | Nico                         | S      | Un merge sur `develop` met à jour staging sans intervention                                                                                                                                                                          |
-| A3.2 | Tests post-déploiement en **TestInfra** — l'outil que l'équipe Ops maîtrise déjà             | I4, I8   | Maïa                         | M      | Un déploiement fonctionnel mais cassé fait échouer le job                                                                                                                                                                            |
-| A3.3 | Exécuter le collecteur DORA **dans la CI** au lieu de le lancer à la main                    | I1       | Josefina                     | S      | **Écrit le 2026-10-02, jamais exécuté** : job `dora-metrics` sur `develop`, `main` et les tags, artefact `reports/dora.json`. Il n'alimente pas Elasticsearch, injoignable depuis un job : le tableau de bord reste rempli à la main |
-| A3.4 | Montée en compétence Kubernetes : deux ateliers, un incident simulé, une astreinte en binôme | I8       | Nico (anime), toute l'équipe | L      | Chaque membre a diagnostiqué seul un pod en `CrashLoopBackOff` et déclenché un rollback                                                                                                                                              |
-| A3.5 | Documenter les décisions structurantes en ADR courtes                                        | I8       | Josefina                     | S      | Une ADR par décision d'architecture non triviale                                                                                                                                                                                     |
+| ID   | Action                                                                                       | Irritant | Porteur                      | Effort | Preuve d'atteinte                                                                                                                                                                                                                                        |
+| ---- | -------------------------------------------------------------------------------------------- | -------- | ---------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A3.1 | Passer `deploy-staging` de `when: manual` à `when: on_success`                               | I4       | Nico                         | S      | Un merge sur `develop` met à jour staging sans intervention                                                                                                                                                                                              |
+| A3.2 | Tests post-déploiement en **TestInfra** — l'outil que l'équipe Ops maîtrise déjà             | I4, I8   | Maïa                         | M      | Un déploiement fonctionnel mais cassé fait échouer le job                                                                                                                                                                                                |
+| A3.3 | Exécuter le collecteur DORA **dans la CI** au lieu de le lancer à la main                    | I1       | Josefina                     | S      | **Fait le 2026-10-03** : job `dora-metrics` sur `develop`, `main` et les tags, artefact `reports/dora.json` (premier passage dans `#2909284076`). Il n'alimente pas Elasticsearch, injoignable depuis un job : le tableau de bord reste rempli à la main |
+| A3.4 | Montée en compétence Kubernetes : deux ateliers, un incident simulé, une astreinte en binôme | I8       | Nico (anime), toute l'équipe | L      | Chaque membre a diagnostiqué seul un pod en `CrashLoopBackOff` et déclenché un rollback                                                                                                                                                                  |
+| A3.5 | Documenter les décisions structurantes en ADR courtes                                        | I8       | Josefina                     | S      | Une ADR par décision d'architecture non triviale                                                                                                                                                                                                         |
 
 > **Sur A3.2 et le choix de TestInfra.** Le réflexe serait d'écrire ces tests
 > dans l'outillage du pipeline. On les écrit en TestInfra parce que l'équipe Ops
@@ -292,12 +305,12 @@ plus.
 
 ### Vague 4 — Réduire le risque de la mise en production
 
-| ID   | Action                                                   | Irritant | Porteur     | Effort | Preuve d'atteinte                                                                                                                                                                                       |
-| ---- | -------------------------------------------------------- | -------- | ----------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A4.1 | Déploiement progressif — canary ou blue/green            | I4       | Nico + Maïa | L      | Une version fautive n'atteint qu'une fraction du trafic                                                                                                                                                 |
-| A4.2 | Changelog généré depuis les Conventional Commits         | I6       | Josefina    | S      | **En partie, écrit le 2026-10-02** : le job `release` crée une Release GitLab sur chaque tag, avec le commit et les images — pas encore la liste des changements. Jamais exécuté : aucun tag n'a abouti |
-| A4.3 | Notification d'échec de déploiement sur un canal partagé | I6       | Temim       | S      | **Fait le 2026-09-29** (commit `44a1418`) — `notify-echec` et l'`after_script` des déploiements, vers `NOTIFY_WEBHOOK_URL`. Sans la variable, le message reste dans le journal du job                   |
-| A4.4 | Signature des images et attestation de provenance        | I2       | Maïa        | M      | Une image non signée est refusée au déploiement                                                                                                                                                         |
+| ID   | Action                                                   | Irritant | Porteur     | Effort | Preuve d'atteinte                                                                                                                                                                     |
+| ---- | -------------------------------------------------------- | -------- | ----------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A4.1 | Déploiement progressif — canary ou blue/green            | I4       | Nico + Maïa | L      | Une version fautive n'atteint qu'une fraction du trafic                                                                                                                               |
+| A4.2 | Changelog généré depuis les Conventional Commits         | I6       | Josefina    | S      | **En partie** : le job `release` a créé la Release GitLab `v1.0.1` le 2026-10-05, avec le commit, le pipeline et les images — pas encore la liste des changements                     |
+| A4.3 | Notification d'échec de déploiement sur un canal partagé | I6       | Temim       | S      | **Fait le 2026-09-29** (commit `44a1418`) — `notify-echec` et l'`after_script` des déploiements, vers `NOTIFY_WEBHOOK_URL`. Sans la variable, le message reste dans le journal du job |
+| A4.4 | Signature des images et attestation de provenance        | I2       | Maïa        | M      | Une image non signée est refusée au déploiement                                                                                                                                       |
 
 ---
 
@@ -309,10 +322,10 @@ l'indication franche qu'il n'y a pas de mesure.
 
 | Indicateur                                     | Aujourd'hui                                      | Après vague 1               | Après vague 3       | Comment on le mesure                            |
 | ---------------------------------------------- | ------------------------------------------------ | --------------------------- | ------------------- | ----------------------------------------------- |
-| Fréquence de déploiement                       | **0,1667 / j**                                   | > 0,33 / j                  | ≥ 1 / j sur staging | `collect_dora.py`                               |
-| Délai de mise en production                    | **1,38 h**                                       | < 1,38 h                    | < 1 j, sans clic    | `collect_dora.py`                               |
-| Temps de rétablissement                        | **2,14 h**                                       | mesurable sur plus de 2 cas | < 1 h               | `collect_dora.py`                               |
-| Taux d'échec des changements                   | **66,67 %**                                      | < 50 %                      | < 15 %              | `collect_dora.py`                               |
+| Fréquence de déploiement                       | **0,2667 / j** (0,1667 au 2026-09-23)            | > 0,33 / j                  | ≥ 1 / j sur staging | `collect_dora.py`                               |
+| Délai de mise en production                    | **4,76 h** (1,38 h)                              | < 1,38 h                    | < 1 j, sans clic    | `collect_dora.py`                               |
+| Temps de rétablissement                        | **2,21 h** (2,14 h), 4 cas                       | mesurable sur plus de 4 cas | < 1 h               | `collect_dora.py`                               |
+| Taux d'échec des changements                   | **60 %** (66,67 %)                               | < 50 %                      | < 15 %              | `collect_dora.py`                               |
 | Délai entre remise et retour CVE               | **minutes** (le job échoue) depuis le 2026-09-19 | **minutes**                 | idem                | Durée du job `package-*`                        |
 | Part d'opérations de déploiement manuelles     | **100 %**                                        | 100 %                       | staging à 0 %       | Comptage des gestes `when: manual`              |
 | Artefacts publiés par release                  | **2** (3 avant `f125ef0`)                        | 2                           | 2                   | `docker images` du registry                     |
@@ -327,10 +340,15 @@ un clic. Une case qui ne bouge pas au bon moment est le signe que le tableau
 mesure quelque chose de réel.
 
 Et la troisième, qui porte sur la colonne « aujourd'hui » elle-même : **ces
-valeurs reposent sur neuf tentatives étalées sur deux jours**. Elles constituent
-une ligne de base parce qu'il en faut une, pas parce qu'elles seraient stables.
-La cible « après vague 1 » d'un délai inférieur à 1,38 h ne vaudra d'ailleurs que
-si elle se compare à un nombre d'observations comparable. S'y ajoute une limite
+valeurs reposent sur quinze tentatives étalées sur trois jours**. Elles
+constituent une ligne de base parce qu'il en faut une, pas parce qu'elles
+seraient stables. La cible « après vague 1 » d'un délai inférieur à 1,38 h —
+la ligne de base du 2026-09-23 — ne vaudra d'ailleurs que si elle se compare à
+un nombre d'observations comparable : la hausse à 4,76 h ne dit pas que la
+chaîne a ralenti, elle dit qu'un commit fusionné un samedi a été déployé le
+lundi. De même, trois des neuf échecs comptés au 2026-10-05 viennent d'un
+cluster arrêté : le taux d'échec mesure aussi la fiabilité du poste qui porte la
+chaîne, et A1.6 vise précisément cette part. S'y ajoute une limite
 du collecteur, assumée et documentée en `MONITORING.md` §9.3 : un rollback qui a
 échoué compte quand même comme une annulation, donc le taux d'échec est plutôt
 au-dessus de la réalité qu'en dessous.

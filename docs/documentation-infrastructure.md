@@ -1,7 +1,7 @@
 # Documentation d'infrastructure — MicroCRM
 
 **Projet** : MicroCRM — P5, Expert DevOps, « Gérez le cycle de vie de développement logiciel »
-**Date** : 18 août 2026, mis à jour le 2 octobre 2026 · **Périmètre** : architecture, conteneurisation, infrastructure as code, exploitation
+**Date** : 18 août 2026, mis à jour le 5 octobre 2026 · **Périmètre** : architecture, conteneurisation, infrastructure as code, exploitation
 
 Ce document décrit comment MicroCRM est construit, décrit et déployé, et par
 quelles procédures on le met à jour, on revient en arrière et on le reconstruit.
@@ -17,19 +17,22 @@ exercée sur un cluster Kubernetes local, à la main, depuis un poste. **Elle es
 déployée depuis la CI depuis le 22 septembre 2026** — après sept échecs, un
 quota GitLab épuisé, puis un runner auto-hébergé et trois correctifs d'accès au
 cluster. Staging et production sont aujourd'hui posés par le pipeline, et un
-rollback de production a été joué. Le recul est de deux journées de
-déploiement — les 22 et 23 septembre — et le taux d'échec des changements est de
-**66,67 % sur 9 tentatives** : le chemin automatisé existe, il n'est pas encore
-éprouvé. **Rien n'a été déployé depuis le 23 septembre** : les trois derniers
-pipelines de `develop` ont échoué, pour trois raisons différentes (§7). Ce que
-la campagne manuelle porte encore seule — le comportement sous incident — est
-détaillé dans `rapport-performance.md`.
+rollback de production a été joué. **La première release numérotée, 1.0.1, a
+été publiée et mise en production le 5 octobre 2026** par le chemin du tag :
+images promues sans reconstruction, Release GitLab créée par la CI (§8.1). Le
+recul est de trois journées de déploiement — les 22 et 23 septembre, le 5
+octobre — et le taux d'échec des changements est de **60 % sur 15
+tentatives**, dont trois échecs sur un cluster arrêté : le chemin automatisé
+existe, il n'est pas encore fiable, et la plateforme qui le porte non plus. Ce
+que la campagne manuelle porte encore seule — le comportement sous incident —
+est détaillé dans `rapport-performance.md`.
 
-⚠️ **Ce que la mise à jour du 2 octobre décrit.** Le scan d'image avant le push,
+**Ce que la mise à jour du 5 octobre décrit.** Le scan d'image avant le push,
 les rapports de sécurité en artefacts, la Release GitLab, l'alerting et les
-traces de l'API sont dans l'arbre de travail du dépôt. **Rien de cela n'est
-passé dans un pipeline, et les traces ne sont pas déployées.** Les passages
-concernés le disent à leur place.
+traces de l'API, écrits le 2 octobre, ont été fusionnés le 3 et tournent en CI :
+pipelines `#2909284076` (`develop`), `#2912362926` (`main`) et `#2913490784`
+(tag `v1.0.1`), verts sur leurs jobs automatiques. Les traces arrivent des pods
+de staging et de production.
 
 ## 1. L'application et ses composants
 
@@ -689,12 +692,12 @@ la frontière du §4.1 ne souffre pas d'exception. Filebeat est un DaemonSet qui
 lit les fichiers de log du nœud, décode le JSON et ajoute les métadonnées
 Kubernetes.
 
-| Volet                     | État au 2 octobre 2026                                                                                                                                                          | Détail                |
+| Volet                     | État au 5 octobre 2026                                                                                                                                                          | Détail                |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
 | Logs centralisés          | **En service** depuis le 16 août. Filebeat ne collecte que `microcrm-staging` : la production n'est pas dans les logs                                                           | `MONITORING.md` §2-§4 |
 | Tableaux de bord          | **Cinq**, versionnés en NDJSON dans `k8s/elk/dashboards/` : supervision, DORA, sécurité, disponibilité, suivi des alertes                                                       | `MONITORING.md` §8    |
 | Alerting                  | **Huit règles** Kibana versionnées dans `k8s/elk/alerting/` — disponibilité, performance, sécurité — installées et déclenchées une fois. **Aucune notification hors de Kibana** | `MONITORING.md` §11   |
-| Traces de l'API           | **Écrites, éprouvées depuis le poste, pas déployées.** Les images qui tournent précèdent l'agent OpenTelemetry                                                                  | `MONITORING.md` §10   |
+| Traces de l'API           | **En service depuis le 5 octobre**, en staging et en production ; sans recul, sur du trafic provoqué                                                                            | `MONITORING.md` §10   |
 | Ressources (CPU, mémoire) | **Non mesurées.** Ni `metrics-server` ni Prometheus                                                                                                                             | `MONITORING.md` §12   |
 
 Un point de configuration mérite d'être connu par quiconque exploite cette
@@ -715,14 +718,27 @@ est arrêté.
 l'image du back et activé par la ConfigMap ; APM Server reçoit ses traces et en
 déduit latence, débit et taux d'échec par route. La chaîne a été éprouvée depuis
 un conteneur lancé sur le poste, où elle mesure une latence de l'API qui
-n'existait nulle part. Elle n'est pas en service : les images déployées datent
-du 23 septembre, avant l'agent.
+n'existait nulle part. Elle est en service depuis le 5 octobre : staging tourne
+`back:5296658a`, la production `back:1.0.1`, et l'index `traces-apm*` reçoit
+des documents des deux environnements.
 
-**Pourquoi rien n'a été déployé depuis.** Les trois derniers pipelines de
-`develop` sont rouges, pour trois raisons différentes : aucun runner disponible
-(`#2892321711`, 29 septembre) ; `trivy-fs` et `terraform-plan` en échec
-(`#2901472002`, 1er octobre — la cause du second n'a pas été recherchée) ; cinq
-CVE de Jackson dans l'image du back (`#2902337581`, 1er octobre).
+**Pourquoi rien n'avait été déployé du 23 septembre au 5 octobre.** Trois
+pipelines de `develop` avaient échoué, pour trois raisons différentes : aucun
+runner disponible (`#2892321711`, 29 septembre) ; `trivy-fs` et `terraform-plan`
+(`#2901472002`, 1er octobre) ; cinq CVE de Jackson dans l'image du back
+(`#2902337581`, 1er octobre). Le correctif, fusionné le 3 octobre, a remis
+`develop` au vert.
+
+**Ce que la livraison du 5 octobre a appris sur la plateforme.** Docker Desktop,
+qui porte à la fois le runner et minikube (8 Go, dont 6 réservés à minikube,
+partagés avec d'autres piles), a décroché ou redémarré quatre fois du 2 au 5
+octobre. Chaque fois, minikube est resté à moitié arrêté : un runner figé qui a
+retenu `develop`, deux `terraform-plan` en échec, trois `deploy-production` en
+échec. Rien ne signale aujourd'hui qu'un cluster est arrêté avant qu'un
+déploiement n'échoue dessus. Les remèdes — vérifier `kubectl get --raw /readyz`
+(ou `minikube status`) en tête des jobs de déploiement, un runner à
+`concurrent` > 1, une sonde externe sur le cluster, puis un cluster dédié —
+sont détaillés dans `rapport-performance.md` §7.3.
 
 Le flux, les résultats de collecte et ce que la supervision ne couvre pas sont
 détaillés dans `rapport-performance.md` et dans `MONITORING.md`.
@@ -741,8 +757,8 @@ Les principes d'abord, parce qu'ils expliquent les commandes.
 - **On vérifie avant de déployer.** Une image n'arrive à l'étape de déploiement
   qu'après les tests, l'analyse statique, les scans de sécurité — dont celui de
   l'image elle-même, fait avant son envoi au registry — et le test de fumée k6.
-  Ces contrôles sont bloquants, à deux exceptions près : `spotbugs-back` et
-  `k6-load` (`QUALITY.md`).
+  Ces contrôles sont bloquants, à une exception près : `k6-load`
+  (`QUALITY.md`).
 
 Mise en production, pas à pas (`RELEASE.md` §7) :
 
@@ -758,12 +774,14 @@ Mise en production, pas à pas (`RELEASE.md` §7) :
 6. Vérifier que l'application répond.
 7. En cas de problème : `rollback-production`.
 
-⚠️ **Ce chemin par tag n'a jamais abouti.** Le seul tag du dépôt, `v1.0.0`, a
-échoué avant la promotion : l'image de test du front résolvait vers une variante
-arm64 sans Chrome sur le runner du projet. La cause est corrigée ; la version
-`1.0.1` est préparée dans les fichiers, pas encore taguée. Les cinq
-déploiements réussis de septembre sont partis de `develop` et de `main`, sous
-le SHA du commit.
+**Ce chemin par tag a abouti le 5 octobre 2026, avec `v1.0.1`.** Le premier tag,
+`v1.0.0`, avait échoué avant la promotion : l'image de test du front résolvait
+vers une variante arm64 sans Chrome sur le runner du projet. Pour `v1.0.1`, le
+pipeline de tag `#2913490784` a promu les images de `08a216b0` — `back:1.0.1`
+et `back:08a216b0` ont le même digest, comme `front:1.0.1` et
+`front:08a216b0` —, le job `release` a créé la Release GitLab, et
+`deploy-production` a mis la version en service à 14 h 10 UTC, après deux échecs
+sur un cluster arrêté. Compte rendu : `RELEASE.md` §7.5.
 
 Une modification de la ConfigMap ne redémarre **pas** les pods : `configmap.yaml`
 est une ressource ordinaire et non un `configMapGenerator`, choix fait pour la

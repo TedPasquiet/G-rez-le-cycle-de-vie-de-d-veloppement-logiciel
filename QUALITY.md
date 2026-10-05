@@ -197,7 +197,11 @@ rapport, le nombre d'éléments analysés.
 **L'état après traitement**, relu dans le rapport JSON du dernier scan local
 (2026-10-02, 21 h 31) : 82 dépendances analysées, les 12 CVE exceptées
 apparaissent comme supprimées, **aucune CVE de score 7 ou plus ne reste
-ouverte**, et la tâche Gradle se termine en succès. Six CVE de score inférieur
+ouverte**, et la tâche Gradle se termine en succès. **Le même résultat a été
+obtenu en CI** depuis la fusion du 2026-10-03 : `dependency-check-back` est vert
+dans les pipelines `#2909284076`, `#2912362926` et `#2913490784`, et son rapport
+JSON, relu dans les artefacts, porte les mêmes 82 dépendances et les mêmes 12
+CVE supprimées. Six CVE de score inférieur
 à 7 (de 3,7 à 6,5) restent visibles dans le rapport : elles sont sous le seuil,
 donc non bloquantes — et suivies par rien ([AUDIT.md](AUDIT.md) §7.4.5).
 
@@ -272,9 +276,13 @@ exclusions appliquées (rejoué le 2026-10-02). La dernière image du back publi
 par la CI, `back:5bf1d6a2`, porte 5 CVE HIGH de `jackson-core` et
 `jackson-databind` 2.21.4 : c'est ce qui a arrêté `package-back` sur le dernier
 pipeline de `develop` (les deux pipelines précédents ont échoué pour d'autres
-raisons — [MONITORING.md](MONITORING.md) §10.4). Jackson est forcé à 2.21.7 sur la branche de correction, et les deux
-images construites **en local** depuis cette branche sortent à 0 HIGH ou
-CRITICAL. Aucune image corrigée n'a encore été publiée par un pipeline.
+raisons — [MONITORING.md](MONITORING.md) §10.4). Jackson est forcé à 2.21.7
+depuis la fusion du 2026-10-03. **Les images corrigées sont publiées** : les
+rapports Trivy de `package-back` et `package-front`, relus dans les artefacts,
+portent 0 HIGH ou CRITICAL sur `back:5296658a`, `front:5296658a`,
+`back:08a216b0` et `front:08a216b0` — ces deux dernières sont les images `1.0.1`
+en production depuis le 2026-10-05. `back:5bf1d6a2` reste au registry, mais
+n'est déployée nulle part.
 
 **Utilisation locale** (sans installer Trivy) :
 
@@ -462,7 +470,7 @@ la commande locale et le job CI mesurent exactement la même chose. Voir
 ## 6. Supervision de l'application déployée — **implémenté**
 
 > Cette section annonçait une amélioration prévue. Elle est faite, par étapes,
-> et ce qui suit décrit ce qui existe réellement dans le dépôt au 2026-10-02.
+> et ce qui suit décrit ce qui existe réellement dans le dépôt au 2026-10-05.
 
 **Le manque de départ.** Les quatre outils précédents agissent tous **avant** le
 déploiement. Une fois l'application en marche, plus rien ne disait si elle répondait,
@@ -476,7 +484,7 @@ si sa base était joignable, ni ce qu'elle racontait.
 | Centralisation des logs                 | fait                        | Elasticsearch, Kibana et Filebeat sur le cluster local ; les logs du back sont en JSON ECS et arrivent décodés. **Staging seulement** : Filebeat ne collecte pas la production — [MONITORING.md](MONITORING.md)                                                                                                                                                               |
 | Tableaux de bord                        | fait                        | Cinq tableaux de bord versionnés dans `k8s/elk/dashboards/` : supervision, DORA, sécurité, disponibilité, suivi des alertes — [MONITORING.md](MONITORING.md) §8                                                                                                                                                                                                               |
 | Alerting                                | fait, **sans notification** | Huit règles Kibana versionnées (disponibilité, performance, sécurité), installées par `scripts/monitoring/install_alerting.py`, toutes déclenchées une fois le 2026-10-02. Elles écrivent dans l'index `microcrm-alerts` et dans le journal de Kibana ; **rien ne sort de Kibana**, les connecteurs webhook exigeant une licence payante — [MONITORING.md](MONITORING.md) §11 |
-| Latence, débit et taux d'échec de l'API | **écrit, pas déployé**      | Traces OpenTelemetry vers Elastic APM, éprouvées depuis un conteneur lancé sur le poste. Les images déployées précèdent l'agent : aucun pod du cluster n'émet de trace — [MONITORING.md](MONITORING.md) §10                                                                                                                                                                   |
+| Latence, débit et taux d'échec de l'API | **fait, sans recul**        | Traces OpenTelemetry vers Elastic APM, éprouvées d'abord depuis un conteneur lancé sur le poste, en service depuis le 2026-10-05 : les pods de staging et de production en émettent. Aucune latence en service relevée à ce jour — [MONITORING.md](MONITORING.md) §10                                                                                                         |
 | Métriques de ressources (CPU, mémoire)  | **absent**                  | Ni Prometheus ni `metrics-server` sur le cluster ; les métriques de la JVM que l'agent pourrait envoyer sont coupées. Les `resources` des Deployments restent des estimations                                                                                                                                                                                                 |
 
 Ce qui suit dans cette section décrivait l'ajout d'Actuator ; c'est fait, et le

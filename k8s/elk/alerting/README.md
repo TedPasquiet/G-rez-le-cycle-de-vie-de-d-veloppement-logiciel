@@ -127,12 +127,14 @@ relevées le 2026-10-02 dans Elasticsearch.
   requête se termine en exception — donc en 500.
 - **L'application n'a pas d'authentification** : un 401 ou un 403 ne peut pas se
   produire. La règle « sécurité » côté API compte donc les 4xx en général.
-- **Les back déployés n'envoient pas de traces.** Les images de staging
-  (`bf272532`) et de production (`9f4168b3`) datent d'avant l'instrumentation
-  OpenTelemetry : au moment du relevé, les seules traces présentes venaient de
-  conteneurs lancés sur le poste. Les trois règles « traces APM » sont
-  installées et prouvées, mais **elles ne surveilleront staging et production
-  qu'après le déploiement d'une image instrumentée**.
+- **Les back déployés envoient des traces depuis le 2026-10-05.** Au moment du
+  relevé (2026-10-02), les images de staging (`bf272532`) et de production
+  (`9f4168b3`) précédaient l'instrumentation OpenTelemetry, et les seules traces
+  venaient de conteneurs lancés sur le poste. Depuis le 2026-10-05, staging
+  tourne `back:5296658a` et la production `back:1.0.1`, et `traces-apm*` reçoit
+  des documents `service.environment` `staging` et `production`. Les trois
+  règles « traces APM », qui regroupent par environnement, **surveillent donc
+  désormais les deux** — mais elles n'y ont pas été re-déclenchées.
 
 ### Disponibilité
 
@@ -194,8 +196,9 @@ mesurée surtout sur les sondes ; elle ne dit rien de l'API.
 seuil :_ sur 401 transactions relevées avant l'essai, p95 de 5,6 ms et 17,4 ms
 selon l'environnement, maximum de 97 ms. 250 ms, c'est 14 fois le p95 le plus
 élevé et 2,5 fois le maximum. ⚠️ L'échantillon est petit et vient de conteneurs lancés
-sur le poste, pas d'un trafic réel : **ce seuil est à recaler** dès qu'un back
-instrumenté aura tourné quelques jours en staging.
+sur le poste, pas d'un trafic réel : **ce seuil est à recaler** dès que le back
+instrumenté, en service depuis le 2026-10-05, aura tourné quelques jours en
+staging.
 
 ### Sécurité
 
@@ -242,7 +245,9 @@ Ce qu'il faut savoir pour ne pas sur-lire ce tableau :
 
 - Les trois règles « traces APM » ont été prouvées sur un conteneur
   `microcrm-back:otel` lancé sur le poste (`service.environment: demo-alerting`),
-  pas sur un pod du cluster : les back déployés n'émettent pas de traces.
+  pas sur un pod du cluster : les back déployés n'émettaient pas encore de
+  traces le 2026-10-02. Ils en émettent depuis le 2026-10-05 ; l'essai n'a pas
+  été refait sur eux.
 - `dispo-back-redemarrages` affiche 3 et non 2 parce que `minikube start` avait
   lui-même démarré le back douze minutes plus tôt.
 - Le front n'a pas pu être ralenti par un client lent (le `port-forward` absorbe
