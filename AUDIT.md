@@ -305,8 +305,9 @@ Le détail de mise en œuvre de chaque contrôle est dans [QUALITY.md](QUALITY.m
 >   Trivy n'atteint plus le registry (§7.4.1).
 > - **R6 : chaque tag de version crée une Release GitLab**, qui nomme le commit
 >   et les deux tags de chaque image (job `release`, [RELEASE.md](RELEASE.md)
->   §2.2). Aucune version n'a encore été publiée : le tag `v1.0.0` n'a jamais
->   abouti, et le dépôt prépare `1.0.1` sans l'avoir taguée.
+>   §2.2). Le tag `v1.0.0` n'a jamais abouti ; `v1.0.1` a été publié le
+>   2026-10-05, et sa Release a été créée par le job ([RELEASE.md](RELEASE.md)
+>   §7.5).
 > - **Les scans laissent une trace.** Les rapports Trivy et Dependency-Check sont
 >   publiés en artefacts JSON, et un tableau de bord « sécurité » sait les lire
 >   ([MONITORING.md](MONITORING.md) §8).

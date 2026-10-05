@@ -177,6 +177,11 @@ déploie `back:X.Y.Z` et `front:X.Y.Z`. Si l'image du commit n'existe pas, la
 promotion échoue, et c'est voulu : on ne reconstruit pas, on repose le tag au
 bon endroit.
 
+Ce chemin a été joué pour la release 1.0.1, le 5 octobre 2026 : `back:1.0.1`
+et `back:08a216b0` ont le même digest, la Release GitLab `v1.0.1` a été créée
+par le job, et la production tourne en `1.0.1` — compte rendu, incidents de
+plateforme compris, dans [RELEASE.md](./RELEASE.md) §7.5.
+
 Détail, et que faire quand la promotion échoue : [RELEASE.md](./RELEASE.md)
 §2.1, §2.2 et §7.
 

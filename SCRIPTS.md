@@ -463,7 +463,11 @@ Trois choses à savoir sur ce job :
   alimenté depuis un poste (voir [MONITORING.md](MONITORING.md)).
 
 Exécuté contre l'API réelle le 2026-10-02 (fenêtre de 30 jours) : 57 pipelines
-lus en 70 s, 9 tentatives de déploiement dont 5 réussies.
+lus en 70 s, 9 tentatives de déploiement dont 5 réussies. **En CI depuis le
+2026-10-03** : le job `dora-metrics` a tourné dans les pipelines `#2909284076`
+(54 s), `#2912362926` et `#2913490784`, et son artefact `reports/dora.json` a
+été relu. Recalculé depuis le poste le 2026-10-05 après la release 1.0.1 : 67
+pipelines, 15 tentatives dont 8 réussies.
 
 ---
 

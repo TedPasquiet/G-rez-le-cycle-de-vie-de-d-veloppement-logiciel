@@ -352,11 +352,13 @@ production tournent aujourd'hui sur des images tirées du registry GitLab par ce
 jobs, `imagePullSecrets` compris.
 
 Ce que les indicateurs DORA en disent est à lire en entier
-([MONITORING.md](MONITORING.md) §9) : **5 déploiements réussis sur 30 jours,
-66,67 % de taux d'échec sur 9 tentatives**, deux rollbacks dont un qui a échoué.
-La chaîne aboutit ; elle n'est pas pour autant une chaîne de livraison régulière,
-et ces chiffres portent sur trop peu d'observations pour décrire autre chose que
-deux journées de mise au point.
+([MONITORING.md](MONITORING.md) §9) : au 2026-10-05, **8 déploiements réussis
+sur 30 jours, 60 % de taux d'échec sur 15 tentatives**, deux rollbacks dont un
+qui a échoué, et trois échecs dus à un cluster arrêté. La chaîne aboutit, et la
+release 1.0.1 l'a parcourue jusqu'à la production ([RELEASE.md](RELEASE.md)
+§7.5) ; elle n'est pas pour autant une chaîne de livraison régulière, et ces
+chiffres portent sur trop peu d'observations pour décrire autre chose que trois
+journées de livraison.
 
 **Le trait pointillé qui reste** est celui de Terraform, dont l'`apply` demeure
 un geste manuel (§8.2).
@@ -611,12 +613,13 @@ Server n'a **aucune authentification** : son périmètre tient à la
 `NetworkPolicy`, que le CNI par défaut de minikube n'applique pas. Et le front
 n'est pas instrumenté : la trace commence à l'API, pas dans le navigateur.
 
-⚠️ **Ce schéma décrit ce que le dépôt déploie, pas ce qui tourne le
-2026-10-02.** Les pods `back` du cluster exécutent des images antérieures à
-l'agent, et leur ConfigMap ne porte pas ces clés : aucune trace ne sort du
-cluster. La chaîne a été éprouvée depuis le poste, avec un conteneur local.
-Le relevé, les mesures et les pièges sont dans [MONITORING.md](MONITORING.md)
-§10.
+**Ce schéma décrit ce qui tourne depuis le 2026-10-05.** Jusqu'au 2026-10-02,
+les pods `back` exécutaient des images antérieures à l'agent, et la chaîne
+n'avait été éprouvée que depuis le poste, avec un conteneur local. Depuis le
+déploiement de `back:5296658a` en staging et de `back:1.0.1` en production,
+leurs ConfigMaps portent ces clés et des traces arrivent des deux
+environnements. Le relevé, les mesures et les pièges sont dans
+[MONITORING.md](MONITORING.md) §10.
 
 ---
 
@@ -756,8 +759,8 @@ regardant une facture.
 
 **La montée en charge automatique.** Ni `HorizontalPodAutoscaler`, ni
 `metrics-server`, ni autoscaler de nœuds. Le projet collecte des **logs** ; des
-**traces**, qui donneront la latence et le débit de l'API, sont écrites depuis
-le 2026-10-01 mais pas encore déployées ; et il n'existe toujours aucune
+**traces**, qui donnent la latence et le débit de l'API, sont en service depuis
+le 2026-10-05 ; et il n'existe toujours aucune
 métrique de ressources, ni CPU ni mémoire ([MONITORING.md](MONITORING.md) §10.4
 et §12) : il manque donc jusqu'au signal sur lequel un autoscaler déciderait. Et les tests k6 s'exécutent contre l'image
 construite dans la CI, pas contre le cluster — ils mesurent l'application, pas
@@ -795,13 +798,15 @@ aujourd'hui.
    qu'aucune erreur ne soit levée. Une base externe (PostgreSQL) avec un
    `PersistentVolumeClaim` lèverait les deux d'un coup.
 
-2. **La chaîne de déploiement aboutit depuis la CI, mais sur deux journées
+2. **La chaîne de déploiement aboutit depuis la CI, mais sur trois journées
    seulement.** Elle a échoué sept fois avant le 2026-09-22 ; elle a posé
    staging et production les 22 et 23 septembre, et exercé un rollback de
-   production suivi d'un redéploiement (§8.1). Rien n'a été déployé depuis : les
-   trois derniers pipelines de `develop` ont échoué, pour trois raisons
-   différentes ([MONITORING.md](MONITORING.md) §10.4). Le recul est donc faible et les indicateurs le disent :
-   **66,67 % d'échec sur 9 tentatives** ([MONITORING.md](MONITORING.md) §9). Le
+   production suivi d'un redéploiement (§8.1). Après trois pipelines rouges de
+   `develop` fin septembre, elle a livré la release 1.0.1 le 2026-10-05 — non
+   sans trois échecs de déploiement dus à un minikube arrêté par un redémarrage
+   de Docker Desktop ([RELEASE.md](RELEASE.md) §7.5). Le recul reste faible et
+   les indicateurs le disent : **60 % d'échec sur 15 tentatives**
+   ([MONITORING.md](MONITORING.md) §9). Le
    détail du comportement en exploitation — rollback automatique sur image
    cassée, sondes sous kubelet, résilience à la perte d'un pod — reste établi par
    la campagne manuelle de [K8S.md](K8S.md) §14, qu'aucun déploiement de CI ne

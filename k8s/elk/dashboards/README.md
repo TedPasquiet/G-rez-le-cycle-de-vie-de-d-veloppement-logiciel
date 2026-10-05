@@ -69,10 +69,10 @@ d'accès de Caddy ne voit passer que les fichiers statiques : les appels au back
 partent du navigateur vers le service du back et ne traversent jamais le front.
 Un p99 à 2 ms ne dit donc rien de la santé de l'API — il dit que Caddy sert vite
 des fichiers. Mesurer la latence applicative demande d'instrumenter le back :
-c'est écrit depuis le 2026-10-01 (agent OpenTelemetry, `MONITORING.md` §10),
-mais les images déployées précèdent l'agent et aucun pod du cluster n'émet de
-trace. Les panneaux APM du tableau `disponibilite` montrent des conteneurs
-d'essai lancés sur le poste.
+c'est écrit depuis le 2026-10-01 (agent OpenTelemetry, `MONITORING.md` §10) et
+en service depuis le 2026-10-05 : les pods de staging et de production émettent
+des traces. Jusque-là, les panneaux APM du tableau `disponibilite` ne montraient
+que des conteneurs d'essai lancés sur le poste.
 
 **L'écran des erreurs HTTP est vide par construction.** Le front sert une SPA
 avec `try_files … /index.html` : tout chemin inconnu renvoie 200 avec la page,
@@ -355,14 +355,16 @@ compteur `restartCount` des pods. Ce qui est compté, c'est la ligne
 `Started MicroCRMApplication` du back : un pod qui démarre, quelle qu'en soit la
 cause — déploiement, relance du cluster, crash. Le front n'a pas d'équivalent.
 
-**Les panneaux APM ne décrivent pas l'application déployée.** Les pods de
-staging (`back:bf272532`) et de production (`back:9f4168b3`) tournent sur des
-images antérieures à l'instrumentation OpenTelemetry. Les transactions de
-`traces-apm*` portent `service.environment: verification-poste` ou
-`demo-alerting` : des back lancés pour vérifier la chaîne de traces et pour
-démontrer les alertes. Débit et latence sont donc ceux de ces essais. Les
-panneaux sont en place pour le jour où une image instrumentée sera déployée —
-ils se rempliront sans retouche.
+**Jusqu'au 2026-10-05, les panneaux APM ne décrivaient pas l'application
+déployée.** Les pods de staging (`back:bf272532`) et de production
+(`back:9f4168b3`) tournaient sur des images antérieures à l'instrumentation
+OpenTelemetry, et les transactions de `traces-apm*` portaient
+`service.environment: verification-poste` ou `demo-alerting` : des back lancés
+pour vérifier la chaîne de traces et démontrer les alertes. Depuis le
+déploiement de `back:5296658a` en staging et de `back:1.0.1` en production, le
+2026-10-05, des transactions `staging` et `production` s'y ajoutent, sans
+retouche des panneaux. Elles ne viennent encore que de requêtes provoquées ; les
+transactions d'essai restent visibles jusqu'à leur expiration.
 
 ## `alertes.ndjson`
 
@@ -411,21 +413,31 @@ quota épuisé. Les quatre indicateurs ont donc une valeur, et celle du taux
 d'échec n'est pas flatteuse — ce qui est le sujet : ces chiffres disent ce que
 le projet a fait, pas ce qu'on voudrait montrer.
 
-Réinjecté le 2026-10-02 (`collect_dora.py --days 30 --elasticsearch …`,
-57 pipelines, 15 documents indexés) et relu dans Kibana :
+Réinjecté le 2026-10-05 à 14 h 39 UTC (`collect_dora.py --days 30
+--elasticsearch …`, 67 pipelines, 21 documents indexés), après la release
+1.0.1, et relu dans Kibana sur 30 jours :
 
-| Indicateur                   | Tuile     | Ce que ça veut dire                                                               |
-| ---------------------------- | --------- | --------------------------------------------------------------------------------- |
-| Fréquence de déploiement     | `0.1667`  | 5 déploiements réussis sur 30 jours, tous sur deux journées consécutives          |
-| Délai de mise en production  | `1.38 h`  | médiane sur 5 observations ; le déclenchement est manuel, l'attente du clic y est |
-| Temps de rétablissement      | `2.14 h`  | médiane sur 2 observations seulement                                              |
-| Taux d'échec des changements | `66.67 %` | 6 échecs sur 9 tentatives, dont 2 comptés comme annulés par un rollback           |
+| Indicateur                   | Tuile     | Ce que ça veut dire                                                                                    |
+| ---------------------------- | --------- | ------------------------------------------------------------------------------------------------------ |
+| Fréquence de déploiement     | `0.2667`  | 8 déploiements réussis sur 30 jours, sur trois journées                                                |
+| Délai de mise en production  | `4.76 h`  | médiane sur 8 observations ; le déclenchement est manuel, l'attente du clic — et d'un week-end — y est |
+| Temps de rétablissement      | `2.21 h`  | médiane sur 4 observations                                                                             |
+| Taux d'échec des changements | `60.00 %` | 9 échecs sur 15 tentatives, dont 2 comptés comme annulés et 3 tombés sur un cluster arrêté             |
 
-Confronté à Elasticsearch le même jour : `top_metrics` sur `valeur` trié par
-`@timestamp` rend 0,1667 / 1,38 / 2,14 / 66,67 ; 9 jobs de déploiement sur
-30 jours (5 `success`, 4 `failed`, tous `script_failure`) et 2 rollbacks — ce
-qu'affichent les tuiles « Tentatives » (`9`) et « Déploiements réussis » (`5`),
-le panneau des motifs et la chronologie.
+Lu dans Kibana le même jour (capture
+`docs/captures/kibana-dora-quatre-indicateurs-2026-10-05.png`) : tuiles
+« Tentatives » à `15` et « Déploiements réussis » à `8`, 7 échecs tous en
+`script_failure`, chronologie sur les 22 et 23 septembre et le 5 octobre — ce
+que rend aussi la dernière collecte dans l'index. Les valeurs précédentes
+(2026-10-02, 57 pipelines) étaient 0,1667 / 1,38 / 2,14 / 66,67.
+
+⚠️ **Le motif `script_failure` ne distingue pas un cluster arrêté d'un
+changement défectueux.** Les trois échecs du 2026-10-05 sont des déploiements
+tombés sur un minikube arrêté par un redémarrage de Docker Desktop. Le panneau
+des motifs les range avec les autres, et le taux d'échec les compte — ce que
+fait la définition DORA, et ce que ce tableau ne permet pas de corriger. Le
+texte d'aide en tête du tableau, écrit le 2026-10-02, parle encore de
+« deux journées ».
 
 ⚠️ **Le comptage des rollbacks est volontairement pessimiste.** Un déploiement
 réussi puis annulé compte comme un échec, et le rattachement du rollback au
