@@ -44,7 +44,10 @@ flowchart LR
 
 ## 2. Modèle de données
 
-Deux entités liées en **many-to-many** (voir `DATABASE.md` pour le détail).
+Deux entités liées en **many-to-many** (voir `DATABASE.md` pour le détail) : une
+organisation (`ORGANIZATION` : `id`, `name`) regroupe zéro, une ou plusieurs
+personnes (`PERSON` : `id`, `firstName`, `lastName`, `email`), et une personne
+peut appartenir à zéro, une ou plusieurs organisations.
 
 ```mermaid
 erDiagram
@@ -79,13 +82,16 @@ flowchart LR
 
 - **Étape 1** (build) : contient tous les outils de compilation → **jetée** à la fin.
 - **Étape 2** (runtime) : ne garde que l'artefact (le `.jar` / les fichiers statiques).
+- Depuis le 2026-10-01, `back/Dockerfile` compte une étape intermédiaire de plus :
+  elle télécharge l'agent OpenTelemetry et vérifie son empreinte SHA-256, et
+  seul le jar vérifié passe dans l'image livrée ([MONITORING.md](MONITORING.md) §10).
 - Bénéfices : images plus petites, moins de surface d'attaque, build reproductible.
 
 ### Taille des images livrées
 
 | Image   | Taille     | Base                    | Dont l'application            |
 | ------- | ---------- | ----------------------- | ----------------------------- |
-| `back`  | **399 Mo** | `alpine:3.24` (13,6 Mo) | ~385 Mo (le JRE)              |
+| `back`  | **390 Mo** | `alpine:3.24` (13,6 Mo) | ~376 Mo (le JRE)              |
 | `front` | **86 Mo**  | `alpine:3.24` (13,6 Mo) | ~72 Mo (Caddy, bundle 0,2 Mo) |
 
 Le front tient presque entier dans le binaire Caddy : un bundle Angular optimisé
@@ -94,12 +100,20 @@ pèse quelques centaines de kilo-octets. Ce binaire est recompilé par
 nue — le copier par-dessus l'image Caddy officielle aurait laissé l'original
 dans sa couche et porté l'image à 158 Mo.
 
-Le back, lui, est dominé par `openjdk21-jre-headless` — environ 385 des 399 Mo.
-C'est le prix d'un JRE complet. Un runtime taillé sur mesure avec `jlink`, ne
-contenant que les modules réellement utilisés, ramènerait l'image autour de
-150 Mo. Ce n'est pas fait aujourd'hui : la complexité ajoutée au Dockerfile ne
-se justifie pas encore pour une application de démonstration, mais c'est la
-première optimisation à envisager si la taille devient un sujet.
+Le back, lui, est dominé par `openjdk21-jre-headless` — environ 376 des 390 Mo.
+
+> **Comment ce chiffre est mesuré, et pourquoi il a bougé.** `docker image ls`
+> sur l'image que la CI construit, relevé le 2026-09-24. Ce document a porté
+> successivement 399 puis 377 Mo : le premier venait d'une mesure antérieure à
+> la montée de version, le second de l'image `t2-*` d'avant Spring Boot 3.5.16,
+> encore présente dans le cache local. La taille dépend aussi de
+> l'architecture — les images sont aujourd'hui construites en arm64 par le
+> runner auto-hébergé, là où les runners partagés produisaient de l'amd64.
+> C'est le prix d'un JRE complet. Un runtime taillé sur mesure avec `jlink`, ne
+> contenant que les modules réellement utilisés, ramènerait l'image autour de
+> 150 Mo. Ce n'est pas fait aujourd'hui : la complexité ajoutée au Dockerfile ne
+> se justifie pas encore pour une application de démonstration, mais c'est la
+> première optimisation à envisager si la taille devient un sujet.
 
 ### Contexte de build
 
@@ -139,7 +153,7 @@ de port, qui oblige à conserver `NET_BIND_SERVICE` dans le conteneur même avec
 
 ## 4. Pipeline CI/CD (GitLab)
 
-Le pipeline compte **10 étapes et 36 jobs**, répartis sur **13 fichiers** : une
+Le pipeline compte **10 étapes et 39 jobs**, répartis sur **14 fichiers** : une
 racine qui ne contient aucun job, un fichier par domaine, et un pipeline enfant
 pour la performance (voir `docs/pipeline-ci.md`).
 
@@ -150,16 +164,16 @@ flowchart LR
 
 | Stage         | Jobs                                                                                           | Rôle                                                  |
 | ------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `lint`        | `lint-front`, `lint-back`, `shellcheck`, `lint-k8s`, `lint-helm`                               | ESLint, Checkstyle, Bash, manifestes et chart         |
+| `lint`        | `lint-front`, `lint-back`, `shellcheck`, `lint-k8s`, `lint-helm`, `version-consistency`        | ESLint, Checkstyle, Bash, manifestes et chart         |
 | `test`        | `test-scripts`, `test-front`, `test-back`                                                      | Tests des scripts d'automatisation, Karma, JUnit      |
 | `quality`     | `sonar-back`, `sonar-front`, `spotbugs-back`, `coverage-gate`, `mutation-back`, `quality-gate` | Analyse Sonar, bugs, seuil de couverture, mutation    |
 | `security`    | `dependency-check-back`, `trivy-fs`                                                            | CVE des dépendances, secrets, misconfigurations       |
 | `infra`       | `terraform-validate`, `ansible-lint`, `terraform-plan`                                         | L'infrastructure se valide **avant** qu'on ne compile |
 | `build`       | `build-front`, `build-back`                                                                    | Compilation des artefacts                             |
-| `package`     | `package-back`, `package-front`                                                                | Images Docker taguées par SHA + scan Trivy            |
+| `package`     | `package-back`, `package-front`, `promote-back`, `promote-front`, `release`                    | Images Docker taguées par SHA + scan Trivy            |
 | `perf`        | job `perf` → **pipeline enfant** (`k6-smoke`, `k6-load`, `k6-stress`)                          | Tests de performance k6 sur l'image construite        |
-| `deploy`      | `deploy-staging`, `deploy-production`, `rollback-production`                                   | Déploiement Kubernetes et retour arrière              |
-| `infra-apply` | `terraform-apply-{staging,logging,production}`                                                 | Manuels et **bloquants** : d'où leur place en dernier |
+| `deploy`      | `deploy-staging`, `deploy-production`, `rollback-production`, `dora-metrics`                   | Déploiement Kubernetes et retour arrière              |
+| `infra-apply` | `terraform-apply-{staging,logging,production}`, `notify-echec`                                 | Manuels et **bloquants** : d'où leur place en dernier |
 
 Le détail du déclenchement par branche et de la procédure de release est dans
 [RELEASE.md](RELEASE.md) ; celui des scripts appelés par ces jobs dans
@@ -193,7 +207,7 @@ deux sont reliés par un workflow GitHub Actions,
 flowchart LR
     dev([git push]) --> gh[GitHub<br/>dépôt de travail, Pull Requests]
     gh -->|GitHub Actions<br/>miroir automatique| gl[GitLab<br/>miroir + exécution du pipeline]
-    gl --> ci[".gitlab-ci.yml<br/>10 étapes, 36 jobs<br/>13 fichiers"]
+    gl --> ci[".gitlab-ci.yml<br/>10 étapes, 39 jobs<br/>14 fichiers"]
 ```
 
 À chaque push sur n'importe quelle branche ou tag, le workflow recopie toutes les
@@ -210,29 +224,31 @@ Le lien du dépôt GitLab :
 
 ## 7. Convention de nommage des branches
 
-Le projet suit **GitFlow**. Le nommage n'est pas cosmétique : `.gitlab-ci.yml` filtre
-les jobs sur le préfixe de branche, donc **une branche mal nommée ne déclenche aucun
-pipeline**.
+Le projet suit **GitFlow**. Le nommage n'est pas cosmétique : les règles de
+`.gitlab/ci/templates.yml` filtrent les jobs sur le préfixe de branche, donc
+**une branche mal nommée ne déclenche aucun pipeline**.
 
-| Branche       | Rôle                           | Jobs déclenchés               |
-| ------------- | ------------------------------ | ----------------------------- |
-| `main`        | Code en production             | Tous, jusqu'au déploiement    |
-| `develop`     | Intégration continue           | Tous, jusqu'au staging        |
-| `feature/...` | Nouvelle fonctionnalité        | lint, test, quality, security |
-| `release/...` | Préparation d'une version      | Tous                          |
-| `hotfix/...`  | Correctif urgent en production | Tous                          |
-| Tag `vX.Y.Z`  | Version livrée                 | Tous, déploiement prod        |
+| Branche                              | Rôle                                      | Jobs déclenchés                                                     |
+| ------------------------------------ | ----------------------------------------- | ------------------------------------------------------------------- |
+| `main`                               | Code en production                        | Tous, jusqu'au déploiement                                          |
+| `develop`                            | Intégration continue                      | Tous, jusqu'au staging                                              |
+| `feature/...`, `fix/...`, `docs/...` | Fonctionnalité, correction, documentation | lint, test, quality, security, validation d'infra ; aucune image    |
+| `release/...`                        | Préparation d'une version                 | Vérification, images, performance ; aucun déploiement               |
+| `hotfix/...`                         | Correctif urgent en production            | Vérification, images, performance ; aucun déploiement               |
+| Tag `vX.Y.Z`                         | Version livrée                            | Tous sauf `package-*` : promotion, Release GitLab, déploiement prod |
 
 Le séparateur est un **slash**, pas un underscore : la règle est
-`$CI_COMMIT_BRANCH =~ /^feature\//`. Une branche `feature_ma-fonctionnalite` ou
-`docs/ma-doc` ne correspond à aucune règle et son pipeline ne partira jamais.
+`$CI_COMMIT_BRANCH =~ /^(feature|fix|docs)\//`. Une branche
+`feature_ma-fonctionnalite` ou `feat/ma-fonction` ne correspond à aucune règle
+et son pipeline ne partira jamais — `fix/` et `docs/` ont été ajoutés à la règle
+parce que le dépôt les employait réellement.
 Les mots composés s'écrivent avec un tiret : `feature/initial-documentation`.
 
 ---
 
 ## 8. Schémas d'architecture
 
-Trois schémas, et un seul format : **Mermaid, en texte, dans le dépôt**. Ce n'est
+Quatre schémas, et un seul format : **Mermaid, en texte, dans le dépôt**. Ce n'est
 pas une préférence d'outil. Une image binaire ne se relit pas : dans une revue
 elle se remplace, et rien ne dit ce qui a changé entre deux versions — il faut
 croire la légende sur parole. Un bloc Mermaid apparaît dans un `git diff` ligne à
@@ -249,6 +265,7 @@ main.
 | `docs/schemas/plateforme-deploiement.mmd` | §8.1 — du commit au pod      |
 | `docs/schemas/iac-frontiere.mmd`          | §8.2 — l'IaC et sa frontière |
 | `docs/schemas/flux-logs.mmd`              | §8.3 — le flux des logs      |
+| `docs/schemas/traces-apm.mmd`             | §8.4 — le flux des traces    |
 
 Huit schémas supplémentaires décrivent l'**architecture finale** du projet —
 l'état abouti de la plateforme, du point de vue de l'équipe Orion. Ils vivent
@@ -285,7 +302,7 @@ flowchart TB
     gh -->|"GitHub Actions : mirror-to-gitlab.yaml<br/>push --prune de toutes les refs"| gl["GitLab<br/>miroir en lecture seule"]
     gl --> pipe
 
-    subgraph pipe["Pipeline GitLab CI : 10 étapes, 36 jobs"]
+    subgraph pipe["Pipeline GitLab CI : 10 étapes, 39 jobs"]
         direction LR
         s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
     end
@@ -295,7 +312,7 @@ flowchart TB
 
     s9 == "déclenchement MANUEL<br/>develop, main ou tag" ==> jobs
 
-    subgraph jobs["Étape deploy : 3 jobs, aucun n'a jamais abouti"]
+    subgraph jobs["Étape deploy : 3 jobs, aboutis depuis le 2026-09-22"]
         direction TB
         j1["1. kubectl create secret docker-registry"]
         j2["2. overlay éphémère Kustomize<br/>images: newName + newTag"]
@@ -304,11 +321,11 @@ flowchart TB
         j1 --> j2 --> j3 --> j4
     end
 
-    reg -.->|"imagePullSecrets"| j3
+    reg -->|"imagePullSecrets"| j3
     tf -.-> ns
-    j4 -.-> ns
+    j4 --> ns
 
-    subgraph ns["Namespace microcrm-staging ou microcrm-prod"]
+    subgraph ns["Namespace microcrm-staging ou microcrm-production"]
         direction LR
         ing["Ingress<br/>2 hôtes"]
         pb["pod back<br/>1 replica imposé"]
@@ -317,37 +334,49 @@ flowchart TB
         ing --> pf
     end
 
-    poste(["Poste : docker build<br/>+ minikube image load"]) ==>|"le seul chemin<br/>réellement déployé<br/>K8S.md §14"| ns
+    poste(["Poste : docker build<br/>+ minikube image load"]) ==>|"chemin manuel,<br/>campagne K8S.md §14"| ns
 
     classDef jamais stroke-dasharray: 5 5;
-    class jobs,tf jamais;
+    class tf jamais;
 ```
 
-**Ce que le trait pointillé veut dire.** Les cadres en tirets ne sont pas une
-coquetterie graphique : ils marquent ce qui est écrit, testé, et **jamais mené à
-son terme**. Sur les 44 pipelines de l'historique du projet, **sept déploiements
-ont été déclenchés et les sept ont échoué** ; `deploy-production` et
-`rollback-production` n'ont jamais été lancés une seule fois ; il n'existe aucun
-déploiement réussi depuis la CI. Le dernier pipeline s'est arrêté sur
-`ci_quota_exceeded` — les minutes du Free Tier GitLab sont épuisées et aucun job
-n'a démarré. C'est ce que mesurent les indicateurs DORA du projet
-([MONITORING.md](MONITORING.md) §9), et c'est le résultat qu'il faut savoir
-présenter plutôt que masquer.
+**Ce que le trait plein de l'étape deploy veut dire, depuis peu.** Ce cadre
+était en tirets, avec le reste de la convention : écrit, testé, jamais mené à son
+terme. **Il ne l'est plus depuis le 2026-09-22.** Un runner auto-hébergé a été
+enregistré sur le poste, ce qui a supprimé la contrainte de quota et rendu
+visibles trois défauts qu'aucun job n'allait assez loin pour rencontrer — un
+kubeconfig pointant sur `127.0.0.1` depuis un conteneur, un RBAC d'agent qui ne
+couvrait pas les objets applicatifs, un `$STAGING_NAMESPACE` absent qui faisait
+déployer dans `default` en silence. Les trois sont corrigés ; staging et
+production tournent aujourd'hui sur des images tirées du registry GitLab par ces
+jobs, `imagePullSecrets` compris.
 
-**Le trait épais du bas est donc le seul chemin qui a réellement produit des pods
-en marche** : images construites sur le poste, chargées par `minikube image
-load` (décision D3), overlay appliqué à la main. Le rollout, le rollback
-automatique sur une image volontairement cassée, la résilience à la suppression
-d'un pod et le comportement des sondes sous kubelet ont tous été observés — la
-campagne est consignée dans [K8S.md](K8S.md) §14.
+Ce que les indicateurs DORA en disent est à lire en entier
+([MONITORING.md](MONITORING.md) §9) : **5 déploiements réussis sur 30 jours,
+66,67 % de taux d'échec sur 9 tentatives**, deux rollbacks dont un qui a échoué.
+La chaîne aboutit ; elle n'est pas pour autant une chaîne de livraison régulière,
+et ces chiffres portent sur trop peu d'observations pour décrire autre chose que
+deux journées de mise au point.
 
-**Pourquoi garder le schéma d'une chaîne qui n'a jamais abouti.** Parce que
-l'échec n'est pas dans sa description. Les quatre étapes du job de déploiement
-sont couvertes par les 151 assertions de `scripts/tests/run_tests.sh`, l'overlay
-éphémère a un garde-fou qui échoue si la substitution d'image ne mord plus
-([K8S.md](K8S.md) §6), et c'est précisément cet overlay qui a supprimé la
-révision « placeholder » qui rendait `rollback-production` destructeur. Ce qui
-manque est le runner, pas le mécanisme.
+**Le trait pointillé qui reste** est celui de Terraform, dont l'`apply` demeure
+un geste manuel (§8.2).
+
+**Le trait épais du bas n'est plus le seul chemin qui produit des pods en
+marche**, mais il reste celui de la campagne de vérification : images construites
+sur le poste, chargées par `minikube image load` (décision D3), overlay appliqué
+à la main. Le rollout, le rollback automatique sur une image volontairement
+cassée, la résilience à la suppression d'un pod et le comportement des sondes
+sous kubelet y ont été observés un par un — c'est consigné dans
+[K8S.md](K8S.md) §14, et aucun déploiement de CI ne réexerce ce détail.
+
+**Ce que le mécanisme devait à sa description.** Les quatre étapes du job de
+déploiement sont couvertes par les 430 assertions de
+`scripts/tests/run_tests.sh`, l'overlay éphémère a un garde-fou qui échoue si la
+substitution d'image ne mord plus ([K8S.md](K8S.md) §6), et c'est précisément cet
+overlay qui a supprimé la révision « placeholder » qui rendait
+`rollback-production` destructeur. Quand l'exécution est enfin devenue possible,
+rien de tout cela n'a eu à être réécrit : ce qui manquait était bien le runner,
+pas le mécanisme.
 
 ### 8.2 L'infrastructure comme code, et sa frontière
 
@@ -422,6 +451,14 @@ Trois conséquences se lisent directement sur le schéma :
 > namespace, la CI y déploie, et les deux ne se parlent pas. En cas de
 > divergence, le job échoue sur un namespace inexistant, ou pire en crée un
 > second, sans quota ni policy.
+>
+> **Le cas s'est produit le 2026-09-22, en pire que prévu.** `$STAGING_NAMESPACE`
+> n'était pas définie du tout côté GitLab : `kubectl -n ""` ne proteste pas, il
+> vise `default`. Le déploiement a donc réussi — dans le mauvais namespace, sans
+> quota ni policy, et sans rien signaler. Le garde-fou `exige_namespace` de
+> `.deploy_template` couvre désormais ce cas : une variable vide fait échouer le
+> job. Il ne couvre toujours pas la divergence entre deux noms tous les deux
+> renseignés, qui reste à la charge de la relecture.
 
 ### 8.3 Le flux des logs
 
@@ -494,6 +531,93 @@ souffre pas d'exception. Et la bascule texte → JSON du back tient à la seule 
 `SPRING_PROFILES_ACTIVE` de la ConfigMap : **sans elle, le pod journalise en
 texte sans que rien ne le signale**, et Kibana n'a plus rien à filtrer.
 
+Ce que le schéma ne montre pas, parce que ce n'est plus du transport : les logs
+collectés alimentent cinq tableaux de bord versionnés dans
+`k8s/elk/dashboards/`, et huit règles d'alerte Kibana, versionnées dans
+`k8s/elk/alerting/`, les surveillent chaque minute. Ces règles écrivent dans un
+index et dans le journal de Kibana ; aucune notification ne sort de Kibana
+([MONITORING.md](MONITORING.md) §11).
+
+### 8.4 Le flux des traces
+
+```mermaid
+flowchart TB
+    accTitle: Le flux des traces, de la requête HTTP à Kibana APM
+    accDescr: Dans le pod back, l'agent Java OpenTelemetry instrumente Spring Boot. Il envoie les traces en OTLP à APM Server, dans le namespace logging, qui les écrit dans Elasticsearch et en déduit débit, latence et taux d'échec. Le même agent écrit trace.id dans les logs JSON, que Filebeat collecte. Kibana APM lit les traces et retrouve leurs logs par trace.id.
+
+    req(["Requête HTTP sur l'API"]) --> appli
+
+    subgraph app["Namespaces microcrm-staging et microcrm-production"]
+        subgraph pod["pod back : une seule JVM"]
+            appli["Spring Boot<br/>bytecode instrumenté au chargement"]
+            agent["Agent Java OpenTelemetry 2.31.1<br/>embarqué dans l'image, activé par<br/>JAVA_TOOL_OPTIONS de la ConfigMap"]
+            mdc["Logs JSON ECS sur stdout<br/>avec trace.id et span.id"]
+            appli -->|"spans"| agent
+            agent -->|"écrit trace.id et span.id<br/>dans le MDC Logback"| mdc
+        end
+    end
+
+    agent ==>|"OTLP http/protobuf, traces seules<br/>apm-server.logging.svc:8200<br/>attribut deployment.environment"| np
+
+    subgraph logging["Namespace logging — créé par Terraform"]
+        np{"NetworkPolicy : source dans<br/>un namespace applicatif ?"}
+        refus["refusé — sur un CNI qui<br/>applique les policies"]
+        apm["APM Server 8.19.7, sans Fleet<br/>port unique 8200, sans authentification"]
+        fb["Filebeat, DaemonSet<br/>ne collecte que microcrm-staging"]
+        es[("Elasticsearch<br/>templates APM installés par le plugin apm-data")]
+        tr["traces-apm-default<br/>transactions et spans, rétention 10 jours"]
+        me["metrics-apm.*<br/>débit, latence, taux d'échec<br/>calculés par APM Server"]
+        lo["microcrm-logs-AAAA.MM.JJ<br/>logs portant trace.id"]
+        kb["Kibana, application APM<br/>services, transactions, cascade de spans,<br/>onglet Logs par trace.id"]
+
+        np -->|non| refus
+        np -->|oui| apm
+        apm --> tr
+        apm -->|"agrège les traces"| me
+        fb --> lo
+        tr --> es
+        me --> es
+        lo --> es
+        es --> kb
+    end
+
+    mdc -->|"/var/log/containers du nœud"| fb
+    ope(["kubectl -n logging port-forward svc/kibana 5601"]) -.->|"aucun Ingress"| kb
+```
+
+**Ce que le schéma montre, en clair.** Une requête HTTP arrive sur l'API. Dans
+le pod `back`, l'agent Java OpenTelemetry — embarqué dans l'image, mais activé
+seulement par la clé `JAVA_TOOL_OPTIONS` de la ConfigMap — instrumente Spring
+Boot et en tire des _spans_. Deux chemins partent alors du même pod :
+
+1. **Les traces** sont envoyées en OTLP (`http/protobuf`) à APM Server, dans le
+   namespace `logging`, sur son port unique 8200. Une `NetworkPolicy` posée par
+   Terraform n'y admet que les deux namespaces applicatifs. APM Server écrit
+   les transactions et les spans dans le data stream `traces-apm-default`, et
+   en **déduit lui-même** le débit, la latence et le taux d'échec, rangés dans
+   les data streams `metrics-apm.*`.
+2. **Les logs** suivent le chemin du §8.3, à une différence près : l'agent a
+   écrit `trace.id` et `span.id` dans le MDC Logback, donc chaque ligne JSON
+   émise pendant une requête porte l'identifiant de sa trace.
+
+Les deux se rejoignent dans le **même** Elasticsearch, et c'est tout l'intérêt
+de la disposition : l'application APM de Kibana affiche une trace, puis retrouve
+ses logs par `trace.id`. C'est la raison pour laquelle APM Server vit dans la
+stack ELK et non à part.
+
+Trois limites se lisent sur le schéma lui-même. Filebeat ne collecte que
+`microcrm-staging` : une trace de production arrive bien, ses logs non. APM
+Server n'a **aucune authentification** : son périmètre tient à la
+`NetworkPolicy`, que le CNI par défaut de minikube n'applique pas. Et le front
+n'est pas instrumenté : la trace commence à l'API, pas dans le navigateur.
+
+⚠️ **Ce schéma décrit ce que le dépôt déploie, pas ce qui tourne le
+2026-10-02.** Les pods `back` du cluster exécutent des images antérieures à
+l'agent, et leur ConfigMap ne porte pas ces clés : aucune trace ne sort du
+cluster. La chaîne a été éprouvée depuis le poste, avec un conteneur local.
+Le relevé, les mesures et les pièges sont dans [MONITORING.md](MONITORING.md)
+§10.
+
 ---
 
 ## 9. Pourquoi l'option locale a été retenue
@@ -533,12 +657,15 @@ ni plan simulé, ni dry-run présenté comme une preuve. Ce qui manque est le
 fournisseur, pas la mécanique — et c'est exactement ce que la table du §10 sert à
 montrer.
 
-**5. Une nuance, et elle s'est vérifiée : gratuit ne veut pas dire sans
-limite.** Le dernier pipeline du projet ne s'est pas arrêté sur un test rouge
-mais sur `ci_quota_exceeded` : les minutes du Free Tier GitLab étaient épuisées
-et aucun job n'a démarré. L'option locale supprime la facture, pas la contrainte
-de ressource — elle la déplace vers le poste et vers les quotas gratuits, où elle
-finit par se manifester aussi.
+**5. Une nuance, et elle s'est vérifiée dans les deux sens : gratuit ne veut pas
+dire sans limite.** Pendant deux mois, aucun pipeline du projet ne s'est arrêté
+sur un test rouge mais sur `ci_quota_exceeded` : les minutes du Free Tier GitLab
+étaient épuisées et aucun job ne démarrait. La sortie a été d'enregistrer un
+**runner auto-hébergé** sur le poste — depuis le 2026-09-22, les jobs n'y
+consomment plus une minute de quota. Ce qui confirme la nuance plutôt que de la
+lever : l'option locale supprime la facture, pas la contrainte de ressource, elle
+la déplace vers le poste. Le quota gratuit s'est manifesté d'abord ; c'est
+maintenant la machine qui porte la charge des jobs.
 
 ---
 
@@ -628,9 +755,11 @@ Rien dans ce projet ne démontre qu'on sait choisir une taille d'instance en
 regardant une facture.
 
 **La montée en charge automatique.** Ni `HorizontalPodAutoscaler`, ni
-`metrics-server`, ni autoscaler de nœuds. Le projet collecte des **logs**, pas des
-métriques ([MONITORING.md](MONITORING.md) §10) : il manque donc jusqu'au signal
-sur lequel un autoscaler déciderait. Et les tests k6 s'exécutent contre l'image
+`metrics-server`, ni autoscaler de nœuds. Le projet collecte des **logs** ; des
+**traces**, qui donneront la latence et le débit de l'API, sont écrites depuis
+le 2026-10-01 mais pas encore déployées ; et il n'existe toujours aucune
+métrique de ressources, ni CPU ni mémoire ([MONITORING.md](MONITORING.md) §10.4
+et §12) : il manque donc jusqu'au signal sur lequel un autoscaler déciderait. Et les tests k6 s'exécutent contre l'image
 construite dans la CI, pas contre le cluster — ils mesurent l'application, pas
 l'élasticité de l'infrastructure.
 
@@ -666,14 +795,19 @@ aujourd'hui.
    qu'aucune erreur ne soit levée. Une base externe (PostgreSQL) avec un
    `PersistentVolumeClaim` lèverait les deux d'un coup.
 
-2. **La chaîne de déploiement n'a jamais abouti depuis la CI.** Les manifestes,
-   eux, ont bien été appliqués sur un cluster : rollout, rollback automatique,
-   sondes sous kubelet et résilience ont été observés lors de la campagne de
-   [K8S.md](K8S.md) §14 — mais **à la main, depuis le poste**. Les sept
-   déploiements déclenchés dans l'histoire du projet ont tous échoué, et le
-   quota de minutes du Free Tier GitLab est épuisé (§8.1).
+2. **La chaîne de déploiement aboutit depuis la CI, mais sur deux journées
+   seulement.** Elle a échoué sept fois avant le 2026-09-22 ; elle a posé
+   staging et production les 22 et 23 septembre, et exercé un rollback de
+   production suivi d'un redéploiement (§8.1). Rien n'a été déployé depuis : les
+   trois derniers pipelines de `develop` ont échoué, pour trois raisons
+   différentes ([MONITORING.md](MONITORING.md) §10.4). Le recul est donc faible et les indicateurs le disent :
+   **66,67 % d'échec sur 9 tentatives** ([MONITORING.md](MONITORING.md) §9). Le
+   détail du comportement en exploitation — rollback automatique sur image
+   cassée, sondes sous kubelet, résilience à la perte d'un pod — reste établi par
+   la campagne manuelle de [K8S.md](K8S.md) §14, qu'aucun déploiement de CI ne
+   réexerce.
 
-3. **L'image du back pèse 377 Mo**, dont ~365 pour le JRE. Voir §3 pour la piste
+3. **L'image du back pèse 390 Mo**, dont ~376 pour le JRE. Voir §3 pour la piste
    `jlink`.
 
 4. **Le front et l'API sont sur des origines différentes** (deux hôtes

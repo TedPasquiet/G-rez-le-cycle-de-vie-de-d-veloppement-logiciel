@@ -1,0 +1,38 @@
+{
+  "SchemaVersion": 2,
+  "CreatedAt": "2026-10-02T10:05:00Z",
+  "ArtifactName": "registry.exemple.invalid/groupe/projet/back:abcdef12",
+  "ArtifactType": "container_image",
+  "Results": [
+    {
+      "Target": "registry.exemple.invalid/groupe/projet/back:abcdef12 (alpine 3.24.2)",
+      "Class": "os-pkgs",
+      "Type": "alpine",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2099-0003",
+          "PkgName": "bibliotheque-fictive",
+          "InstalledVersion": "3.0.0-r0",
+          "FixedVersion": "3.0.1-r0",
+          "Severity": "CRITICAL",
+          "Title": "Constat fabriqué pour les tests : image"
+        }
+      ]
+    },
+    {
+      "Target": "app/app.jar",
+      "Class": "lang-pkgs",
+      "Type": "jar",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2099-0004",
+          "PkgName": "org.exemple:fictif",
+          "InstalledVersion": "5.0.0",
+          "FixedVersion": "",
+          "Severity": "low",
+          "Title": "Sévérité en minuscules, version corrigée vide"
+        }
+      ]
+    }
+  ]
+}

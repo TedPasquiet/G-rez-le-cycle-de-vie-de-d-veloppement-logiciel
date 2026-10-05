@@ -2,11 +2,46 @@
 #
 # Faux trivy, utilisé seulement par run_tests.sh.
 #
-# Sert à tester l'option --scan de build_and_push.sh : quand Trivy trouve une
-# faille CRITICAL il sort en erreur, et le script doit alors annuler le push.
+# Sert à tester l'option --scan de build_and_push.sh et les deux passages de
+# trivy_scan.sh (le relevé JSON, puis la porte), sans base de vulnérabilités ni
+# réseau.
 #
-# Variable qui pilote son comportement :
-#   FAKE_TRIVY_FAIL   Si "1" : trivy trouve une vulnérabilité et sort en 1.
+# Il reproduit le comportement du vrai sur le seul point qui compte pour ces
+# scripts : des constats ne font sortir Trivy en erreur QUE si `--exit-code` est
+# passé, et avec la valeur demandée. Sans ce drapeau, un scan qui trouve des
+# failles sort en 0 — c'est ce qui permet d'écrire le relevé sans fermer la
+# porte.
+#
+# Variables qui pilotent son comportement :
+#   FAKE_TRIVY_LOG    Fichier où sont écrites les commandes reçues.
+#   FAKE_TRIVY_FAIL   Si "1" : trivy trouve des constats. Il sort avec la valeur
+#                     de `--exit-code` si le drapeau est là, en 0 sinon.
+#   FAKE_TRIVY_ERROR  Si "1" : erreur fatale (base injoignable, cible
+#                     introuvable). Sort en 1 quoi qu'il arrive, sans rien écrire.
+#   FAKE_TRIVY_MUET   Si "1" : `--format json` n'écrit rien sur la sortie
+#                     standard (le cas d'un relevé vide).
 
-[[ "${FAKE_TRIVY_FAIL:-0}" == "1" ]] && exit 1
+if [[ -n "${FAKE_TRIVY_LOG:-}" ]]; then
+  echo "trivy $*" >>"$FAKE_TRIVY_LOG"
+fi
+
+[[ "${FAKE_TRIVY_ERROR:-0}" == "1" ]] && exit 1
+
+code_constats=0
+format='table'
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --exit-code) code_constats="${2:-0}"; shift 2 ;;
+    --format) format="${2:-table}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+if [[ "$format" == 'json' ]]; then
+  [[ "${FAKE_TRIVY_MUET:-0}" == "1" ]] || echo '{"SchemaVersion": 2, "Results": []}'
+else
+  echo 'Report Summary (faux trivy)'
+fi
+
+[[ "${FAKE_TRIVY_FAIL:-0}" == "1" ]] && exit "$code_constats"
 exit 0

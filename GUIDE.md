@@ -46,7 +46,7 @@ part vers SonarCloud, dont le verdict n'est relu que sur `main`. Le message
 
 ## 4. Les tests des scripts d'automatisation
 
-151 assertions qui vérifient les scripts du pipeline **avant** qu'ils ne servent
+430 assertions qui vérifient les scripts du pipeline **avant** qu'ils ne servent
 en production. Le principe : `kubectl`, `docker`, `trivy` et `k6` sont remplacés
 par de faux programmes placés en tête du `PATH`, qui journalisent ce qu'on leur
 demande et renvoient le code de sortie voulu. On peut ainsi tester les chemins
@@ -59,8 +59,9 @@ passe par l'entrée standard et jamais en argument.
 
 ## 5. La validation des manifestes Kubernetes
 
-60 assertions dans le job `lint-k8s`, dont l'image n'a pas helm, et 108 dans
-`lint-helm`, qui l'a. Elles construisent chaque overlay avec le Kustomize
+98 assertions dans le job `lint-k8s`, dont l'image n'a pas helm, et 174 dans
+`lint-helm`, qui l'a — comptes `--autotest` compris, comme les jobs les jouent
+(151 sans `--autotest`, helm présent). Elles construisent chaque overlay avec le Kustomize
 embarqué dans `kubectl` et vérifient le rendu, **sans cluster**.
 Elles attrapent ce qu'aucun validateur de schéma ne verrait : le contrat de
 nommage avec `deploy.sh`, une ConfigMap référencée mais absente, une sonde
@@ -75,11 +76,14 @@ faute de `kubeconform` dans l'image.
 
 ## 6. Le pipeline CI/CD
 
-36 jobs répartis en 10 étapes : `lint`, `test`, `quality`, `security`, `infra`,
-`build`, `package`, `perf`, `deploy`. Deux jeux de règles pilotent l'ensemble : les jobs
-de contrôle tournent sur toute branche `feature/*`, `release/*`, `hotfix/*`,
-`develop`, `main` et les tags ; les jobs qui produisent ou déploient un artefact
-sont réservés à `develop`, `main` et aux tags. Toutes les images d'outillage sont
+39 jobs répartis en 10 étapes : `lint`, `test`, `quality`, `security`, `infra`,
+`build`, `package`, `perf`, `deploy`, `infra-apply` — dont 3 dans le pipeline
+enfant de performance. Deux jeux de règles pilotent l'ensemble : les jobs de
+contrôle tournent sur toute branche `feature/*`, `fix/*`, `docs/*`,
+`release/*`, `hotfix/*`, `develop`, `main` et les tags ; les jobs qui produisent
+un artefact sont réservés à `develop`, `release/*`, `hotfix/*`, `main` et aux
+tags, et les déploiements à `develop` et `main`. Un tag ne reconstruit rien : il
+promeut l'image déjà construite et crée une Release GitLab. Toutes les images d'outillage sont
 épinglées à une version précise dans le bloc `variables:` — un tag flottant fait
 casser un pipeline sans qu'aucun commit ne l'explique.
 
@@ -91,7 +95,8 @@ casser un pipeline sans qu'aucun commit ne l'explique.
 Quatre contrôles complémentaires. Checkstyle et ESLint sur le style, SpotBugs sur
 les défauts de programmation Java, SonarCloud sur la dette et les vulnérabilités,
 un seuil de couverture et des tests de mutation sur le back. Deux points à
-connaître : tous ces contrôles sont **bloquants**, `mutation-back` compris ; et
+connaître : tous ces contrôles sont **bloquants**, `mutation-back` compris, sauf
+`spotbugs-back`, qui publie son rapport sans arrêter le pipeline ; et
 `quality-gate` ne tourne que sur `main`, parce que le plan gratuit de SonarCloud
 refuse de livrer le verdict des autres branches.
 Les analyses, elles, sont bien envoyées depuis toutes les branches.
@@ -106,12 +111,14 @@ des vulnérabilités connues. Trivy scanne le dépôt à la recherche de dépend
 vulnérables, de secrets oubliés et de mauvaises configurations, et scanne aussi
 les images avant leur envoi au registry. Les conteneurs déployés tournent en
 utilisateur non privilégié, système de fichiers en lecture seule et sans aucune
-capability. `dependency-check-back` et `trivy-fs` sont **bloquants** depuis
-qu'ils aboutissent sans rien trouver, tout comme les scans d'image de
-`package-back` et `package-front` : la porte se ferme sur du vide, et c'est ce
-qui serait introduit ensuite qui arrêterait le pipeline.
+capability. `dependency-check-back`, `trivy-fs` et les scans d'image de
+`package-back` et `package-front` sont **bloquants** ; chaque scan publie son
+rapport en artefact, et l'image est scannée **avant** d'être poussée. Un piège
+découvert le 2 octobre 2026 : Dependency-Check « ne trouvait rien » parce qu'il
+n'analysait aucun jar ; il en lit 82 depuis, et 12 CVE de Spring Framework y
+sont exceptées, datées et justifiées ([QUALITY.md](QUALITY.md) §3).
 
-**Fichiers** : `back/config/dependency-check/suppressions.xml`, `.trivyignore.yaml`, `scripts/ci/build_and_push.sh`, `k8s/base/*-deployment.yaml`
+**Fichiers** : `back/config/dependency-check/suppressions.xml`, `.trivyignore.yaml`, `scripts/ci/build_and_push.sh`, `scripts/ci/trivy_scan.sh`, `k8s/base/*-deployment.yaml`
 **Jobs CI** : `dependency-check-back`, `trivy-fs` · **Détail** : [AUDIT.md](AUDIT.md)
 
 ## 9. La performance

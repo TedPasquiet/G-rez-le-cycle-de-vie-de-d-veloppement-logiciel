@@ -1,0 +1,97 @@
+{
+  "name": "MicroCRM - disponibilité - back de staging qui redémarre en boucle",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "enabled": true,
+  "tags": ["microcrm", "famille:disponibilite", "severite:haute"],
+  "schedule": {
+    "interval": "1m"
+  },
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM microcrm-logs-* | WHERE kubernetes.namespace == \"microcrm-staging\" AND kubernetes.container.name == \"back\" AND log.logger == \"com.openclassroom.devops.orion.microcrm.MicroCRMApplication\" AND message LIKE \"Starting MicroCRMApplication*\" | STATS valeur = COUNT(*), pods = VALUES(kubernetes.pod.name) | WHERE valeur >= 2 | EVAL detail = MV_CONCAT(pods, \" \") | KEEP valeur, detail"
+    },
+    "timeField": "@timestamp",
+    "timeWindowSize": 15,
+    "timeWindowUnit": "m",
+    "threshold": [0],
+    "thresholdComparator": ">",
+    "size": 10
+  },
+  "actions": [
+    {
+      "id": "microcrm-alerts-index",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "disponibilite",
+            "severite": "haute",
+            "seuil": "2 démarrages ou plus en 15 min",
+            "unite": "démarrages",
+            "statut": "declenchee",
+            "valeur": "{{#context.hits}}{{_source.valeur}}{{/context.hits}}",
+            "detail": "{{#context.hits}}{{_source.detail}}{{/context.hits}}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "warn",
+        "message": "ALERTE [disponibilite/haute] {{rule.name}} - valeur {{#context.hits}}{{_source.valeur}}{{/context.hits}} démarrages (seuil : 2 démarrages ou plus en 15 min) - {{#context.hits}}{{_source.detail}}{{/context.hits}}"
+      }
+    },
+    {
+      "id": "microcrm-alerts-index",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "disponibilite",
+            "severite": "haute",
+            "seuil": "2 démarrages ou plus en 15 min",
+            "unite": "démarrages",
+            "statut": "retablie",
+            "detail": "la condition n'est plus remplie"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "info",
+        "message": "RETABLIE [disponibilite] {{rule.name}}"
+      }
+    }
+  ]
+}

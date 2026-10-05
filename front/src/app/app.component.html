@@ -3,10 +3,11 @@
     <div class="columns">
       <div class="column">
         <h1 class="title is-size-1">
-          <a href="/" class="has-text-primary"
-            >Micro<span class="has-text-grey">CRM</span></a
-          >
+          <a href="/" class="has-text-primary">Micro<span class="has-text-grey">CRM</span></a>
         </h1>
+        <!-- Au-dessus du router-outlet, donc hors de portée des navigations :
+             un échec survenu juste avant un changement d'écran reste lisible. -->
+        <app-http-error-banner />
         <router-outlet />
       </div>
     </div>

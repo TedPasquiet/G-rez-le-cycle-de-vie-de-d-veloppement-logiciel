@@ -273,7 +273,7 @@ dépôt.
 arrière** s'il n'aboutit pas dans `$DEPLOY_TIMEOUT`. Son `kubectl set image` est
 désormais un **no-op** — l'étape 3 a déjà posé la bonne image — et il ne crée
 donc aucune révision supplémentaire (vérifié, §14.10). On le garde pour l'attente
-de rollout et pour le garde-fou, couverts par les 151 assertions de
+de rollout et pour le garde-fou, couverts par les 430 assertions de
 `scripts/tests/run_tests.sh`.
 
 ### Pourquoi un overlay éphémère, et pas autre chose
@@ -1198,7 +1198,11 @@ disponibilité du processus, pas sur celle des données.
 - **Les valeurs de `resources`.** `metrics-server` n'est pas activé
   (`kubectl top` renvoie `Metrics API not available`), donc les requests et
   limits du §11 restent des estimations. Aucun `OOMKill` n'a été observé, ce qui
-  est un indice, pas une mesure.
+  est un indice, pas une mesure. C'est toujours vrai au 2026-10-02 : les traces
+  OpenTelemetry écrites depuis mesurent la latence de l'API, pas la
+  consommation des pods, et elles ne sont pas déployées. Le seul chiffre de
+  mémoire disponible est le surcoût de l'agent, mesuré une fois hors cluster
+  (408 Mio contre 292, `MONITORING.md` §10.4).
 
 - **Le TLS.** L'Ingress est en clair. Les URL de la ConfigMap sont en `https://`
   et sont servies telles quelles au navigateur : cohérent avec un environnement
@@ -1212,6 +1216,8 @@ disponibilité du processus, pas sur celle des données.
 - **La CI appliquant ces manifestes.** Les jobs `deploy-staging` /
   `deploy-production` n'ont pas tourné : le déploiement a été fait à la main avec
   les mêmes commandes qu'eux, depuis un poste, avec `KUBECONFIG` positionné.
+  _Levé depuis_ : les deux jobs ont abouti les 22 et 23 septembre 2026, avec des
+  images tirées du registry privé (`MONITORING.md` §9.1).
 
 ### 14.9 Refaire la manipulation
 

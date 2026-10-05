@@ -10,6 +10,10 @@ back/.gradle
 # Fichiers verrouillés / générés
 **/package-lock.json
 
+# Fixtures des scans de sécurité : copies d'octets de rapports réels, dont une
+# volontairement invalide. Les reformater changerait ce qu'elles testent.
+scripts/tests/fixtures/security/
+
 # Documentation binaire
 *.odt
 

@@ -77,6 +77,34 @@ spec:
             # ne ferait qu'échouer en boucle dans les journaux.
             - name: TELEMETRY_ENABLED
               value: 'false'
+            # Clé de chiffrement des objets sauvegardés — indispensable aux
+            # règles d'alerte. Sans clé PERMANENTE, Kibana en tire une au hasard
+            # à chaque démarrage : l'API des connecteurs répond 500 et une règle
+            # créée avant un redémarrage ne peut plus être relue après.
+            # (GET /api/alerting/_health -> has_permanent_encryption_key.)
+            #
+            # ⚠️ La valeur n'est NI ici NI dans kibana-config.yaml : ce dépôt est
+            # public, une clé écrite dans un manifeste serait un secret exposé.
+            # Elle vient du Secret `kibana-encryption-key`, qui n'est décrit par
+            # AUCUN fichier du dépôt : c'est scripts/monitoring/install_alerting.sh
+            # qui le crée, avec une valeur aléatoire, s'il n'existe pas encore.
+            #
+            # `optional: true` est délibéré : `kubectl apply -k k8s/elk` doit
+            # continuer à donner un Kibana qui démarre sur un cluster neuf où
+            # le Secret n'existe pas encore. On y perd seulement l'alerting,
+            # jusqu'au passage du script — au lieu d'un pod bloqué en
+            # CreateContainerConfigError qui emporterait aussi les tableaux de
+            # bord.
+            #
+            # Variable d'environnement et non fichier : celle-ci figure bien
+            # dans la liste fermée de l'entrypoint (kibana-docker, relu dans
+            # l'image 8.19.7), contrairement à `uiSettings.*`.
+            - name: XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY
+              valueFrom:
+                secretKeyRef:
+                  name: kibana-encryption-key
+                  key: encryptionKey
+                  optional: true
           # ⚠️ Dimensionnement — Kibana est un processus Node.js, et le piège est
           # le même que pour une JVM : le tas géré (« old space » de V8) n'est
           # qu'une PARTIE de ce que le processus consomme. S'y ajoutent les
@@ -158,7 +186,18 @@ spec:
               mountPath: /usr/share/kibana/data
             - name: tmp
               mountPath: /tmp
+            # subPath : seul kibana.yml est superposé. Monter le répertoire
+            # config/ entier masquerait node.options, livré par l'image.
+            # Voir kibana-config.yaml pour la raison d'être de ce fichier : la
+            # corrélation trace -> logs de l'application APM.
+            - name: config
+              mountPath: /usr/share/kibana/config/kibana.yml
+              subPath: kibana.yml
+              readOnly: true
       volumes:
+        - name: config
+          configMap:
+            name: kibana-config
         # emptyDir et non PVC : tout ce que Kibana persiste durablement (vues,
         # index patterns, tableaux de bord) est stocké dans Elasticsearch, pas
         # ici. Perdre ce répertoire au redémarrage ne coûte qu'un cache à

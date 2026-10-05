@@ -155,4 +155,61 @@ describe('OrganizationDetailsComponent', () => {
     expect(organizationService.deleteById).not.toHaveBeenCalled();
     expect(router.navigate).not.toHaveBeenCalled();
   });
+
+  describe('échec et chargement', () => {
+    const texte = () => (fixture.nativeElement as HTMLElement).textContent ?? '';
+
+    /**
+     * Même mensonge que sur la fiche personne : sans cet état, une
+     * organisation dont le chargement a échoué s'affiche comme un formulaire
+     * vide sans membres, indiscernable d'une organisation réellement vide.
+     */
+    it('signale une fiche dont le chargement a échoué au lieu de la montrer vide', async () => {
+      organizationService.fetchById.and.rejectWith(new Error('réseau'));
+
+      await monterAvecRoute('10');
+
+      expect(component.orgState).toBe('failed');
+      expect(texte()).toContain('could not be loaded');
+    });
+
+    it('annonce le chargement en cours', async () => {
+      organizationService.fetchById.and.returnValue(new Promise(() => undefined));
+
+      await monterAvecRoute('10');
+
+      expect(component.orgState).toBe('loading');
+      expect(texte()).toContain('Loading organization…');
+    });
+
+    it("n'annonce aucun chargement en mode création", async () => {
+      await monterAvecRoute('new');
+
+      expect(component.orgState).toBe('loaded');
+      expect(texte()).not.toContain('Loading organization…');
+    });
+
+    it("ne navigue pas vers une fiche que l'enregistrement n'a pas créée", async () => {
+      organizationService.save.and.rejectWith(new Error('500'));
+
+      await monterAvecRoute('new');
+      component.saveOrg();
+      await fixture.whenStable();
+
+      expect(organizationService.save).toHaveBeenCalled();
+      expect(router.navigate).not.toHaveBeenCalled();
+    });
+
+    it('reste sur la fiche quand la suppression est refusée', async () => {
+      organizationService.fetchById.and.resolveTo(anOrganization({ id: 10 }));
+      organizationService.deleteById.and.rejectWith(new Error('403'));
+
+      await monterAvecRoute('10');
+      component.deleteOrg();
+      await fixture.whenStable();
+
+      expect(organizationService.deleteById).toHaveBeenCalledWith(10);
+      expect(router.navigate).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -46,6 +46,11 @@
             <span *ngIf="name.errors?.['required']">Name is required.</span>
           </p>
         </div>
+        <p *ngIf="orgState === 'loading'" class="is-italic">Loading organization…</p>
+        <p *ngIf="orgState === 'failed'" class="is-italic has-text-danger">
+          This organization could not be loaded. The fields below are empty because nothing was
+          received.
+        </p>
         <h3 class="title is-size-3 mt-5">Persons</h3>
         <div class="table-container">
           <table class="table is-fullwidth">

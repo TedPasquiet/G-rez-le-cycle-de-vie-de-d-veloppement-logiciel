@@ -5,10 +5,7 @@
         <h2 class="title is-size-2">Persons</h2>
       </div>
       <div class="level-right">
-        <a
-          class="button is-primary is-medium level-item"
-          [routerLink]="['persons/new']"
-        >
+        <a class="button is-primary is-medium level-item" [routerLink]="['persons/new']">
           <span class="has-text-weight-bold">+</span>
         </a>
       </div>
@@ -25,14 +22,24 @@
         <tbody>
           <tr *ngFor="let pers of persons; first as isFirst">
             <td>
-              <a [routerLink]="['persons', pers.id]"
-                >{{ pers.firstName }} {{ pers.lastName }}</a
-              >
+              <a [routerLink]="['persons', pers.id]">{{ pers.firstName }} {{ pers.lastName }}</a>
             </td>
             <td>{{ pers.email }}</td>
             <td>{{ pers.updatedAt | date }}</td>
           </tr>
-          <tr *ngIf="persons.length === 0">
+          <!-- Les trois états sont distincts, et « No person yet. » est
+               désormais conditionné à un chargement RÉUSSI : affiché pendant
+               le chargement ou après un échec, il affirmait qu'il n'y avait
+               rien alors qu'on n'en savait rien. -->
+          <tr *ngIf="personsState === 'loading'">
+            <td colspan="3" class="has-text-centered is-italic">Loading persons…</td>
+          </tr>
+          <tr *ngIf="personsState === 'failed'">
+            <td colspan="3" class="has-text-centered is-italic has-text-danger">
+              Persons could not be loaded.
+            </td>
+          </tr>
+          <tr *ngIf="personsState === 'loaded' && persons.length === 0">
             <td colspan="3" class="has-text-centered is-italic">
               No person yet.
               <a [routerLink]="['persons/new']">Create one</a>
@@ -48,10 +55,7 @@
         <h2 class="title is-size-2">Organizations</h2>
       </div>
       <div class="level-right">
-        <a
-          class="button is-primary is-medium level-item"
-          [routerLink]="['organizations/new']"
-        >
+        <a class="button is-primary is-medium level-item" [routerLink]="['organizations/new']">
           <span class="has-text-weight-bold">+</span>
         </a>
       </div>
@@ -71,7 +75,15 @@
             </td>
             <td>{{ org.updatedAt | date }}</td>
           </tr>
-          <tr *ngIf="organizations.length === 0">
+          <tr *ngIf="organizationsState === 'loading'">
+            <td colspan="3" class="has-text-centered is-italic">Loading organizations…</td>
+          </tr>
+          <tr *ngIf="organizationsState === 'failed'">
+            <td colspan="3" class="has-text-centered is-italic has-text-danger">
+              Organizations could not be loaded.
+            </td>
+          </tr>
+          <tr *ngIf="organizationsState === 'loaded' && organizations.length === 0">
             <td colspan="3" class="has-text-centered is-italic">
               No organization yet.
               <a [routerLink]="['organization/new']">Create one</a>

@@ -19,3 +19,8 @@ output "kube_context" {
   description = "Contexte visé. À relire en premier quand un plan surprend."
   value       = var.kube_context
 }
+
+output "apm_network_policy" {
+  description = "NetworkPolicy qui n'ouvre APM Server qu'aux namespaces applicatifs, pour un `kubectl -n logging describe networkpolicy`."
+  value       = kubernetes_network_policy_v1.allow_apps_to_apm_server.metadata[0].name
+}

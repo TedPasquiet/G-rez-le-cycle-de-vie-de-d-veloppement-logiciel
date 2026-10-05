@@ -1,0 +1,4 @@
+misconfigurations:
+  - paths:
+      - k8s/base/back-deployment.yaml
+    statement: Entrée sans identifiant.

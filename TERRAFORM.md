@@ -3,11 +3,13 @@
 Description de ce que Terraform possède dans ce projet, de la frontière qui le
 sépare de Kustomize, et de ce que cette première version ne fait pas.
 
-**État : les configurations se construisent et se planifient, elles n'ont pas
-encore été appliquées.** `terraform validate` et `terraform plan` sortent en `0`
-sur les deux environnements, contre le cluster minikube réel (6 ressources à
-créer de chaque côté). L'`apply` reste à jouer — voir §10 pour la commande et
-§9.4 pour ce que cela laisse non vérifié. Cette distinction est maintenue tout
+**État : les trois environnements sont appliqués.** Ce document a longtemps
+écrit que les configurations « se planifiaient sans avoir été appliquées » ;
+ce n'est plus vrai depuis le 2026-09-22. `staging` a été appliqué depuis un
+poste ce jour-là, à partir d'un namespace réellement détruit (6 ressources
+créées, compte rendu dans `RELEASE.md` §9.5), `production` l'a été **depuis la
+CI** le 2026-09-23, et `logging` depuis un poste. Les trois états sont partagés
+(§4). Ce qui reste non vérifié est au §9.4. La distinction est maintenue tout
 au long du document : ce qui a été observé est présenté comme tel, le reste est
 annoncé comme non vérifié.
 
@@ -17,10 +19,12 @@ merge requests, `apply` manuel et nommé par environnement. L'accès au cluster
 depuis la CI passe par l'**agent GitLab pour Kubernetes** (§4.1) — aucun
 kubeconfig n'est stocké en variable de projet.
 
-⚠️ **En staging, l'`apply` demande une étape préalable** : le namespace existe
-déjà, créé à la main pendant la campagne du `K8S.md` §14, et Terraform ne le
-connaît pas. Sans l'import du §10.1, l'exécution échoue sur
-`namespaces "microcrm-staging" already exists`.
+⚠️ **Adopter un namespace qui existe déjà demande une étape préalable** (§10.1).
+C'était le cas de staging, créé à la main pendant la campagne du `K8S.md` §14 :
+sans import, l'`apply` échoue sur `namespaces "microcrm-staging" already exists`.
+Le cas a été réglé autrement le 2026-09-22 — le namespace a été détruit puis
+recréé par Terraform — mais il se représentera sur toute infrastructure
+existante.
 
 | Élément   | Version                                                        |
 | --------- | -------------------------------------------------------------- |
@@ -54,7 +58,7 @@ Kustomize sait parfaitement écrire un `Namespace` et un `ResourceQuota` — ce
 sont des objets Kubernetes comme les autres. Le partage ne tient donc pas à une
 limite technique, mais à un cycle de vie.
 
-|                        | Application            | Environnement                       |
+| Question               | Application            | Environnement                       |
 | ---------------------- | ---------------------- | ----------------------------------- |
 | Change à quel rythme ? | à chaque commit        | quelques fois par an                |
 | Qui l'applique ?       | la CI, automatiquement | une personne, délibérément          |
@@ -160,15 +164,30 @@ faux `terraform` qui journalise `TF_HTTP_ADDRESS`.
 Le jeton de job n'est pas un secret à gérer : il est émis pour un job, expire
 avec lui, et ne donne accès qu'à ce projet. Rien à créer, rien à faire tourner.
 
-⚠️ **Ce que le premier plan affichera, et pourquoi ce n'est pas le défaut
-d'avant.** L'`apply` n'a jamais été joué (§9.4) : l'état partagé démarre donc
-vide, et le plan annoncera « 6 to add » sur chaque environnement. La sortie
-ressemble à celle d'avant la bascule, la différence est entière — avant, l'état
-repartait de zéro **à chaque exécution** et aucun apply n'aurait pu y changer
-quoi que ce soit ; maintenant, l'état persiste, et le premier
-`terraform-apply-<env>` le remplit une fois pour toutes. C'est à partir de là
-que « 0 to add » devient une information, et qu'une modification faite à la main
-dans le cluster apparaît en dérive dans le plan de la merge request suivante.
+**Où en est chaque état — mise à jour du 2026-09-23.** Le paragraphe qui suivait
+annonçait « l'`apply` n'a jamais été joué » ; ce n'est plus vrai, et les trois
+environnements ne sont pas arrivés au même point par le même chemin.
+
+| Environnement | Comment son état a été rempli                                                                  |
+| ------------- | ---------------------------------------------------------------------------------------------- |
+| `production`  | `terraform-apply-production` **depuis la CI**, le 2026-09-23 à 07:25:32                        |
+| `staging`     | appliqué depuis un poste, puis **migré** vers l'état partagé (`terraform init -migrate-state`) |
+| `logging`     | même chemin que staging, migré le 2026-09-23                                                   |
+
+Conséquence directe : `terraform-apply-staging` et `terraform-apply-logging`
+n'ont **jamais** été joués depuis la CI. Ils le seront sans rien créer — leur
+plan sort désormais à « No changes », puisque l'état partagé décrit déjà des
+ressources qui existent.
+
+Ce que la migration a évité mérite d'être écrit, parce que c'est le piège que ce
+paragraphe annonçait dans l'autre sens : tant qu'un environnement avait son état
+en local et ses ressources dans le cluster, l'état partagé le croyait vide. Un
+`apply` depuis la CI aurait planifié « 6 to add » puis échoué sur
+`already exists` (§10.1). C'est exactement ce qui serait arrivé à `logging`.
+
+C'est à partir de maintenant que « 0 to add » devient une information, et qu'une
+modification faite à la main dans le cluster apparaît en dérive dans le plan de
+la merge request suivante.
 
 **Le verrou, et qui le prend.** `apply` le prend, `plan` ne le prend pas
 (`-lock=false`, posé par le script). Un plan ne persiste aucun état, il n'a rien
@@ -530,7 +549,7 @@ Tout tient dans `terraform.tfvars`. Si une différence de comportement entre les
 deux environnements ne se lit pas ici, c'est qu'elle s'est glissée ailleurs, et
 c'est un défaut.
 
-|                            | staging            | production            |
+| Réglage                    | staging            | production            |
 | -------------------------- | ------------------ | --------------------- |
 | Namespace                  | `microcrm-staging` | `microcrm-production` |
 | `pods`                     | 10                 | 20                    |
@@ -590,16 +609,30 @@ muet sur la dérive — est corrigé : §4. Ce qui reste, et qu'il faut savoir d
 Voir §6.2. C'est la limite la plus facile à mal présenter en soutenance : le lot
 décrit un cloisonnement, il ne le prouve pas.
 
-### 9.4 L'`apply` n'a pas été joué
+### 9.4 Ce que l'`apply` a vérifié, et ce qu'il laisse ouvert
 
-`validate` et `plan` sont vérifiés, `apply` ne l'est pas. Restent donc non
-vérifiés, et à confirmer par la commande du §10 :
+Cette section s'intitulait « L'`apply` n'a pas été joué ». Il l'a été : staging
+le 2026-09-22 depuis un poste, production le 2026-09-23 depuis la CI
+(`terraform-apply-production`), `logging` depuis un poste (§4). Les trois
+points qu'elle laissait ouverts ont reçu une réponse, de force inégale :
 
-- que le quota laisse effectivement passer un déploiement complet — c'est le
-  risque identifié au §6.1, et un plan ne peut pas le trancher : un `Deployment`
-  ne consomme pas de quota, seuls ses pods en consomment ;
-- que le `LimitRange` n'en rejette aucun conteneur ;
-- que Terraform ne signale pas de dérive après un `kubectl apply -k` de la CI.
+| Ce qui restait à vérifier                                      | Ce qui a été observé                                                                                                                                                                                                  |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Le quota laisse passer un déploiement complet                  | **Oui en staging** : après déploiement, `pods 2/10`, `requests.memory 544Mi/1536Mi`, `limits.memory 832Mi/2Gi` (`RELEASE.md` §9.5). **Oui dans `logging`**, observé pendant un rollout de Kibana (`MONITORING.md` §6) |
+| Le `LimitRange` ne rejette aucun conteneur                     | Aucun rejet observé : les deux Deployments ont atteint leur rollout en 11 s                                                                                                                                           |
+| Terraform ne signale pas de dérive après un `kubectl apply -k` | `terraform plan` a répondu « No changes » le 2026-09-22, après le déploiement de l'application                                                                                                                        |
+
+Ce qui reste non vérifié :
+
+- **`terraform-apply-staging` et `terraform-apply-logging` n'ont jamais été joués
+  depuis la CI.** Leur état a été rempli depuis un poste puis migré ; leur plan
+  sort à « No changes », donc le job n'aurait rien à faire.
+- **La `NetworkPolicy` d'APM Server n'est pas dans le cluster.** Elle a été
+  ajoutée au module `logging` après le dernier `apply` de cet environnement, et
+  `kubectl -n logging get networkpolicy` ne renvoyait rien le 2026-10-02
+  (`MONITORING.md` §10.4). L'`apply` de `logging` est à rejouer.
+- **`terraform-plan` a échoué sur le pipeline `#2901472002` de `develop`**
+  (2026-10-01). La cause n'a pas été recherchée.
 
 ### 9.5 Ce que le pipeline fait, et ne fait pas
 
@@ -615,11 +648,18 @@ Les trois jobs d'apply appliquent le plan **relu**, pas un plan recalculé au
 moment du clic : `terraform-plan` publie son `plan.cache` en artefact, et
 `--require-plan` fait échouer l'apply s'il manque (§4.2).
 
-Ce qui n'est pas fait, et qui reste la suite utile : **les jobs de déploiement ne
-passent pas par l'agent.** `deploy-staging` et `deploy-production` utilisent
-encore `$KUBE_CONFIG`, une variable protégée qui porte un kubeconfig — donc tout
-ce que §4.1 reproche à cette approche vaut encore pour eux. Ils n'ont simplement
-jamais été exercés contre un cluster joignable depuis la CI.
+**Les jobs de déploiement passent eux aussi par l'agent, depuis le
+2026-09-23.** Cette section écrivait le contraire : `deploy-staging` et
+`deploy-production` utilisaient `$KUBE_CONFIG`, une variable protégée portant un
+kubeconfig de poste, donc une adresse `127.0.0.1` injoignable depuis un
+conteneur de job. Ils utilisent maintenant le tunnel de l'agent, comme les jobs
+Terraform, et la variable n'est plus lue (`RELEASE.md` §6). Cinq déploiements
+ont abouti par ce chemin les 22 et 23 septembre (`MONITORING.md` §9.1).
+
+Ce qui n'est pas fait : rien ne compare le nom du namespace écrit dans
+`terraform.tfvars` et celui de la variable GitLab que lisent les jobs de
+déploiement. Terraform crée le namespace, la CI y déploie, et les deux ne se
+parlent pas.
 
 ## 10. Rejouer
 

@@ -271,15 +271,276 @@ journal="$(nouveau_journal docker)"
 verifie_code 2 '--scan : image vulnérable -> code 2 et push annulé' \
   env FAKE_DOCKER_LOG="$journal" FAKE_TRIVY_FAIL=1 \
   REGISTRY_HOST='registry.test' REGISTRY_USER='ci' REGISTRY_PASSWORD='secret-bidon' \
-  bash "$ROOT_DIR/scripts/ci/build_and_push.sh" -c "$contexte" -i 'registry.test/app' -t 'abc1234' --scan
+  bash "$ROOT_DIR/scripts/ci/build_and_push.sh" -c "$contexte" -i 'registry.test/app' -t 'abc1234' \
+  --scan --scan-report "$WORK_DIR/scan-ko/trivy-image.json"
 verifie_fichier_contient_pas "$journal" 'push' "aucune image vulnérable n'est envoyée au registry"
+# Le relevé est écrit MÊME quand le push est annulé : c'est le jour où l'image
+# est refusée qu'on a besoin de savoir pourquoi.
+if [[ -s "$WORK_DIR/scan-ko/trivy-image.json" && -s "$WORK_DIR/scan-ko/trivy-image.txt" ]]; then
+  ok '--scan : le relevé JSON et son tableau existent malgré le refus'
+else
+  ko '--scan : le relevé JSON et son tableau existent malgré le refus' 'rapport absent ou vide'
+fi
 
 journal="$(nouveau_journal docker)"
 verifie_code 0 '--scan : image saine -> le push a bien lieu' \
   env FAKE_DOCKER_LOG="$journal" \
   REGISTRY_HOST='registry.test' REGISTRY_USER='ci' REGISTRY_PASSWORD='secret-bidon' \
-  bash "$ROOT_DIR/scripts/ci/build_and_push.sh" -c "$contexte" -i 'registry.test/app' -t 'abc1234' --scan
+  bash "$ROOT_DIR/scripts/ci/build_and_push.sh" -c "$contexte" -i 'registry.test/app' -t 'abc1234' \
+  --scan --scan-report "$WORK_DIR/scan-ok/trivy-image.json"
 verifie_fichier_contient "$journal" 'push registry.test/app:abc1234' 'le push est fait après un scan sans faille'
+
+# Un scan qui n'a pas pu avoir lieu n'est pas un scan réussi : on ne pousse pas.
+journal="$(nouveau_journal docker)"
+verifie_code 1 '--scan : Trivy en erreur technique -> code 1 et push annulé' \
+  env FAKE_DOCKER_LOG="$journal" FAKE_TRIVY_ERROR=1 \
+  REGISTRY_HOST='registry.test' REGISTRY_USER='ci' REGISTRY_PASSWORD='secret-bidon' \
+  bash "$ROOT_DIR/scripts/ci/build_and_push.sh" -c "$contexte" -i 'registry.test/app' -t 'abc1234' \
+  --scan --scan-report "$WORK_DIR/scan-err/trivy-image.json"
+verifie_fichier_contient_pas "$journal" 'push' "une image qu'on n'a pas pu scanner n'est pas poussée"
+
+# La forme qu'utilisent les jobs package-* : Trivy lancé par `docker run`, et
+# surtout l'ORDRE — le scan doit précéder le push. Tant qu'il le suivait, une
+# image refusée restait au registry, promouvable par un tag de release.
+journal="$(nouveau_journal docker)"
+verifie_code 0 '--scan --trivy-image : cas nominal' \
+  env FAKE_DOCKER_LOG="$journal" \
+  REGISTRY_HOST='registry.test' REGISTRY_USER='ci' REGISTRY_PASSWORD='secret-bidon' \
+  bash "$ROOT_DIR/scripts/ci/build_and_push.sh" -c "$contexte" -i 'registry.test/app' -t 'abc1234' \
+  --scan --scan-report "$WORK_DIR/scan-ci/trivy-image-back.json" --trivy-image 'trivy.test/trivy:1'
+verifie_fichier_contient "$journal" 'trivy.test/trivy:1 image' 'Trivy est lancé dans son conteneur'
+ligne_scan="$(grep -n 'docker run' "$journal" | head -n 1 | cut -d: -f1)"
+ligne_push="$(grep -n 'docker push' "$journal" | head -n 1 | cut -d: -f1)"
+if [[ -n "$ligne_scan" && -n "$ligne_push" ]] && ((ligne_scan < ligne_push)); then
+  ok 'le scan précède le push'
+else
+  ko 'le scan précède le push' "scan ligne '${ligne_scan:-absent}', push ligne '${ligne_push:-absent}'"
+fi
+
+journal="$(nouveau_journal docker)"
+verifie_code 2 '--scan --trivy-image : image vulnérable -> code 2' \
+  env FAKE_DOCKER_LOG="$journal" FAKE_TRIVY_FAIL=1 \
+  REGISTRY_HOST='registry.test' REGISTRY_USER='ci' REGISTRY_PASSWORD='secret-bidon' \
+  bash "$ROOT_DIR/scripts/ci/build_and_push.sh" -c "$contexte" -i 'registry.test/app' -t 'abc1234' \
+  --scan --scan-report "$WORK_DIR/scan-ci-ko/trivy-image-back.json" --trivy-image 'trivy.test/trivy:1'
+verifie_fichier_contient_pas "$journal" 'docker push' "l'image refusée n'atteint pas le registry"
+
+# ==========================================================================
+# ci/trivy_scan.sh
+# ==========================================================================
+# Le faux trivy se comporte comme le vrai sur le point qui compte : des
+# constats ne le font sortir en erreur que si `--exit-code` est passé. C'est ce
+# qui permet de vérifier que le RELEVÉ (sans porte) et la PORTE sont bien deux
+# passages distincts, et que le second décide seul du code de sortie.
+titre 'ci/trivy_scan.sh'
+
+verifie_code 1 'sans paramètre -> erreur de configuration (1)' \
+  bash "$ROOT_DIR/scripts/ci/trivy_scan.sh"
+verifie_contient '--mode' 'le message dit quel paramètre manque'
+
+verifie_code 1 'mode inconnu -> erreur (1)' \
+  bash "$ROOT_DIR/scripts/ci/trivy_scan.sh" -m sbom -T . -r "$WORK_DIR/t/x.json"
+
+verifie_code 1 'rapport sans extension .json -> erreur (1)' \
+  bash "$ROOT_DIR/scripts/ci/trivy_scan.sh" -m fs -T . -r "$WORK_DIR/t/rapport"
+
+# Trivy continue sans rien dire quand le fichier d'exclusions est absent : les
+# exclusions sautent et la porte se ferme sur des faux positifs connus.
+verifie_code 1 "fichier d'exclusions introuvable -> erreur (1)" \
+  bash "$ROOT_DIR/scripts/ci/trivy_scan.sh" -m fs -T . -r "$WORK_DIR/t/x.json" \
+  --ignorefile "$WORK_DIR/nexiste-pas.yaml"
+verifie_contient 'introuvable' "l'absence du fichier est dite"
+
+verifie_code 1 '--docker-image en mode fs -> erreur (1)' \
+  bash "$ROOT_DIR/scripts/ci/trivy_scan.sh" -m fs -T . -r "$WORK_DIR/t/x.json" --docker-image img
+
+verifie_code 0 '--help fonctionne' \
+  bash "$ROOT_DIR/scripts/ci/trivy_scan.sh" --help
+verifie_contient '--docker-image' "l'aide liste bien les options"
+verifie_contient_pas 'source "$(cd' "l'aide ne laisse pas fuiter le code source"
+
+# --- Mode fs, la forme du job trivy-fs ------------------------------------
+journal="$(nouveau_journal trivy)"
+verifie_code 0 'fs sans constat -> 0' \
+  env FAKE_TRIVY_LOG="$journal" \
+  bash "$ROOT_DIR/scripts/ci/trivy_scan.sh" -m fs -T "$contexte" -r "$WORK_DIR/t1/trivy-fs.json" \
+  --scanners vuln,secret,misconfig --ignorefile "$ROOT_DIR/.trivyignore.yaml"
+verifie_fichier_contient "$journal" '--format json' 'le relevé est demandé en JSON'
+verifie_fichier_contient "$journal" '--exit-code 2' 'la porte est posée au second passage'
+verifie_fichier_contient "$journal" '--scanners vuln,secret,misconfig' 'les scanners sont transmis'
+verifie_fichier_contient "$journal" '.trivyignore.yaml' "le fichier d'exclusions est transmis"
+verifie_fichier_contient "$WORK_DIR/t1/trivy-fs.json" '"SchemaVersion"' 'le rapport JSON est écrit'
+verifie_fichier_contient "$WORK_DIR/t1/trivy-fs.txt" 'Report Summary' 'le tableau est écrit à côté'
+# Le relevé ne doit PAS porter la porte : sinon un constat l'interromprait
+# avant qu'il ait écrit quoi que ce soit.
+if grep -F -- '--format json' "$journal" | grep -qF -- '--exit-code'; then
+  ko 'le relevé JSON ne porte pas de porte' 'le passage JSON a reçu --exit-code'
+else
+  ok 'le relevé JSON ne porte pas de porte'
+fi
+
+# ⚠️ L'assertion centrale : des constats ferment la porte (2), ET le rapport
+# existe quand même. Un relevé qui disparaît quand le job échoue ne sert à rien.
+verifie_code 2 'fs avec constats -> porte fermée (2)' \
+  env FAKE_TRIVY_FAIL=1 \
+  bash "$ROOT_DIR/scripts/ci/trivy_scan.sh" -m fs -T "$contexte" -r "$WORK_DIR/t2/trivy-fs.json"
+verifie_contient 'porte est fermée' 'le message dit que la porte est fermée'
+verifie_fichier_contient "$WORK_DIR/t2/trivy-fs.json" '"SchemaVersion"' 'le rapport JSON existe malgré la porte fermée'
+verifie_fichier_contient "$WORK_DIR/t2/trivy-fs.txt" 'Report Summary' 'le tableau existe malgré la porte fermée'
+
+# Une erreur technique n'est pas un constat, et surtout pas un succès : aucun
+# rapport n'est écrit, pour qu'un fichier vide ne passe pas pour « zéro faille ».
+verifie_code 1 'Trivy en erreur fatale -> erreur technique (1), pas 2' \
+  env FAKE_TRIVY_ERROR=1 \
+  bash "$ROOT_DIR/scripts/ci/trivy_scan.sh" -m fs -T "$contexte" -r "$WORK_DIR/t3/trivy-fs.json"
+if [[ -e "$WORK_DIR/t3/trivy-fs.json" ]]; then
+  ko "aucun rapport n'est écrit quand le scan n'a pas eu lieu" 'un rapport a été écrit'
+else
+  ok "aucun rapport n'est écrit quand le scan n'a pas eu lieu"
+fi
+
+verifie_code 1 'relevé vide -> erreur technique (1)' \
+  env FAKE_TRIVY_MUET=1 \
+  bash "$ROOT_DIR/scripts/ci/trivy_scan.sh" -m fs -T "$contexte" -r "$WORK_DIR/t4/trivy-fs.json"
+verifie_contient 'vide' 'le relevé vide est signalé'
+
+# --- Mode image par `docker run`, la forme des jobs package-* -------------
+journal="$(nouveau_journal docker)"
+verifie_code 0 'image par docker run, sans constat -> 0' \
+  env FAKE_DOCKER_LOG="$journal" \
+  bash "$ROOT_DIR/scripts/ci/trivy_scan.sh" -m image -T 'registry.test/app:abc1234' \
+  -r "$WORK_DIR/t5/trivy-image-back.json" --docker-image 'trivy.test/trivy:1'
+verifie_fichier_contient "$journal" '/var/run/docker.sock:/var/run/docker.sock' 'le socket Docker est monté'
+verifie_fichier_contient "$journal" 'trivy.test/trivy:1 image' "l'image Trivy demandée est utilisée"
+verifie_fichier_contient "$journal" 'registry.test/app:abc1234' "la bonne image est scannée"
+verifie_fichier_contient "$WORK_DIR/t5/trivy-image-back.json" '"SchemaVersion"' 'le JSON sort par la sortie standard du conteneur'
+
+verifie_code 2 'image par docker run, avec constats -> porte fermée (2)' \
+  env FAKE_TRIVY_FAIL=1 \
+  bash "$ROOT_DIR/scripts/ci/trivy_scan.sh" -m image -T 'registry.test/app:abc1234' \
+  -r "$WORK_DIR/t6/trivy-image-back.json" --docker-image 'trivy.test/trivy:1'
+
+verifie_code 1 '--ignorefile avec --docker-image -> erreur (1)' \
+  bash "$ROOT_DIR/scripts/ci/trivy_scan.sh" -m image -T 'registry.test/app:abc1234' \
+  -r "$WORK_DIR/t7/x.json" --docker-image 'trivy.test/trivy:1' --ignorefile "$ROOT_DIR/.trivyignore.yaml"
+
+# ==========================================================================
+# ci/release_notes.sh
+# ==========================================================================
+titre 'ci/release_notes.sh'
+
+verifie_code 1 'sans fichier de sortie -> erreur (1)' \
+  sh "$ROOT_DIR/scripts/ci/release_notes.sh"
+
+verifie_code 0 '--help fonctionne' \
+  sh "$ROOT_DIR/scripts/ci/release_notes.sh" --help
+verifie_contient 'CI_COMMIT_TAG' "l'aide nomme les variables attendues"
+verifie_contient_pas 'set -eu' "l'aide ne laisse pas fuiter le code source"
+
+# Hors pipeline de tag, le script n'a rien à décrire : il doit le dire plutôt
+# que d'écrire une Release qui annonce l'image « : ».
+verifie_code 1 'sans CI_COMMIT_TAG -> erreur (1)' \
+  env -u CI_COMMIT_TAG CI_COMMIT_SHA='0123456789abcdef' CI_REGISTRY_IMAGE='registry.test/app' \
+  sh "$ROOT_DIR/scripts/ci/release_notes.sh" "$WORK_DIR/rn/absent.md"
+verifie_contient 'CI_COMMIT_TAG' 'la variable manquante est nommée'
+if [[ -e "$WORK_DIR/rn/absent.md" ]]; then
+  ko "aucun fichier n'est écrit sans tag" 'un fichier a été écrit'
+else
+  ok "aucun fichier n'est écrit sans tag"
+fi
+
+verifie_code 1 'sans CI_REGISTRY_IMAGE -> erreur (1)' \
+  env -u CI_REGISTRY_IMAGE CI_COMMIT_TAG='v1.4.0' CI_COMMIT_SHA='0123456789abcdef' \
+  sh "$ROOT_DIR/scripts/ci/release_notes.sh" "$WORK_DIR/rn/absent.md"
+
+notes="$WORK_DIR/rn/release-notes.md"
+verifie_code 0 'cas nominal : la description est écrite' \
+  env CI_COMMIT_TAG='v1.4.0' CI_COMMIT_SHA='0123456789abcdef0123' CI_COMMIT_SHORT_SHA='01234567' \
+  CI_REGISTRY_IMAGE='registry.test/app' APP_BACK_NAME='back' APP_FRONT_NAME='front' \
+  CI_PROJECT_URL='https://gitlab.test/app' CI_PIPELINE_URL='https://gitlab.test/app/-/pipelines/9' \
+  sh "$ROOT_DIR/scripts/ci/release_notes.sh" "$notes"
+# Les deux tags de chaque image : c'est leur égalité qui rend la version traçable.
+verifie_fichier_contient "$notes" 'registry.test/app/back:1.4.0' "l'image du back est citée sous son numéro de version"
+verifie_fichier_contient "$notes" 'registry.test/app/front:1.4.0' "l'image du front aussi"
+verifie_fichier_contient "$notes" 'registry.test/app/back:01234567' "l'image d'origine (SHA) est citée"
+verifie_fichier_contient "$notes" '0123456789abcdef0123' 'le commit complet est cité'
+verifie_fichier_contient "$notes" 'https://gitlab.test/app/-/pipelines/9' 'le pipeline de release est lié'
+verifie_fichier_contient_pas "$notes" ':v1.4.0' "le tag d'image ne porte pas le « v »"
+
+# ==========================================================================
+# Le pipeline : ce que les jobs doivent continuer de dire
+# ==========================================================================
+# Ces assertions ne valident pas le YAML (le lint de GitLab le fait). Elles
+# gardent les quelques propriétés qu'un lint ne voit pas, et qu'une
+# simplification bien intentionnée ferait sauter sans rien casser de visible.
+titre 'pipeline : rapports, release, mesure'
+
+ci="$ROOT_DIR/.gitlab/ci"
+
+# Les noms de rapports sont une interface : collect_security.py les lit.
+verifie_fichier_contient "$ci/security.yml" '$REPORTS_DIR/trivy-fs.json' 'trivy-fs publie reports/trivy-fs.json'
+verifie_fichier_contient "$ci/package.yml" '$REPORTS_DIR/trivy-image-back.json' 'package-back publie reports/trivy-image-back.json'
+verifie_fichier_contient "$ci/package.yml" '$REPORTS_DIR/trivy-image-front.json' 'package-front publie reports/trivy-image-front.json'
+verifie_fichier_contient "$ci/variables.yml" "REPORTS_DIR: 'reports'" 'le répertoire des rapports vaut reports'
+
+# Un rapport qui n'est publié que quand le job réussit ne sert à rien : c'est
+# quand la porte se ferme qu'on veut le lire.
+for job in trivy-fs package-back package-front; do
+  fichier="$ci/package.yml"
+  [[ "$job" == 'trivy-fs' ]] && fichier="$ci/security.yml"
+  if awk -v job="$job:" '$0 == job {dans=1; next} dans && /^[^ #]/ {dans=0} dans' "$fichier" \
+    | grep -qE '^    when: always$'; then
+    ok "$job : artefacts publiés même en échec (when: always)"
+  else
+    ko "$job : artefacts publiés même en échec (when: always)" "'when: always' absent du bloc artifacts"
+  fi
+done
+
+# Le scan passe par le script, et le push se fait DANS le même script, après
+# lui. Une ligne `trivy image` remise dans le YAML derrière build_and_push.sh
+# rétablirait « on pousse, puis on scanne ».
+verifie_fichier_contient "$ci/package.yml" '--scan --scan-severity HIGH,CRITICAL' 'package-* scanne avant de pousser, HIGH et CRITICAL bloquants'
+if grep -vE '^[[:space:]]*#' "$ci/package.yml" | grep -qE 'TRIVY_IMAGE.*[[:space:]]image[[:space:]]'; then
+  ko 'aucun scan Trivy écrit en dur après le push' 'une ligne `trivy … image` subsiste dans package.yml'
+else
+  ok 'aucun scan Trivy écrit en dur après le push'
+fi
+verifie_fichier_contient "$ci/security.yml" '--ignorefile .trivyignore.yaml' "trivy-fs passe toujours le fichier d'exclusions"
+
+# Toutes les images d'outillage sont figées ; celle de glab comme les autres.
+if grep -qE "^  GLAB_IMAGE: 'registry\.gitlab\.com/gitlab-org/cli:v[0-9]+\.[0-9]+\.[0-9]+'" "$ci/variables.yml"; then
+  ok "l'image glab est figée sur une version exacte"
+else
+  ko "l'image glab est figée sur une version exacte" 'GLAB_IMAGE absente, ou en latest'
+fi
+
+# La Release ne doit exister que si les DEUX images ont été promues.
+bloc_release="$(awk '$0 == "release:" {dans=1; next} dans && /^[^ #]/ {dans=0} dans' "$ci/package.yml")"
+for attendu in "needs: ['promote-back', 'promote-front']" "tag_name: '\$CI_COMMIT_TAG'" "if: '\$CI_COMMIT_TAG'" 'release_notes.sh'; do
+  if [[ "$bloc_release" == *"$attendu"* ]]; then
+    ok "job release : $attendu"
+  else
+    ko "job release : $attendu" 'absent du job'
+  fi
+done
+
+# La mesure DORA ne doit jamais faire rougir un pipeline.
+bloc_dora="$(awk '$0 == "dora-metrics:" {dans=1; next} dans && /^[^ #]/ {dans=0} dans' "$ci/deploy.yml")"
+for attendu in 'allow_failure: true' 'collect_dora.py' '$REPORTS_DIR/dora.json'; do
+  if [[ "$bloc_dora" == *"$attendu"* ]]; then
+    ok "job dora-metrics : $attendu"
+  else
+    ko "job dora-metrics : $attendu" 'absent du job'
+  fi
+done
+# Le drapeau --elasticsearch n'est PAS passé : l'Elasticsearch du cluster n'est
+# pas joignable depuis un job. Le jour où il l'est, cette assertion se retire
+# en même temps que le commentaire du job.
+if [[ "$(grep -vE '^[[:space:]]*#' <<<"$bloc_dora")" == *'--elasticsearch'* ]]; then
+  ko "dora-metrics n'envoie rien à Elasticsearch" 'le drapeau --elasticsearch est passé'
+else
+  ok "dora-metrics n'envoie rien à Elasticsearch"
+fi
 
 # ==========================================================================
 # ci/check_version.sh
@@ -935,6 +1196,328 @@ PYTEST
 verifie_fichier_contient "$WORK_DIR/dora-fab.txt" 'lead_time_for_changes defini' 'le délai se calcule dès qu un déploiement réussit'
 verifie_fichier_contient "$WORK_DIR/dora-fab.txt" 'mean_time_to_restore defini' 'le MTTR se calcule dès qu une panne est rétablie'
 verifie_fichier_contient "$WORK_DIR/dora-fab.txt" 'deployment_frequency defini' 'la fréquence se calcule sur des succès'
+
+# ==========================================================================
+# ci/collect_security.py
+# ==========================================================================
+# Le collecteur transforme les rapports de Trivy et de Dependency-Check en
+# documents pour le tableau de bord Kibana « sécurité ». Il est testé hors
+# ligne, sur des fixtures FABRIQUÉES (identifiants en CVE-2099-…, voir
+# fixtures/security/README.md) : un rapport réel change à chaque mise à jour de
+# la base de vulnérabilités, et ferait dériver les tests sans que le code bouge.
+#
+# `--date` et `--commit` sont fixés partout. Sans eux, l'échéance des exceptions
+# se comparerait à la date du jour : le test « l'exception échue ne couvre plus
+# rien » changerait de sens le 1er janvier 2027, tout seul.
+titre 'ci/collect_security.py'
+
+secu_fix="$TESTS_DIR/fixtures/security"
+# SC2329 = « cette fonction n'est jamais appelée ». Elle l'est, mais toujours
+# comme ARGUMENT de `verifie_code` (qui lance "$@"), jamais en début de ligne :
+# ShellCheck ne suit pas cet appel indirect.
+# shellcheck disable=SC2329
+secu() {
+  python3 "$ROOT_DIR/scripts/ci/collect_security.py" \
+    --commit abcdef1234567890 --date 2026-10-02T12:00:00Z "$@"
+}
+
+verifie_code 0 '--help fonctionne' \
+  python3 "$ROOT_DIR/scripts/ci/collect_security.py" --help
+verifie_contient '--trivy-report' "l'aide mentionne les rapports Trivy"
+verifie_contient '--dependency-check-report' "l'aide mentionne le rapport Dependency-Check"
+
+verifie_code 1 'aucune source -> erreur (1), pas un rapport vide' \
+  secu --no-trivyignore
+verifie_contient 'aucune source' 'le message dit ce qui manque'
+
+# --- Cas nominal : un scan du dépôt, avec ses exceptions --------------------
+sortie_secu="$WORK_DIR/secu-fs.json"
+verifie_code 0 'collecte sur un rapport Trivy du système de fichiers' \
+  secu --trivy-report "$secu_fix/trivy-fs.json" \
+  --trivyignore "$secu_fix/trivyignore.yaml" --output "$sortie_secu"
+
+python3 - "$sortie_secu" <<'PYTEST' >"$WORK_DIR/secu-fs.txt"
+import json, sys
+d = json.load(open(sys.argv[1]))
+r = d["resume"]
+print("total", r["total"], "ouverts", r["ouverts"], "exceptes", r["exceptes"])
+print("severites", " ".join(f"{k}={v}" for k, v in r["par_severite"].items()))
+print("categories", " ".join(f"{k}={v}" for k, v in r["par_categorie"].items()))
+for c in d["constats"]:
+    print("constat", c["identifiant"], c["cible"], c["composant"], c["statut"],
+          "corrigeable" if c["corrigeable"] else "non-corrigeable", c["commit"])
+for e in d["exceptions"]:
+    print("exception", e["identifiant"], "echeance", e["echeance"], "jours", e["jours_restants"],
+          "expiree" if e["expiree"] else "valide", "couverts", e["constats_couverts"])
+print("ids-uniques", len({c["_id"] for c in d["constats"]}) == len(d["constats"]))
+PYTEST
+secu_txt="$WORK_DIR/secu-fs.txt"
+verifie_fichier_contient "$secu_txt" 'total 7 ouverts 6 exceptes 1' 'les 7 constats sont lus, un seul est excepté'
+verifie_fichier_contient "$secu_txt" 'CRITICAL=2 HIGH=2 MEDIUM=1 LOW=1 UNKNOWN=0' 'le décompte par sévérité ne compte que les constats ouverts'
+verifie_fichier_contient "$secu_txt" 'vulnerabilite=2 misconfiguration=3 secret=1' 'les trois catégories de constats sont distinguées'
+verifie_fichier_contient "$secu_txt" 'constat CVE-2099-0001 front/package-lock.json front ouvert corrigeable abcdef12' 'une vulnérabilité porte composant, statut, correctif et commit'
+verifie_fichier_contient "$secu_txt" 'constat CVE-2099-0002 front/package-lock.json front ouvert non-corrigeable' 'sans version corrigée, le constat n est pas dit corrigeable'
+verifie_fichier_contient "$secu_txt" 'constat regle-fictive back/src/main/resources/application.properties back ouvert' 'un secret est rattaché au back par son chemin'
+# ⚠️ Le cœur du format « un identifiant ET un chemin » : la même règle KSV-0014
+# est exceptée dans un fichier et reste ouverte dans l'autre.
+verifie_fichier_contient "$secu_txt" 'constat KSV-0014 k8s/elk/elasticsearch-deployment.yaml depot excepte' "l'exception couvre le fichier qu'elle nomme"
+verifie_fichier_contient "$secu_txt" 'constat KSV-0014 k8s/base/back-deployment.yaml depot ouvert' "la même règle reste ouverte dans un autre fichier"
+verifie_fichier_contient "$secu_txt" 'constat KSV-0099 k8s/base/back-deployment.yaml depot ouvert' 'une exception échue ne couvre plus rien'
+verifie_fichier_contient "$secu_txt" 'exception KSV-0014 echeance 2026-12-31 jours 90 valide couverts 1' "l'échéance et les jours restants sont calculés"
+verifie_fichier_contient "$secu_txt" 'exception KSV-0099 echeance 2026-01-31 jours -244 expiree couverts 0' "l'exception échue est signalée comme telle"
+verifie_fichier_contient "$secu_txt" 'exception CVE-2099-9999 echeance None jours None valide' 'sans échéance : null, ni zéro jour ni expirée'
+verifie_fichier_contient "$secu_txt" 'ids-uniques True' 'chaque constat a un identifiant de document distinct'
+verifie_contient 'Exception échue depuis le 2026-01-31' "l'exception échue est aussi annoncée dans le journal"
+# Trivy masque le secret dans `Match`, mais le collecteur ne recopie pas le
+# champ du tout : l'index Elasticsearch n'a pas d'authentification.
+verifie_fichier_contient_pas "$sortie_secu" 'NE-DOIT-PAS-SORTIR-DU-COLLECTEUR' "l'extrait d'un secret n'est jamais recopié"
+
+# --- Plusieurs rapports : dépôt, image, Dependency-Check --------------------
+sortie_secu="$WORK_DIR/secu-tout.json"
+verifie_code 0 'collecte sur trois rapports à la fois' \
+  secu --trivy-report "$secu_fix/trivy-fs.json" --trivy-report "$secu_fix/trivy-image.json" \
+  --dependency-check-report "$secu_fix/dependency-check.json" \
+  --no-trivyignore --output "$sortie_secu"
+python3 - "$sortie_secu" <<'PYTEST' >"$WORK_DIR/secu-tout.txt"
+import json, sys
+d = json.load(open(sys.argv[1]))
+for s in d["scans"]:
+    print("scan", s["type_scan"], s["composant"], "ouverts", s["ouverts"])
+for c in d["constats"]:
+    print("constat", c["type_scan"], c["identifiant"], c["severite"], c["composant"], c["paquet"], c["version"])
+print("exceptions", d["exceptions"])
+PYTEST
+secu_txt="$WORK_DIR/secu-tout.txt"
+verifie_fichier_contient "$secu_txt" 'scan trivy-fs depot ouverts 7' 'sans fichier d exceptions, tout est ouvert'
+verifie_fichier_contient "$secu_txt" 'scan trivy-image back ouverts 2' "le composant d'une image est déduit de son nom"
+verifie_fichier_contient "$secu_txt" 'scan dependency-check back ouverts 2' 'le rapport Dependency-Check est lu'
+verifie_fichier_contient "$secu_txt" 'constat trivy-image CVE-2099-0004 LOW back' 'une sévérité en minuscules est normalisée'
+verifie_fichier_contient "$secu_txt" 'constat dependency-check CVE-2099-0006 MEDIUM back org.exemple:fictif-core 1.2.3' '« moderate » devient MEDIUM, le paquet vient du purl'
+verifie_fichier_contient "$secu_txt" 'exceptions None' '--no-trivyignore : aucune exception, et non une liste vide'
+
+# --- ⚠️ Absence de donnée ≠ zéro --------------------------------------------
+# Les trois cas qu'un tableau de bord ne doit jamais confondre :
+#   rapport vide     -> le scanner a tourné, n'a rien trouvé : un 0 MESURÉ ;
+#   rapport absent   -> aucune mesure, donc aucun document `scan` ;
+#   rapport invalide -> erreur. Surtout pas « 0 vulnérabilité ».
+sortie_secu="$WORK_DIR/secu-vide.json"
+verifie_code 0 'rapport vide -> code 0, c est un résultat' \
+  secu --trivy-report "$secu_fix/trivy-vide.json" --no-trivyignore --output "$sortie_secu"
+verifie_fichier_contient "$sortie_secu" '"total": 0' 'rapport vide : un zéro mesuré, porté par un document scan'
+verifie_fichier_contient "$sortie_secu" '"type": "scan"' 'rapport vide : le scan est bien enregistré'
+verifie_fichier_contient "$sortie_secu" '"constats": []' 'rapport vide : aucun constat inventé'
+
+verifie_code 0 'Dependency-Check sans dépendance vulnérable -> zéro mesuré' \
+  secu --dependency-check-report "$secu_fix/dependency-check-vide.json" --no-trivyignore
+verifie_contient '"total": 0' 'le zéro de Dependency-Check est lui aussi une mesure'
+
+verifie_code 1 'rapport JSON tronqué -> erreur (1), jamais un zéro' \
+  secu --trivy-report "$secu_fix/trivy-invalide.json" --no-trivyignore
+verifie_contient 'JSON invalide' 'le message nomme la cause'
+verifie_contient_pas '"total"' 'aucun décompte n est produit sur un rapport invalide'
+
+verifie_code 1 'JSON valide qui n est pas un rapport Trivy -> erreur (1)' \
+  secu --trivy-report "$secu_fix/pas-un-rapport-trivy.json" --no-trivyignore
+verifie_contient "n'est pas un rapport JSON de Trivy" 'un {} n est pas pris pour un rapport sans constat'
+
+verifie_code 1 'un rapport Dependency-Check donné pour un rapport Trivy -> erreur (1)' \
+  secu --trivy-report "$secu_fix/dependency-check.json" --no-trivyignore
+
+verifie_code 1 'rapport introuvable -> erreur (1) par défaut' \
+  secu --trivy-report "$WORK_DIR/nexiste-pas.json" --no-trivyignore
+verifie_contient 'introuvable' 'le message nomme le fichier manquant'
+
+sortie_secu="$WORK_DIR/secu-optionnel.json"
+verifie_code 0 'rapport introuvable avec --optional -> ignoré, code 0' \
+  secu --trivy-report "$WORK_DIR/nexiste-pas.json" --optional \
+  --trivyignore "$secu_fix/trivyignore.yaml" --output "$sortie_secu"
+verifie_contient 'Aucune mesure pour ce scan' "l'absence de mesure est dite dans le journal"
+verifie_fichier_contient "$sortie_secu" '"resume": null' 'sans aucun scan lu : pas de décompte, et non un décompte à zéro'
+verifie_fichier_contient "$sortie_secu" '"scans": []' 'sans aucun scan lu : aucun document scan'
+verifie_fichier_contient "$sortie_secu" '"constats_couverts": null' 'sans scan, on ne sait pas ce que couvre une exception'
+
+verifie_code 1 '--optional ne couvre pas un rapport présent mais invalide' \
+  secu --trivy-report "$secu_fix/trivy-invalide.json" --optional --no-trivyignore
+
+verifie_code 1 "fichier d'exceptions avec une entrée sans id -> erreur (1)" \
+  secu --trivyignore "$secu_fix/trivyignore-invalide.yaml"
+verifie_contient "n'a pas d'\`id\`" "l'entrée fautive est décrite"
+
+verifie_code 1 '--date illisible -> erreur (1)' \
+  python3 "$ROOT_DIR/scripts/ci/collect_security.py" --date 'hier' \
+  --trivy-report "$secu_fix/trivy-vide.json" --no-trivyignore
+
+# --- Le vrai .trivyignore.yaml du dépôt -------------------------------------
+# L'analyseur est maison (pas de PyYAML dans python:3.12-slim) : ce test est le
+# filet qui prévient le jour où le fichier réel prend une forme qu'il ne
+# comprend plus. Le nombre d'entrées est relu dans le fichier, pas codé en dur.
+nb_exceptions="$(grep -c '^  - id:' "$ROOT_DIR/.trivyignore.yaml")"
+verifie_code 0 'le .trivyignore.yaml du dépôt est compris' \
+  secu --trivyignore "$ROOT_DIR/.trivyignore.yaml"
+verifie_contient "$nb_exceptions exception(s) lue(s)" "toutes les entrées du fichier réel sont lues ($nb_exceptions)"
+verifie_contient '"echeance": "20' 'chaque entrée réelle porte son échéance'
+
+# --- Envoi Elasticsearch ----------------------------------------------------
+# Le port 9 (discard) n'écoute pas : la connexion est refusée immédiatement.
+verifie_code 1 'Elasticsearch injoignable -> erreur (1)' \
+  secu --trivy-report "$secu_fix/trivy-fs.json" --no-trivyignore \
+  --output "$WORK_DIR/secu-es.json" --elasticsearch 'http://127.0.0.1:9'
+verifie_contient 'envoi Elasticsearch impossible' "l'échec d'envoi est dit, il ne passe pas pour une collecte réussie"
+
+# ==========================================================================
+# ci/notify.py
+# ==========================================================================
+titre 'ci/notify.py'
+
+verifie_code 2 'sans option obligatoire -> erreur d usage (2)' \
+  python3 "$ROOT_DIR/scripts/ci/notify.py"
+
+verifie_code 0 '--help fonctionne' \
+  python3 "$ROOT_DIR/scripts/ci/notify.py" --help
+verifie_contient 'NOTIFY_WEBHOOK_URL' "l'aide nomme la variable attendue"
+
+# --- La composition du message -------------------------------------------
+verifie_code 0 'le message reprend le statut et le sujet' \
+  env -u NOTIFY_WEBHOOK_URL \
+  CI_PROJECT_PATH='orion/microcrm' CI_COMMIT_REF_NAME='main' \
+  CI_COMMIT_SHORT_SHA='abc1234' CI_JOB_URL='https://gitlab.test/job/7' \
+  python3 "$ROOT_DIR/scripts/ci/notify.py" --statut success --sujet 'Deploiement production' --dry-run
+verifie_contient 'Deploiement production' 'le sujet est repris'
+verifie_contient 'success' 'le statut est repris'
+verifie_contient 'orion/microcrm' 'le projet apparaît dans le contexte'
+verifie_contient 'abc1234' 'le commit apparaît dans le contexte'
+verifie_contient 'https://gitlab.test/job/7' 'le lien du job est joint — c est lui qui porte le journal'
+
+# Le lien du JOB prime sur celui du pipeline : c'est le journal de l'échec
+# qu'on veut ouvrir, pas la vue d'ensemble.
+verifie_code 0 'le lien du pipeline sert de repli' \
+  env -u NOTIFY_WEBHOOK_URL -u CI_JOB_URL \
+  CI_PIPELINE_URL='https://gitlab.test/pipeline/9' \
+  python3 "$ROOT_DIR/scripts/ci/notify.py" --statut failed --sujet 'Pipeline' --dry-run
+verifie_contient 'https://gitlab.test/pipeline/9' 'à défaut de job, le pipeline'
+
+verifie_code 0 'un statut inconnu ne fait pas échouer la composition' \
+  env -u NOTIFY_WEBHOOK_URL \
+  python3 "$ROOT_DIR/scripts/ci/notify.py" --statut bizarre --sujet 'Cas limite' --dry-run
+verifie_contient 'bizarre' 'le statut inconnu est tout de même annoncé'
+
+# --- Les deux partis pris qui protègent le pipeline ------------------------
+# 1. Webhook absent : ce n'est pas une erreur, c'est une absence de
+#    configuration. Un dépôt cloné sans la variable ne doit pas voir tous ses
+#    pipelines rougir sur une notification non configurée.
+verifie_code 0 'webhook absent -> code 0, et le message reste dans le journal' \
+  env -u NOTIFY_WEBHOOK_URL \
+  python3 "$ROOT_DIR/scripts/ci/notify.py" --statut failed --sujet 'Deploiement production'
+verifie_contient 'aucune notification envoyée' "l'absence de configuration est dite explicitement"
+verifie_contient 'Deploiement production' 'le message est tout de même consultable dans le journal'
+
+# 2. Canal injoignable : un déploiement réussi ne doit pas rougir parce que
+#    Slack est en panne. L'adresse ci-dessous ne résout pas.
+verifie_code 0 'webhook injoignable -> code 0, le pipeline n est pas affecté' \
+  env NOTIFY_WEBHOOK_URL='http://webhook.invalide.test/hook' \
+  python3 "$ROOT_DIR/scripts/ci/notify.py" --statut success --sujet 'Deploiement production'
+verifie_contient "n'en est pas affecté" "l'échec d'envoi est journalisé sans faire échouer le job"
+
+# ==========================================================================
+titre 'monitoring/install_alerting.py'
+# ==========================================================================
+# Le script parle à Kibana et à Elasticsearch, que la CI n'a pas. Ce qui se
+# teste sans eux : le contrôle des fichiers de règles (--dry-run), le refus
+# propre quand Kibana ne répond pas, et la création du Secret (faux kubectl).
+ALERTING="$ROOT_DIR/scripts/monitoring/install_alerting.py"
+REGLES_DIR="$ROOT_DIR/k8s/elk/alerting/rules"
+
+# --- Les règles RÉELLES du dépôt -------------------------------------------
+# Ce test-là porte sur les fichiers versionnés, pas sur des fixtures : c'est
+# lui qui rougit si quelqu'un supprime la dernière règle d'une famille.
+verifie_code 0 'les règles du dépôt sont valides' python3 "$ALERTING" --dry-run
+verifie_contient '3 familles couvertes' 'disponibilité, performance et sécurité ont chacune une règle'
+verifie_contient 'dispo-front-muet' 'une règle de disponibilité est listée'
+verifie_contient 'perf-front-p95' 'une règle de performance est listée'
+verifie_contient 'secu-front-chemins-sensibles' 'une règle de sécurité est listée'
+
+# --- Les fichiers défectueux sont refusés, avec la raison ------------------
+regles_test="$WORK_DIR/regles"
+
+mkdir -p "$regles_test/vide"
+verifie_code 1 'un dossier sans règle est une erreur' python3 "$ALERTING" --dry-run --regles "$regles_test/vide"
+verifie_contient 'aucun fichier de règle' 'le message dit que le dossier est vide'
+
+mkdir -p "$regles_test/casse"
+cp "$REGLES_DIR"/*.json "$regles_test/casse/"
+printf '{"name": ' >"$regles_test/casse/dispo-front-muet.json"
+verifie_code 1 'un JSON tronqué est refusé' python3 "$ALERTING" --dry-run --regles "$regles_test/casse"
+verifie_contient 'dispo-front-muet.json' 'le fichier fautif est nommé'
+
+# Supprimer toutes les règles de sécurité : chaque fichier restant est valide,
+# c'est l'ENSEMBLE qui ne l'est plus.
+mkdir -p "$regles_test/sans-securite"
+cp "$REGLES_DIR"/*.json "$regles_test/sans-securite/"
+rm "$regles_test/sans-securite"/secu-*.json
+verifie_code 1 'une famille sans règle est refusée' python3 "$ALERTING" --dry-run --regles "$regles_test/sans-securite"
+verifie_contient 'famille(s) sans aucune règle : securite' 'la famille manquante est nommée'
+
+# Une règle qui vise un connecteur que kibana-config.yaml ne déclare pas
+# serait acceptée par Kibana… puis échouerait à chaque déclenchement.
+mkdir -p "$regles_test/connecteur"
+cp "$REGLES_DIR"/*.json "$regles_test/connecteur/"
+python3 - "$regles_test/connecteur/perf-front-p95.json" <<'PY'
+import json, sys
+regle = json.load(open(sys.argv[1], encoding="utf-8"))
+regle["actions"][0]["id"] = "connecteur-inconnu"
+json.dump(regle, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+verifie_code 1 'un connecteur non déclaré est refusé' python3 "$ALERTING" --dry-run --regles "$regles_test/connecteur"
+verifie_contient "connecteur 'connecteur-inconnu' absent" 'le connecteur fautif est nommé'
+
+mkdir -p "$regles_test/muette"
+cp "$REGLES_DIR"/*.json "$regles_test/muette/"
+python3 - "$regles_test/muette/perf-front-p95.json" <<'PY'
+import json, sys
+regle = json.load(open(sys.argv[1], encoding="utf-8"))
+regle["actions"] = []
+json.dump(regle, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+verifie_code 1 'une règle sans action est refusée' python3 "$ALERTING" --dry-run --regles "$regles_test/muette"
+verifie_contient 'ne préviendrait personne' 'la raison du refus est dite'
+
+# --- Kibana injoignable : un échec net, pas une pile d'appels --------------
+# Le port 9 (discard) n'est pas écouté : la connexion est refusée tout de suite.
+verifie_code 1 'Kibana injoignable -> code 1' \
+  env KIBANA_URL='http://127.0.0.1:9' ELASTICSEARCH_URL='http://127.0.0.1:9' python3 "$ALERTING"
+verifie_contient 'injoignable' "le message dit que Kibana ne répond pas"
+verifie_contient 'port-forward' 'et rappelle la cause la plus probable'
+verifie_contient_pas 'Traceback' 'aucune pile d appels Python dans la sortie'
+
+# --- Le Secret de la clé de chiffrement -------------------------------------
+journal_secret="$WORK_DIR/kubectl-secret.log"
+
+: >"$journal_secret"
+verifie_code 0 'Secret absent -> il est créé' \
+  env FAKE_KUBECTL_LOG="$journal_secret" FAKE_SECRET_MISSING=1 python3 "$ALERTING" --secret
+verifie_fichier_contient "$journal_secret" 'create secret generic kibana-encryption-key' 'le Secret est créé sous le nom attendu par kibana-deployment.yaml'
+verifie_fichier_contient "$journal_secret" '-n logging' 'dans le namespace logging'
+# La clé ne doit JAMAIS être un argument : un argument se lit dans `ps`.
+verifie_fichier_contient "$journal_secret" '--from-file=encryptionKey=/dev/stdin' 'la clé passe par l entrée standard'
+verifie_fichier_contient_pas "$journal_secret" '--from-literal' 'la clé n est pas passée en argument'
+verifie_fichier_contient "$journal_secret" 'rollout restart deployment/kibana' 'Kibana est redémarré pour lire la clé'
+verifie_contient_pas 'encryptionKey=' 'la clé n apparaît pas dans la sortie du script'
+
+# Secret déjà là : surtout ne pas le régénérer, les règles existantes
+# deviendraient indéchiffrables.
+: >"$journal_secret"
+verifie_code 0 'Secret présent -> rien à faire' \
+  env FAKE_KUBECTL_LOG="$journal_secret" python3 "$ALERTING" --secret
+verifie_contient 'existe déjà' 'le script dit qu il ne touche à rien'
+verifie_fichier_contient_pas "$journal_secret" 'create secret' 'aucune recréation du Secret'
+verifie_fichier_contient_pas "$journal_secret" 'rollout restart' 'aucun redémarrage inutile de Kibana'
+
+: >"$journal_secret"
+verifie_code 1 'redémarrage de Kibana raté -> code 1' \
+  env FAKE_KUBECTL_LOG="$journal_secret" FAKE_SECRET_MISSING=1 FAKE_ROLLOUT_FAIL=1 python3 "$ALERTING" --secret
+verifie_contient 'a échoué' 'l échec du rollout est signalé'
+
+verifie_code 2 'deux modes à la fois -> erreur d utilisation' python3 "$ALERTING" --secret --dry-run
 
 # ==========================================================================
 # Bilan

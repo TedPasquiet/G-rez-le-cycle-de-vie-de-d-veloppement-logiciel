@@ -1,0 +1,49 @@
+%% Schéma 4 — Le flux des traces, de la requête HTTP à l'écran APM de Kibana.
+%% Source versionnée du bloc Mermaid d'ARCHITECTURE.md §8.4, repris dans
+%% MONITORING.md §10.2.
+%% Deux chemins partent du même pod et se rejoignent dans le même
+%% Elasticsearch : les traces par OTLP vers APM Server, les logs par stdout
+%% vers Filebeat. C'est le `trace.id` écrit dans les deux qui les relie — et
+%% c'est la raison pour laquelle APM Server vit dans la stack ELK et non à part.
+flowchart TB
+    accTitle: Le flux des traces, de la requête HTTP à Kibana APM
+    accDescr: Dans le pod back, l'agent Java OpenTelemetry instrumente Spring Boot. Il envoie les traces en OTLP à APM Server, dans le namespace logging, qui les écrit dans Elasticsearch et en déduit débit, latence et taux d'échec. Le même agent écrit trace.id dans les logs JSON, que Filebeat collecte. Kibana APM lit les traces et retrouve leurs logs par trace.id.
+
+    req(["Requête HTTP sur l'API"]) --> appli
+
+    subgraph app["Namespaces microcrm-staging et microcrm-production"]
+        subgraph pod["pod back : une seule JVM"]
+            appli["Spring Boot<br/>bytecode instrumenté au chargement"]
+            agent["Agent Java OpenTelemetry 2.31.1<br/>embarqué dans l'image, activé par<br/>JAVA_TOOL_OPTIONS de la ConfigMap"]
+            mdc["Logs JSON ECS sur stdout<br/>avec trace.id et span.id"]
+            appli -->|"spans"| agent
+            agent -->|"écrit trace.id et span.id<br/>dans le MDC Logback"| mdc
+        end
+    end
+
+    agent ==>|"OTLP http/protobuf, traces seules<br/>apm-server.logging.svc:8200<br/>attribut deployment.environment"| np
+
+    subgraph logging["Namespace logging — créé par Terraform"]
+        np{"NetworkPolicy : source dans<br/>un namespace applicatif ?"}
+        refus["refusé — sur un CNI qui<br/>applique les policies"]
+        apm["APM Server 8.19.7, sans Fleet<br/>port unique 8200, sans authentification"]
+        fb["Filebeat, DaemonSet<br/>ne collecte que microcrm-staging"]
+        es[("Elasticsearch<br/>templates APM installés par le plugin apm-data")]
+        tr["traces-apm-default<br/>transactions et spans, rétention 10 jours"]
+        me["metrics-apm.*<br/>débit, latence, taux d'échec<br/>calculés par APM Server"]
+        lo["microcrm-logs-AAAA.MM.JJ<br/>logs portant trace.id"]
+        kb["Kibana, application APM<br/>services, transactions, cascade de spans,<br/>onglet Logs par trace.id"]
+
+        np -->|non| refus
+        np -->|oui| apm
+        apm --> tr
+        apm -->|"agrège les traces"| me
+        fb --> lo
+        tr --> es
+        me --> es
+        lo --> es
+        es --> kb
+    end
+
+    mdc -->|"/var/log/containers du nœud"| fb
+    ope(["kubectl -n logging port-forward svc/kibana 5601"]) -.->|"aucun Ingress"| kb

@@ -1,0 +1,30 @@
+{
+  "index_patterns": ["microcrm-alerts"],
+  "priority": 200,
+  "_meta": {
+    "description": "Suivi des alertes MicroCRM : un document par changement d'état d'une règle (declenchee / retablie), écrit par le connecteur Kibana microcrm-alerts-index. Voir k8s/elk/alerting/README.md."
+  },
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0
+    },
+    "mappings": {
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "regle_id": { "type": "keyword" },
+        "regle": { "type": "keyword" },
+        "famille": { "type": "keyword" },
+        "severite": { "type": "keyword" },
+        "statut": { "type": "keyword" },
+        "valeur": { "type": "float", "ignore_malformed": true },
+        "unite": { "type": "keyword" },
+        "seuil": { "type": "keyword" },
+        "detail": {
+          "type": "text",
+          "fields": { "keyword": { "type": "keyword", "ignore_above": 1024 } }
+        }
+      }
+    }
+  }
+}

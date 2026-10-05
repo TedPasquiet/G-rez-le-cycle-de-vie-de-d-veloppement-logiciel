@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: apm-server
+  labels:
+    app.kubernetes.io/name: apm-server
+    app.kubernetes.io/component: tracing
+spec:
+  # ClusterIP, sans Ingress : APM Server accepte des écritures sans aucune
+  # authentification (voir apm-server-config.yaml). Ses seuls clients sont les
+  # pods `back` des namespaces applicatifs, qui l'atteignent par son nom DNS
+  # complet :
+  #
+  #   http://apm-server.logging.svc:8200
+  #
+  # ⚠️ Ce nom — donc le nom de ce Service ET le namespace `logging` — est écrit
+  # dans la ConfigMap de l'application (OTEL_EXPORTER_OTLP_ENDPOINT, dans
+  # k8s/base/configmap.yaml et helm/microcrm/templates/configmap.yaml). Renommer
+  # ce Service ou déplacer la stack coupe les traces SANS erreur au déploiement :
+  # l'agent échoue en silence, une ligne d'avertissement par minute. La
+  # cohérence est vérifiée par scripts/tests/validate_k8s.sh.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: apm-server
+  ports:
+    # Un seul port pour l'OTLP/HTTP, l'OTLP/gRPC et l'intake natif Elastic.
+    - name: intake
+      port: 8200
+      targetPort: intake

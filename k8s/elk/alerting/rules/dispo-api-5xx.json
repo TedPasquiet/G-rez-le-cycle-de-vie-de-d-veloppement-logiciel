@@ -1,0 +1,97 @@
+{
+  "name": "MicroCRM - disponibilité - réponses 5xx de l'API (traces APM)",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "enabled": true,
+  "tags": ["microcrm", "famille:disponibilite", "severite:haute"],
+  "schedule": {
+    "interval": "1m"
+  },
+  "params": {
+    "searchType": "esqlQuery",
+    "esqlQuery": {
+      "esql": "FROM traces-apm* | WHERE processor.event == \"transaction\" AND transaction.type == \"request\" AND service.name == \"microcrm\" AND http.response.status_code >= 500 | STATS valeur = COUNT(*) BY service.environment | WHERE valeur >= 1 | SORT valeur DESC | LIMIT 1 | EVAL detail = CONCAT(\"environnement \", service.environment) | KEEP valeur, detail"
+    },
+    "timeField": "@timestamp",
+    "timeWindowSize": 5,
+    "timeWindowUnit": "m",
+    "threshold": [0],
+    "thresholdComparator": ">",
+    "size": 10
+  },
+  "actions": [
+    {
+      "id": "microcrm-alerts-index",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "disponibilite",
+            "severite": "haute",
+            "seuil": "1 réponse 5xx ou plus en 5 min, par environnement",
+            "unite": "réponses 5xx",
+            "statut": "declenchee",
+            "valeur": "{{#context.hits}}{{_source.valeur}}{{/context.hits}}",
+            "detail": "{{#context.hits}}{{_source.detail}}{{/context.hits}}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "query matched",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "warn",
+        "message": "ALERTE [disponibilite/haute] {{rule.name}} - valeur {{#context.hits}}{{_source.valeur}}{{/context.hits}} réponses 5xx (seuil : 1 réponse 5xx ou plus en 5 min, par environnement) - {{#context.hits}}{{_source.detail}}{{/context.hits}}"
+      }
+    },
+    {
+      "id": "microcrm-alerts-index",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "documents": [
+          {
+            "regle_id": "{{rule.id}}",
+            "regle": "{{rule.name}}",
+            "famille": "disponibilite",
+            "severite": "haute",
+            "seuil": "1 réponse 5xx ou plus en 5 min, par environnement",
+            "unite": "réponses 5xx",
+            "statut": "retablie",
+            "detail": "la condition n'est plus remplie"
+          }
+        ]
+      }
+    },
+    {
+      "id": "microcrm-alerts-journal",
+      "group": "recovered",
+      "frequency": {
+        "summary": false,
+        "notify_when": "onActionGroupChange",
+        "throttle": null
+      },
+      "params": {
+        "level": "info",
+        "message": "RETABLIE [disponibilite] {{rule.name}}"
+      }
+    }
+  ]
+}

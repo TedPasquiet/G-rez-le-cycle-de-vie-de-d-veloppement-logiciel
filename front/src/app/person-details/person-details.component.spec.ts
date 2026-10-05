@@ -311,6 +311,41 @@ describe('PersonDetailsComponent', () => {
       expect(personService.fetchById).toHaveBeenCalledWith(42);
     });
 
+    /**
+     * Le rattachement est l'opération qui a échoué en silence le plus
+     * longtemps sur ce projet : le POST partait, le serveur refusait, et la
+     * fiche se rechargeait quand même — identique, puisque rien n'avait été
+     * écrit. L'écran donnait donc exactement le même résultat qu'un succès
+     * sans effet visible. Ne pas recharger est ce qui rend l'échec lisible ;
+     * le message, lui, vient de l'intercepteur.
+     */
+    it('ne recharge pas la fiche quand le rattachement est refusé', async () => {
+      organizationService.addPerson.and.rejectWith(new Error('403'));
+
+      await monterAvecRoute('42');
+      personService.fetchById.calls.reset();
+
+      component.selectedOrganization = anOrganization({ id: 10 });
+      await component.addSelectedOrganization();
+
+      expect(organizationService.addPerson).toHaveBeenCalled();
+      expect(personService.fetchById)
+        .withContext('un rechargement après un refus ressemble à un succès')
+        .not.toHaveBeenCalled();
+    });
+
+    it('ne recharge pas la fiche quand le détachement est refusé', async () => {
+      organizationService.removePerson.and.rejectWith(new Error('403'));
+
+      await monterAvecRoute('42');
+      personService.fetchById.calls.reset();
+
+      await component.removeOrganization(anOrganization({ id: 10 }));
+
+      expect(organizationService.removePerson).toHaveBeenCalled();
+      expect(personService.fetchById).not.toHaveBeenCalled();
+    });
+
     it('remplace la fiche affichée par la version rechargée', async () => {
       // Le rechargement doit servir à quelque chose : la personne affichée
       // après un rattachement est bien celle que le serveur vient de renvoyer,
@@ -325,6 +360,93 @@ describe('PersonDetailsComponent', () => {
 
       expect(component.person.organizations).toHaveSize(1);
       expect(component.isNew).toBeFalse();
+    });
+  });
+
+  describe('échec et chargement', () => {
+    const texte = () => (fixture.nativeElement as HTMLElement).textContent ?? '';
+
+    /**
+     * Sans cet état, une fiche dont le chargement a échoué s'affiche comme un
+     * formulaire vide — strictement identique à une création. On a édité des
+     * champs vides en croyant modifier une personne existante, et le « Save »
+     * qui suivait écrasait la fiche avec du vide.
+     */
+    it('signale une fiche dont le chargement a échoué au lieu de la montrer vide', async () => {
+      personService.fetchById.and.rejectWith(new Error('réseau'));
+
+      await monterAvecRoute('42');
+
+      expect(component.personState).toBe('failed');
+      expect(texte()).toContain('could not be loaded');
+    });
+
+    it('annonce le chargement en cours', async () => {
+      personService.fetchById.and.returnValue(new Promise(() => undefined));
+
+      await monterAvecRoute('42');
+
+      expect(component.personState).toBe('loading');
+      expect(texte()).toContain('Loading person…');
+    });
+
+    it("n'annonce aucun chargement en mode création", async () => {
+      await monterAvecRoute('new');
+
+      expect(component.personState).toBe('loaded');
+      expect(texte()).not.toContain('Loading person…');
+      expect(texte()).not.toContain('could not be loaded');
+    });
+
+    /**
+     * Le catalogue alimente la liste déroulante de rattachement. Son échec ne
+     * doit pas empêcher la fiche elle-même de s'afficher, ni laisser filer un
+     * rejet non traité.
+     */
+    it('affiche la fiche même si le catalogue des organisations est perdu', async () => {
+      organizationService.fetchAll.and.rejectWith(new Error('réseau'));
+      personService.fetchById.and.resolveTo(aPerson({ id: 42, firstName: 'Jane' }));
+
+      await monterAvecRoute('42');
+
+      expect(component.organizations).toHaveSize(0);
+      expect(component.person.firstName).toBe('Jane');
+      expect(component.personState).toBe('loaded');
+    });
+
+    it("ne navigue pas vers une fiche que l'enregistrement n'a pas créée", async () => {
+      personService.save.and.rejectWith(new Error('500'));
+
+      await monterAvecRoute('new');
+      component.savePerson();
+      await fixture.whenStable();
+
+      expect(personService.save).toHaveBeenCalled();
+      expect(router.navigate)
+        .withContext('naviguer ferait passer un enregistrement refusé pour un succès')
+        .not.toHaveBeenCalled();
+    });
+
+    it('reste sur la fiche quand la suppression est refusée', async () => {
+      personService.fetchById.and.resolveTo(aPerson({ id: 42 }));
+      personService.deleteById.and.rejectWith(new Error('403'));
+
+      await monterAvecRoute('42');
+      component.deletePerson();
+      await fixture.whenStable();
+
+      expect(personService.deleteById).toHaveBeenCalledWith(42);
+      expect(router.navigate).not.toHaveBeenCalled();
+    });
+
+    it('marque la fiche comme perdue si le rechargement échoue', async () => {
+      personService.fetchById.and.resolveTo(aPerson({ id: 42 }));
+      await monterAvecRoute('42');
+
+      personService.fetchById.and.rejectWith(new Error('réseau'));
+      await component.refresh();
+
+      expect(component.personState).toBe('failed');
     });
   });
 });

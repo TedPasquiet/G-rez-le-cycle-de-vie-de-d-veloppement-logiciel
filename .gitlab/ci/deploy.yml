@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Déploiement — Kubernetes, et le retour arrière qui va avec — 3 job(s)
+# Déploiement — Kubernetes, le retour arrière, et la mesure des livraisons — 4 job(s)
 # ---------------------------------------------------------------------------
 # Inclus par `.gitlab-ci.yml`. Les gabarits que ces jobs étendent vivent dans
 # `.gitlab/ci/templates.yml` : `extends:` traverse un `include:`, une ancre YAML
@@ -126,3 +126,60 @@ rollback-production:
       when: manual
     - if: '$CI_COMMIT_TAG'
       when: manual
+
+# Les quatre indicateurs DORA, calculés depuis l'historique des pipelines.
+#
+# scripts/ci/collect_dora.py existait, testé, et n'était exécuté par AUCUN job :
+# les indicateurs ne se calculaient que le jour où quelqu'un pensait à lancer le
+# script sur son poste. Ce job le joue à chaque pipeline de `develop`, de `main`
+# et de tag — les trois qui portent un déploiement — et publie le résultat.
+#
+# ⚠️ CE QU'IL MESURE, pour ne pas lui prêter plus qu'il ne fait. `needs: []` :
+# il démarre avec le pipeline, sans attendre personne. Il lit donc l'historique
+# TEL QU'IL EST À CE MOMENT-LÀ — le déploiement que ce pipeline-ci permettra
+# n'y figure pas encore, il apparaîtra à la collecte suivante. L'attendre n'est
+# pas possible : `deploy-*` sont manuels et bloquants, un job placé derrière
+# eux ne tournerait que le jour où quelqu'un clique, c'est-à-dire rarement.
+#
+# ⚠️ CE QU'IL NE FAIT PAS : alimenter Elasticsearch. Le script sait le faire
+# (`--elasticsearch`), mais l'Elasticsearch du projet vit dans le cluster, sans
+# adresse joignable depuis un conteneur de job. L'agent GitLab ouvre bien un
+# tunnel vers l'API Kubernetes ; joindre un Service à travers lui demanderait
+# un `kubectl port-forward` tenu ouvert pendant l'envoi, donc kubectl dans
+# l'image et un job qui échoue pour une raison de plus. Ce travail n'est pas
+# fait, et le drapeau n'est pas passé : mieux vaut un artefact JSON qui existe
+# qu'une indexation qu'on prétendrait avoir. Le tableau de bord Kibana reste
+# alimenté depuis un poste (MONITORING.md).
+#
+# `allow_failure: true`, comme `notify-echec` et pour la même raison : le
+# script sort en 1 sur une erreur réseau (API GitLab lente, quota de requêtes
+# anonymes atteint), et une mesure qui n'a pas pu être prise ne dit rien de la
+# qualité de ce qui est livré. Le job passe alors à l'orange, pas le pipeline
+# au rouge. Aucun artefact n'est publié dans ce cas — un fichier absent, pas un
+# fichier faux.
+#
+# Aucun jeton : le projet est public, la liste des pipelines et leurs jobs se
+# lisent sans authentification. C'est un choix du script (voir son en-tête).
+# Sur un projet privé, définir GITLAB_TOKEN dans les variables CI/CD.
+dora-metrics:
+  image: $PYTHON_IMAGE
+  stage: deploy
+  needs: []
+  script:
+    - mkdir -p "$REPORTS_DIR"
+    - python3 scripts/ci/collect_dora.py
+      --host "$CI_SERVER_URL"
+      --project "$CI_PROJECT_ID"
+      --days "$DORA_WINDOW_DAYS"
+      --output "$REPORTS_DIR/dora.json"
+  artifacts:
+    paths:
+      - $REPORTS_DIR/dora.json
+    # Plus long que les autres : c'est une série dans le temps, et c'est en
+    # comparant deux relevés qu'on lit une tendance.
+    expire_in: 30 days
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_TAG'

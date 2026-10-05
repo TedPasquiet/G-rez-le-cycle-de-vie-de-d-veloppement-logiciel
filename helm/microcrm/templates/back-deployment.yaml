@@ -85,6 +85,9 @@ spec:
           # conteneur, soit ~192 Mio pour 768 Mio ; le reste couvre le hors-tas
           # (metaspace, code cache, piles), couramment 150 à 250 Mio. Descendre
           # la limite sous 512 Mio expose à des OOMKill au démarrage.
+          # L'agent OpenTelemetry s'ajoute à ce hors-tas : environ 116 Mio de
+          # plus, mesurés une seule fois et hors cluster le 2026-10-02 (408 Mio
+          # contre 292) — voir k8s/base/back-deployment.yaml.
           #
           # CPU : le démarrage d'une JVM est le moment le plus gourmand du cycle
           # de vie (chargement de classes, JIT). Une limite basse allongerait le
@@ -97,6 +100,12 @@ spec:
           # le démarrage, pendant toute la vie du pod : l'attente est donc
           # confiée à un startupProbe, qui suspend les deux autres jusqu'à son
           # succès. Budget : 30 × 5 s = 150 s. Voir K8S.md §5.
+          #
+          # ⚠️ Budget conservé malgré l'agent OpenTelemetry, qui allonge le
+          # démarrage de quelques secondes : 10 à 15 s mesurés sans agent
+          # (K8S.md §14.3) laissent un ordre de grandeur de marge. À remesurer
+          # avec l'image qui l'embarque — justification complète dans
+          # k8s/base/back-deployment.yaml.
           startupProbe:
             httpGet:
               path: /actuator/health/liveness

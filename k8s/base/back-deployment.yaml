@@ -92,6 +92,19 @@ spec:
           # Descendre la limite sous 512 Mio expose à des OOMKill au démarrage.
           # Requests = 512 Mio pour que l'ordonnanceur réserve de quoi démarrer.
           #
+          # ⚠️ L'agent OpenTelemetry s'ajoute au HORS-TAS (ses propres classes
+          # en metaspace, le bytecode réécrit en cache de code, sa file de
+          # spans). Ce commentaire l'estimait à « quelques dizaines de Mio » :
+          # la seule mesure disponible dit davantage. Le 2026-10-02, même
+          # image et même série de 303 requêtes, dans un conteneur Docker
+          # local SANS limite mémoire (`docker stats`) : 408 Mio avec l'agent,
+          # 292 Mio sans — environ 116 Mio de plus (MONITORING.md §10.4).
+          # Une seule mesure, hors cluster : c'est un ordre de grandeur, pas un
+          # dimensionnement. Les valeurs ci-dessous n'ont donc pas été
+          # changées ; elles restent à confronter à un pod réel
+          # (`memory.current` du cgroup) sous la limite de 768 Mio, où la JVM
+          # dimensionne son tas autrement que dans un conteneur sans limite.
+          #
           # CPU : le démarrage d'une JVM est le moment le plus gourmand du cycle
           # de vie (chargement de classes, compilation JIT). Une limite basse
           # allongerait mécaniquement le démarrage et ferait échouer les probes.
@@ -112,6 +125,19 @@ spec:
           # qu'il n'a pas réussi, liveness et readiness sont suspendues ; dès
           # qu'il réussit, elles prennent le relais avec des délais courts.
           # Budget de démarrage : 30 × 5 s = 150 s avant abandon.
+          #
+          # ⚠️ Budget CONSERVÉ malgré l'agent OpenTelemetry (JAVA_TOOL_OPTIONS,
+          # configmap.yaml), et c'est un choix raisonné, pas un oubli. L'agent
+          # réécrit le bytecode des classes instrumentées à leur chargement :
+          # il allonge le démarrage de quelques secondes, davantage sous la
+          # limite d'1 CPU. Or le démarrage mesuré sans agent est de 10 à 15 s
+          # jusqu'au Ready (K8S.md §14.3), soit 2 à 3 tentatives sur 30 : même
+          # un doublement laisse la marge d'un ordre de grandeur. À REMESURER
+          # avec l'image qui embarque l'agent — si le Ready dépasse ~60 s, c'est
+          # ce seuil qu'il faut relever, pas un `initialDelaySeconds` à ajouter.
+          #
+          # Liveness et readiness, elles, ne changent pas : une fois démarré,
+          # l'agent n'ajoute que des microsecondes par requête.
           startupProbe:
             httpGet:
               path: /actuator/health/liveness

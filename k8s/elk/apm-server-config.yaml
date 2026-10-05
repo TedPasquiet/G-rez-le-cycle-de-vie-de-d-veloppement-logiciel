@@ -1,0 +1,95 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: apm-server-config
+  labels:
+    app.kubernetes.io/name: apm-server
+    app.kubernetes.io/component: tracing
+data:
+  # Un fichier plutôt que des drapeaux `-E` sur la ligne de commande, pour la
+  # même raison qu'Elasticsearch (elasticsearch-config.yaml) : il laisse la
+  # place de justifier chaque ligne.
+  apm-server.yml: |
+    # ------------------------------------------------------------------------
+    # Réception
+    # ------------------------------------------------------------------------
+    apm-server:
+      # Toutes les interfaces du POD, pas celles du nœud : le Service ClusterIP
+      # (apm-server-service.yaml) est la seule porte d'entrée. Sans ce réglage,
+      # APM Server n'écoute que sur localhost:8200 — le pod démarre, les
+      # sondes du kubelet échouent, et le symptôme ressemble à une panne réseau.
+      #
+      # ⚠️ UN SEUL port pour tous les protocoles. APM Server multiplexe sur
+      # 8200 : l'intake natif des agents Elastic, l'OTLP/HTTP (/v1/traces,
+      # /v1/metrics, /v1/logs) ET l'OTLP/gRPC. Les ports OTLP « standard »
+      # (4317 gRPC, 4318 HTTP) qu'attend un OpenTelemetry Collector n'existent
+      # PAS ici. Viser 4318 par réflexe donne un « connection refused » que
+      # l'agent Java ne journalise qu'une fois par minute.
+      host: '0.0.0.0:8200'
+
+      # Pas de RUM (agent JavaScript dans le navigateur) : il demanderait
+      # d'exposer ce Service hors du cluster, donc un Ingress sur un serveur
+      # sans authentification. Le front Angular n'est pas instrumenté, et c'est
+      # délibéré — voir le bloc `auth` ci-dessous.
+      rum:
+        enabled: false
+
+      # ⚠️ Aucune authentification (ni `secret_token` ni clé d'API). N'importe
+      # quel pod qui atteint ce port peut écrire des traces dans
+      # Elasticsearch. C'est le prolongement direct de `xpack.security.enabled:
+      # false` (elasticsearch-config.yaml) : un jeton ici ne protégerait
+      # qu'une porte, alors que la maison elle-même n'a pas de serrure.
+      #
+      # Le périmètre est tenu par le réseau, pas par un secret : Service
+      # ClusterIP, aucun Ingress, et une NetworkPolicy
+      # (terraform/environments/logging/main.tf) qui n'ouvre ce port qu'aux
+      # namespaces microcrm-staging et microcrm-production. Même réserve que
+      # partout ailleurs dans ce lot : cette policy n'est appliquée que par un
+      # CNI qui l'implémente, ce que ne fait pas le minikube par défaut.
+
+    # ------------------------------------------------------------------------
+    # Sortie
+    # ------------------------------------------------------------------------
+    output.elasticsearch:
+      # Nom court du Service : même namespace, donc pas de namespace écrit en
+      # dur (K8S.md §4). Mêmes coordonnées que Filebeat et Kibana.
+      hosts: ['http://elasticsearch:9200']
+
+    # ⚠️ Pourquoi aucun réglage de template, d'ILM ni d'index ici — et
+    # pourquoi c'est la condition du mode « standalone » sans Fleet.
+    #
+    # Depuis la 8.0, APM Server n'installe plus lui-même ses templates d'index :
+    # c'était le rôle de l'intégration APM de Fleet, donc de Kibana. Depuis la
+    # 8.15, c'est Elasticsearch qui s'en charge, via son plugin `apm-data`
+    # (`xpack.apm_data.enabled`, actif par défaut). Vérifié sur ce cluster
+    # AVANT d'écrire ce fichier :
+    #
+    #   GET _cluster/settings?include_defaults  -> xpack.apm_data.enabled: true
+    #   GET _index_template/traces-apm*         -> traces-apm@template, ...
+    #   composed_of                             -> apm-10d@lifecycle
+    #
+    # Conséquences :
+    #   - aucun Fleet, aucun Elastic Agent, aucune intégration à installer ;
+    #   - APM Server écrit dans les data streams standard (`traces-apm-default`,
+    #     `metrics-apm.*`, `logs-apm.*`), ceux que l'application APM de Kibana
+    #     lit sans configuration ;
+    #   - ⚠️ à l'inverse de `microcrm-logs-*` (filebeat-config.yaml), ces data
+    #     streams ONT une rétention : 10 jours pour les traces, posée par le
+    #     cycle de vie `apm-10d@lifecycle` que fournit Elasticsearch. C'est ce
+    #     qui empêche les traces de remplir le PVC de 5 Gio.
+    #
+    # Ne PAS renommer les index ici (`output.elasticsearch.index`) par symétrie
+    # avec Filebeat : l'application APM de Kibana ne sait lire que les noms
+    # standard, et on perdrait le template, donc le mapping — une trace
+    # indexée en mapping dynamique ne s'affiche plus dans la cascade.
+
+    # ------------------------------------------------------------------------
+    # Journaux d'APM Server lui-même
+    # ------------------------------------------------------------------------
+    # Sur stderr, en JSON : Filebeat ne collecte QUE le namespace de
+    # l'application (elk-config.yaml), donc ces lignes ne partent nulle part
+    # ailleurs que dans `kubectl logs`. Pas de fichier : la racine du conteneur
+    # est en lecture seule.
+    logging.level: info
+    logging.to_stderr: true
+    logging.to_files: false

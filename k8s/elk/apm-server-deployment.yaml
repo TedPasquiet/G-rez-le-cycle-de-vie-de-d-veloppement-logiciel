@@ -1,0 +1,190 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apm-server
+  labels:
+    app.kubernetes.io/name: apm-server
+    app.kubernetes.io/component: tracing
+spec:
+  # Récepteur des traces OpenTelemetry du back, qu'il traduit en documents
+  # Elasticsearch. Mode « standalone » : un binaire et un fichier de
+  # configuration, sans Fleet ni Elastic Agent — ce qui n'est possible en 8.19
+  # que parce qu'Elasticsearch installe lui-même les templates APM (voir
+  # apm-server-config.yaml).
+  #
+  # 1 replica : APM Server est sans état (tout part dans Elasticsearch), donc
+  # rien n'interdirait d'en mettre deux, mais le débit à absorber — un back, deux
+  # environnements — tient très largement dans un seul pod, et chaque replica
+  # coûte du quota sur un nœud partagé.
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: apm-server
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Même choix que Kibana : sans état, donc pas de raison de passer par un
+      # `Recreate` qui couperait la réception pendant le redémarrage. Le coût est
+      # un pod de plus pendant le rollout, et il est COMPTÉ dans le quota
+      # (terraform/environments/logging/terraform.tfvars).
+      #
+      # Une coupure ne serait pas une catastrophe pour autant : l'agent Java met
+      # les spans en file et réessaie. Mais sa file est bornée (2048 spans par
+      # défaut) et, pleine, elle JETTE les spans sans erreur visible côté
+      # application — c'est exactement le genre de perte qu'on ne découvre
+      # qu'en cherchant une trace qui n'existe pas.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: apm-server
+        app.kubernetes.io/component: tracing
+    spec:
+      # APM Server parle à Elasticsearch, jamais à l'API Kubernetes.
+      automountServiceAccountToken: false
+      securityContext:
+        # UID/GID 1000 : l'image officielle crée `apm-server` avec ces
+        # identifiants (vérifié par `id` dans l'image 8.19.7). Contrairement à
+        # Elasticsearch et Kibana, le GID est 1000 et non 0 : rien dans
+        # /usr/share/apm-server n'appartient au groupe root.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # L'emptyDir de data/ doit être inscriptible par ce GID.
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: apm-server
+          # ⚠️ Même version, au patch près, que les trois autres composants.
+          # APM Server vérifie la version d'Elasticsearch à la connexion, et
+          # surtout il écrit selon les templates que le plugin `apm-data`
+          # d'Elasticsearch a installés : un APM Server plus récent produirait
+          # des champs que ce template ne connaît pas encore. Épinglé ensemble,
+          # contrôlé par scripts/tests/validate_k8s.sh.
+          image: docker.elastic.co/apm/apm-server:8.19.7
+          imagePullPolicy: IfNotPresent
+          # Pas d'`args` : le point d'entrée de l'image lance déjà
+          # `apm-server --environment=container` (journaux sur stderr), et
+          # l'image pose BEAT_STRICT_PERMS=false — le contrôle de permissions
+          # qui oblige Filebeat à recevoir `--strict.perms=false`
+          # (filebeat-daemonset.yaml) est donc déjà levé ici. Vérifié en
+          # lisant /usr/local/bin/docker-entrypoint et la config de l'image.
+          ports:
+            # Un seul port, pour l'intake natif ET l'OTLP (HTTP et gRPC).
+            - name: intake
+              containerPort: 8200
+          # Pas de GOMEMLIMIT, et c'est vérifié plutôt que supposé.
+          #
+          # Le piège existe bien, sous une autre forme que pour la JVM
+          # d'Elasticsearch : le runtime Go ne lit pas la limite du cgroup, il
+          # déclenche son GC quand le tas a DOUBLÉ depuis le précédent. Sous une
+          # rafale, le tas peut franchir la limite avant que le GC ne se
+          # réveille — OOMKill, exit 137, rien dans les journaux. Mais APM
+          # Server le pare LUI-MÊME : il embarque la bibliothèque `automemlimit`,
+          # qui lit la limite du cgroup au démarrage et pose GOMEMLIMIT à 90 %
+          # de celle-ci. Ses propres journaux le disent (« GOMEMLIMIT is already
+          # set, skipping » quand on le force ; la valeur calculée sinon). Le
+          # forcer ici dupliquerait un calcul qu'il fait mieux, et le figerait
+          # le jour où la limite changerait.
+          #
+          # Il en déduit aussi la taille de ses files internes (« docappender
+          # ... based on 0.2gb of memory ») : la limite ci-dessous règle donc
+          # son comportement, pas seulement son plafond.
+          #
+          # ⚠️ Dimensionnement — calé sur la marge du quota du namespace, pas
+          # sur un chiffre rond.
+          #
+          # APM Server est un binaire Go : pas de tas géré à dimensionner, pas
+          # de pic de démarrage (mesuré : Ready 6 s après la création du pod).
+          # Sa mémoire suit le nombre de documents en attente d'envoi vers
+          # Elasticsearch, donc le débit de spans — ici un back, deux
+          # environnements, et en régime les sondes du kubelet pour l'essentiel.
+          #
+          # Mesuré sur ce cluster (memory.current / memory.peak du cgroup) :
+          #   - au repos                                     ~21 Mio
+          #   - rafale de 1 000 requêtes OTLP en 4,3 s        ~54 Mio (pic)
+          # La rafale représente plus de cent fois le débit réel attendu.
+          #
+          # D'où une request à 64 Mio — ce que l'ordonnanceur réserve, calé sur
+          # le pic mesuré — et une limite à 256 Mio, qui couvre le cas
+          # défavorable plutôt que le régime : un Elasticsearch lent ou qui
+          # redémarre (strategy Recreate, donc coupure franche) fait gonfler la
+          # file d'indexation. APM Server dimensionne d'ailleurs cette file
+          # d'après la limite (« docappender.DocumentBufferSize set to 204 based
+          # on 0.2gb of memory ») : la baisser encore réduirait sa capacité
+          # d'absorption, pas seulement son plafond.
+          #
+          # Le quota `logging` absorbe ces chiffres sans être modifié, pic de
+          # rollout compris (2 pods APM) — le calcul est dans
+          # terraform/environments/logging/terraform.tfvars.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          # `GET /` renvoie 200 et la version dès que le serveur HTTP écoute —
+          # sans authentification configurée, il ne demande rien. Démarrage en
+          # quelques secondes : 12 × 5 s = 60 s de budget couvrent un nœud
+          # chargé sans laisser un pod réellement bloqué occuper un slot
+          # pendant des minutes.
+          #
+          # ⚠️ La sonde ne vérifie PAS qu'Elasticsearch est joignable : APM
+          # Server accepte les spans et les met en file même quand sa sortie est
+          # coupée. Le lier à Elasticsearch par la liveness ferait redémarrer
+          # APM Server — et perdre sa file — à chaque redémarrage
+          # d'Elasticsearch, pour un problème qu'un redémarrage ne règle pas.
+          startupProbe:
+            httpGet:
+              path: /
+              port: intake
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /
+              port: intake
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: intake
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Racine en lecture seule, comme Kibana et Filebeat : APM Server
+            # n'écrit que sous data/ (identifiant d'instance meta.json). C'est
+            # Elasticsearch, et lui seul, qui reste l'exception du lot.
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            # subPath : on ne superpose que le fichier, pas le répertoire qui
+            # contient aussi le binaire.
+            - name: config
+              mountPath: /usr/share/apm-server/apm-server.yml
+              subPath: apm-server.yml
+              readOnly: true
+            # emptyDir : rien de ce qui s'y écrit n'a besoin de survivre au pod.
+            # L'échantillonnage « tail-based », qui y stockerait des traces en
+            # attente de décision, n'est pas activé.
+            - name: data
+              mountPath: /usr/share/apm-server/data
+      volumes:
+        - name: config
+          configMap:
+            name: apm-server-config
+        - name: data
+          emptyDir: {}

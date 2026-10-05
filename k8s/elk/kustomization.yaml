@@ -20,11 +20,18 @@ resources:
   - elasticsearch-pvc.yaml
   - elasticsearch-deployment.yaml
   - elasticsearch-service.yaml
+  - kibana-config.yaml
   - kibana-deployment.yaml
   - kibana-service.yaml
   - filebeat-rbac.yaml
   - filebeat-config.yaml
   - filebeat-daemonset.yaml
+  # Réception des traces OpenTelemetry du back. Dans la même stack que les logs,
+  # et non à part, pour une raison fonctionnelle : Kibana ne relie une trace à
+  # ses logs (par `trace.id`) que si les deux vivent dans le MÊME Elasticsearch.
+  - apm-server-config.yaml
+  - apm-server-deployment.yaml
+  - apm-server-service.yaml
 
 # `part-of` distinct de celui de k8s/base/ (`microcrm`) : ces pods vivent dans un
 # autre namespace, ont un autre cycle de vie, et un
