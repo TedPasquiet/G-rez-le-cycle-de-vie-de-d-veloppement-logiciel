@@ -3,56 +3,48 @@
 | Fiche du document | Valeur                                                                                                          |
 | ----------------- | --------------------------------------------------------------------------------------------------------------- |
 | Projet            | MicroCRM (Orion) — P5, Expert DevOps, « Gérez le cycle de vie de développement logiciel »                       |
-| Première version  | 18 août 2026                                                                                                    |
-| Mise à jour       | 5 octobre 2026                                                                                                  |
+| État décrit       | version **1.0.1**, en production depuis le 5 octobre 2026                                                       |
 | Périmètre         | chaîne CI/CD, qualité et sécurité du code, déploiement Kubernetes, supervision (logs, traces, alertes), release |
 | Destinataires     | le CTO d'Orion, les équipes de développement et d'exploitation, le jury                                         |
 
 Ce rapport synthétise ce que le projet a produit, ce qu'il a mesuré, et ce qu'il
 n'a pas atteint. Il est destiné à un lecteur qui n'ouvrira pas le dépôt : chaque
 affirmation renvoie au document technique qui la porte, et tous les chiffres
-cités ont été relevés sur cette installation, jamais estimés.
+cités ont été relevés sur cette installation, jamais estimés. Les numéros de
+pipeline cités se vérifient sur le projet GitLab public ; sauf mention
+contraire, les chiffres ont été relevés le 5 octobre 2026 par son API, sur le
+cluster et dans les artefacts des jobs.
 
 Le document jumeau, `documentation-infrastructure.md`, décrit l'architecture et
 les procédures. Celui-ci décrit les résultats.
-
-La mise à jour du 5 octobre 2026 décrit l'état **après livraison** : le travail
-du 2 octobre a été fusionné le 3 (PR #31 à #35), le pipeline de `develop` est
-repassé au vert, la version **1.0.1 a été publiée et mise en production** le 5,
-et les traces OpenTelemetry arrivent désormais des pods de staging et de
-production. Tous les numéros de pipeline cités se vérifient sur le projet GitLab
-public ; les chiffres ont été relevés le 5 octobre par son API, sur le cluster
-et dans les artefacts des jobs.
 
 ## Synthèse pour décideur
 
 Cette page se lit seule. Les sigles sont expliqués au §10.
 
-### Ce qui a été fait
+### Ce qui existe
 
-Orion disposait d'une application, MicroCRM, sans chaîne de livraison. Le projet
-lui en donne une : à chaque modification du code, un **pipeline** (une suite de
+Orion disposait d'une application, MicroCRM, sans chaîne de livraison. Elle en a
+maintenant une : à chaque modification du code, un **pipeline** (une suite de
 contrôles automatiques) teste l'application, cherche les failles de sécurité
 connues, fabrique les **images** (les paquets prêts à déployer), puis les
 installe sur un environnement de recette (« staging ») et un environnement de
 production. Une **supervision** rassemble les journaux et les temps de réponse
-de l'application dans des tableaux de bord et déclenche des **alertes**. Le 5
-octobre, la première version numérotée, **MicroCRM 1.0.1**, a parcouru toute la
-chaîne jusqu'à la production.
+de l'application dans des tableaux de bord et déclenche des **alertes**. La
+version **MicroCRM 1.0.1** a parcouru toute la chaîne jusqu'à la production le
+5 octobre 2026.
 
 ### Ce que ça change pour Orion
 
-- **Une mise en production n'est plus un geste d'expert.** Elle se déclenche
+- **Une mise en production n'est pas un geste d'expert.** Elle se déclenche
   d'un clic, et le retour à la version précédente aussi. Les deux ont été joués
-  pour de bon le 23 septembre ; la version 1.0.1 a été publiée par ce chemin le
-  5 octobre.
-- **Ce qui part en production est exactement ce qui a été testé.** La version
-  1.0.1 n'a pas été reconstruite pour la release : ses images ont la même
-  empreinte que celles que le pipeline avait testées et scannées.
+  en production le 23 septembre ; la version 1.0.1 a été publiée par ce chemin.
+- **Ce qui part en production est exactement ce qui a été testé.** Une release
+  ne reconstruit rien : les images 1.0.1 ont la même empreinte que celles que le
+  pipeline a testées et scannées.
 - **Une faille connue arrête la livraison avant la mise en ligne**, et non
-  après. C'est ce qui s'est produit deux fois le 1ᵉʳ octobre ; les images en
-  service aujourd'hui sont passées par cette porte sans aucune faille haute ou
-  critique.
+  après. Les images en service sont passées par cette porte sans aucune faille
+  haute ou critique.
 - **On sait ce que la livraison vaut.** Quatre indicateurs reconnus (DORA)
   mesurent sa cadence et sa fiabilité, sans rien embellir — y compris quand
   l'échec vient de la machine et non du code.
@@ -62,22 +54,20 @@ chaîne jusqu'à la production.
 
 ### Les cinq chiffres qui comptent
 
-| Chiffre                                               | Ce qu'il veut dire                                                                                                                                                                                                  |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **8 déploiements réussis sur 15 tentatives**          | Sur 30 jours. Neuf tentatives sur quinze (60 %) comptent comme des échecs. Trois d'entre elles, le 5 octobre, sont tombées sur un cluster arrêté : c'est la machine qui a lâché, pas le code — mais elles comptent. |
-| **4,76 h** entre une modification et sa mise en ligne | Valeur médiane sur 8 livraisons. Elle contient l'attente du clic humain, et pour l'une d'elles un week-end entier.                                                                                                  |
-| **0 faille critique ou haute**                        | Sur les images en service (version 1.0.1), relevé par le scan du pipeline avant leur publication. Les 5 failles hautes de l'ancienne image sont corrigées et en production.                                         |
-| **8 alertes sur 8 déclenchées puis rétablies**        | Essai du 2 octobre. Les alertes s'affichent dans l'outil de supervision ; elles n'envoient encore ni courriel ni message.                                                                                           |
-| **16,1 secondes de coupure**                          | Durée d'indisponibilité si le serveur applicatif tombe. Un déploiement, lui, ne coupe pas le service (99,75 % de requêtes servies pendant un déploiement suivi d'un retour arrière).                                |
+| Chiffre                                               | Ce qu'il veut dire                                                                                                                                                                                   |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **8 déploiements réussis sur 15 tentatives**          | Sur 30 jours. Neuf tentatives sur quinze (60 %) comptent comme des échecs. Trois d'entre elles sont tombées sur un cluster arrêté : c'est la machine qui a lâché, pas le code — mais elles comptent. |
+| **4,76 h** entre une modification et sa mise en ligne | Valeur médiane sur 8 livraisons. Elle contient l'attente du clic humain, et pour l'une d'elles un week-end entier.                                                                                   |
+| **0 faille critique ou haute**                        | Sur les images en service (version 1.0.1), relevé par le scan du pipeline avant leur publication.                                                                                                    |
+| **8 alertes sur 8 déclenchées puis rétablies**        | Essai du 2 octobre. Les alertes s'affichent dans l'outil de supervision ; elles n'envoient ni courriel ni message.                                                                                   |
+| **16,1 secondes de coupure**                          | Durée d'indisponibilité si le serveur applicatif tombe. Un déploiement, lui, ne coupe pas le service (99,75 % de requêtes servies pendant un déploiement suivi d'un retour arrière).                 |
 
 ### Les risques qui restent
 
-1. **La plateforme est le maillon faible, pas le code.** Du 2 au 5 octobre, le
-   moteur Docker du poste a décroché quatre fois, laissant le cluster à moitié
-   arrêté. Résultat : un runner figé qui a retenu la livraison près d'une
-   heure, deux contrôles d'infrastructure en échec, et trois mises en
-   production refusées le 5 octobre. Chaque fois, la relance a suffi ; chaque
-   fois, il a fallu quelqu'un pour la faire.
+1. **La plateforme est le maillon faible, pas le code.** Le runner et le
+   cluster tournent sur le moteur Docker d'un poste, qui a décroché quatre fois
+   pendant la phase de release (2 au 5 octobre). Chaque fois, la relance a
+   suffi ; chaque fois, il a fallu quelqu'un pour la faire.
 2. **La « production » est une démonstration.** Les deux environnements tournent
    sur un même ordinateur de développement, qui partage 8 Go de mémoire avec
    d'autres projets. Il n'existe pas de production réelle.
@@ -85,7 +75,7 @@ chaîne jusqu'à la production.
    données**, parce que la base de données vit en mémoire.
 4. **Personne n'est prévenu d'une alerte s'il ne regarde pas l'écran**, et les
    journaux de la production ne sont pas collectés (ses temps de réponse, eux,
-   le sont depuis le 5 octobre).
+   le sont).
 5. **Douze failles du socle Spring sont acceptées sous condition, jusqu'au 31
    décembre 2026.** Leur correctif gratuit n'existe que dans la version majeure
    suivante du socle.
@@ -103,81 +93,39 @@ chaîne jusqu'à la production.
 ## 1. L'essentiel, y compris ce qui fâche
 
 Le projet livre une chaîne complète. Deux images Docker construites en
-multi-étapes. Un pipeline GitLab CI de 10 étapes et 39 jobs. Des manifestes
-Kubernetes en overlays Kustomize, doublés d'un chart Helm. L'infrastructure
-décrite en Terraform et le poste provisionné par Ansible. Une stack ELK qui
-collecte réellement les logs de l'application, cinq tableaux de bord et huit
-règles d'alerte versionnés. Et deux collecteurs écrits pour ce projet : l'un
-pour les indicateurs DORA, l'autre pour les constats de sécurité.
-
-**Cette chaîne a abouti pour la première fois le 22 septembre 2026, après sept
-échecs.** Jusque-là, aucun déploiement n'était parti de la CI, et le dernier
-pipeline ne s'était pas arrêté sur un test rouge mais sur `ci_quota_exceeded`.
-Le déblocage tient à un **runner auto-hébergé**, qui ne consomme plus une minute
-du Free Tier. Il tient aussi à trois correctifs que rien n'avait révélés
-jusque-là, faute de job allant assez loin : un kubeconfig désignant `127.0.0.1`
-depuis un conteneur, un RBAC d'agent qui ne couvrait pas les objets applicatifs,
-et une variable de namespace absente qui faisait déployer dans `default` en
-silence.
+multi-étapes. Un pipeline GitLab CI de 10 étapes et 39 jobs, exécuté par un
+**runner auto-hébergé** (le quota de minutes du Free Tier ne suffit pas à cette
+chaîne). Des manifestes Kubernetes en overlays Kustomize, doublés d'un chart
+Helm. L'infrastructure décrite en Terraform et le poste provisionné par Ansible.
+Une stack ELK qui collecte réellement les logs de l'application et les traces de
+l'API, cinq tableaux de bord et huit règles d'alerte versionnés. Et deux
+collecteurs écrits pour ce projet : l'un pour les indicateurs DORA, l'autre pour
+les constats de sécurité.
 
 **Sur les trente derniers jours, huit déploiements ont abouti sur quinze
 tentatives.** Staging et production sont posés par la CI avec des images du
-registry GitLab, et un rollback de production a été joué pour de bon, puis suivi
-d'un redéploiement. Le taux d'échec des changements est de **60 %** : le chemin
+registry GitLab. Le taux d'échec des changements est de **60 %** : le chemin
 automatisé existe, il n'est pas encore fiable, et trois journées d'observations
 — les 22 et 23 septembre, le 5 octobre — ne font pas une cadence de livraison.
+Les échecs portent tous sur l'accès au cluster, jamais sur l'application : un
+cluster injoignable depuis un conteneur ou des droits insuffisants en
+septembre, un cluster arrêté le 5 octobre. **Une chaîne de livraison n'est pas
+plus fiable que la machine qui l'exécute.**
 
-**Du 23 septembre au 5 octobre, plus rien n'a été déployé.** Le pipeline de
-`develop` a échoué trois fois de suite (29 septembre, deux fois le 1ᵉʳ octobre),
-pour trois causes relevées job par job dans l'API GitLab : aucun runner
-disponible ; `trivy-fs` et `terraform-plan` ; puis `package-back`, dont le scan
-d'image a trouvé cinq CVE hautes de Jackson. Pour les scans, ce n'était pas une
-panne de la chaîne, c'était la chaîne qui faisait son travail. Le 2 octobre a
-servi à corriger : le scan des dépendances Java, qui n'analysait aucun jar, en
-lit maintenant 82 ; le scan d'image est fait avant le push ; les règles
-d'alerte, deux tableaux de bord, le job de release et la version 1.0.1 ont été
-écrits.
+**Les preuves de fonctionnement**, jouées sur la chaîne réelle :
 
-**Le 3 et le 5 octobre, ce travail a été livré.** Fusionné dans `develop` le 3
-(PR #31 à #35), il a donné le pipeline `#2909284076`, **vert sur tous ses jobs
-automatiques** — dont `dependency-check-back`, `trivy-fs`, `test-front`,
-`terraform-plan`, les deux `package-*`, le pipeline enfant de performance et
-`dora-metrics`, qui tournaient là pour la première fois dans cet état. Le 5,
-staging a été déployé (`5296658a`), `develop` fusionné dans `main` (PR #36,
-commit `08a216b0`), la production déployée, puis le tag `v1.0.1` posé : son
-pipeline `#2913490784` a promu les images sans les reconstruire, créé la Release
-GitLab, et la production tourne en **1.0.1** depuis 14 h 10 UTC. Le déroulé
-complet, incidents compris, est au §7.3.
+| Date         | Ce qui a été joué                                                           | Résultat                                                                                           | Où c'est établi         |
+| ------------ | --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ----------------------- |
+| 10 août 2026 | Déploiement manuel de l'overlay `staging` sur minikube, incidents provoqués | rollouts en `0`, sondes observées sous kubelet, Ingress routé, rollback automatique sur échec réel | `K8S.md` §14            |
+| 22 sept.     | Premier `deploy-staging` depuis la CI                                       | succès, images tirées du registry GitLab                                                           | `MONITORING.md` §9      |
+| 22 sept.     | Destruction puis reconstruction de l'environnement staging depuis le dépôt  | Ansible `ok=23 changed=0`, Terraform, rollout en 11 s, API servie                                  | `RELEASE.md` §9.5       |
+| 23 sept.     | `rollback-production` puis redéploiement                                    | version précédente rétablie, puis redéployée                                                       | `MONITORING.md` §9      |
+| 2 oct.       | Déclenchement volontaire des 8 règles d'alerte                              | 8 déclenchées, 8 rétablies seules                                                                  | §6.5                    |
+| 5 oct.       | Release 1.0.1 : pipelines `#2909284076`, `#2912362926`, `#2913490784`       | images promues sans reconstruction (digests identiques), Release GitLab créée, production en 1.0.1 | §7.3, `RELEASE.md` §7.5 |
 
-**Le chemin n'a pas été lisse, et ce n'est pas le code qui a coincé.** Le
-pipeline de `develop`, créé à 14 h 00 UTC le 3 octobre, n'a démarré qu'à
-14 h 58. L'unique runner (`concurrent = 1`) traitait d'abord les pipelines des
-quatre branches de travail. Après un redémarrage de Docker, il ne prenait plus
-de travail : l'un de leurs jobs est resté bloqué 36 minutes, jusqu'à sa
-relance.
-`terraform-plan` a échoué deux fois sur un cluster figé. Le 5 octobre, trois
-`deploy-production` ont échoué sur un cluster arrêté. Dans les quatre cas, la
-cause était la même : Docker Desktop, qui porte le runner et minikube, avait
-décroché ou redémarré. Le collecteur DORA compte ces trois échecs de déploiement
-comme des échecs de changement ; ils le sont au sens de la définition, et ils
-disent surtout qu'**une chaîne de livraison n'est pas plus fiable que la machine
-qui l'exécute**.
-
-**L'application avait d'abord été déployée à la main, sur un cluster local.** Le
-10 août 2026, l'overlay `staging` a été appliqué sur minikube. Les deux
-Deployments ont atteint `rollout status` en `0`, les sondes ont été observées
-sous kubelet, l'Ingress a routé ses deux hôtes, le rollback automatique a été
-déclenché sur un échec réel. Un défaut sérieux de la séquence de déploiement a
-été trouvé puis corrigé. Le compte rendu est dans `K8S.md` §14.
-
-La distinction entre ces deux manières de déployer reste le sujet du §2.4, mais
-elle a changé de nature. Ce qui était une conviction argumentée — « ce qui
-manque est le runner, pas la mécanique » — s'est vérifié le jour où le runner
-est arrivé : le mécanisme n'a pas eu à être réécrit, seuls son accès au cluster
-et ses droits l'ont été. Ce que la campagne manuelle porte encore seule, c'est
-le **détail du comportement en exploitation** — rollback sur image
-volontairement cassée, sondes sous kubelet, perte d'un pod — qu'aucun
-déploiement de CI ne réexerce.
+La campagne manuelle du 10 août reste la seule à avoir exercé le
+**comportement en exploitation** — rollback sur image volontairement cassée,
+sondes sous kubelet, perte d'un pod — qu'aucun déploiement de CI ne réexerce.
 
 ### Tableau de bord du projet
 
@@ -192,11 +140,11 @@ déploiement de CI ne réexerce.
 | Terraform                      | 3 environnements, `validate` et `plan` en `0`                     | `TERRAFORM.md`               |
 | Latence du front               | p50 **0,14 ms** · p95 **1,60 ms** · p99 **3,11 ms** (105 req.)    | `MONITORING.md` §5           |
 | Latence de l'API               | p95 de **3,41 à 5,65 ms** selon la route — conteneur local (§5.3) | `MONITORING.md` §10.4        |
-| Traces de l'API en service     | staging et production, depuis le 5 octobre                        | `MONITORING.md` §10          |
+| Traces de l'API en service     | staging et production                                             | `MONITORING.md` §10          |
 | Logs collectés                 | 92 175 documents au 2 octobre, **100 %** du namespace de staging  | `k8s/elk/alerting/README.md` |
 | Alertes                        | **8 règles**, 3 familles, 8 déclenchées puis rétablies            | `k8s/elk/alerting/README.md` |
 | Constats de sécurité           | **0** CRITICAL, **0** HIGH sur les images en service (1.0.1)      | artefacts de `package-*`     |
-| Disponibilité en déploiement   | **99,75 %** sur 1 615 requêtes, coupure ≤ 0,20 s                  | `K8S.md` §14.10              |
+| Disponibilité en déploiement   | **99,75 %** sur 1 615 requêtes, coupure ≤ 0,20 s                  | `K8S.md` §14                 |
 | **Déploiements réussis en CI** | **8** sur 15 tentatives (30 j)                                    | `MONITORING.md` §9           |
 | **Release publiée**            | **1.0.1**, promue sans reconstruction, en production              | `RELEASE.md` §7.5            |
 
@@ -227,54 +175,46 @@ Les quatre indicateurs sont calculés par `scripts/ci/collect_dora.py`, en Pytho
 standard et sans aucune dépendance. Les métriques DORA natives de GitLab sont
 réservées aux offres payantes ; sur le Free Tier, il faut les calculer soi-même
 depuis l'API. Le projet est mesurable **sans jeton**, parce que le dépôt GitHub
-se miroite vers un projet GitLab public où le pipeline tourne réellement.
+se miroite vers un projet GitLab public où le pipeline tourne réellement. Le job
+`dora-metrics` exécute le collecteur sur `develop`, `main` et les tags, et publie
+`reports/dora.json` en artefact.
 
 Le collecteur est testé sur des **fixtures**, c'est-à-dire des réponses d'API
 enregistrées, et non contre le réseau : un test qui dépend d'un service tiers
 échoue les jours où ce service est lent, et on finit par ne plus le croire. Deux
-jeux coexistent, et la distinction est délibérée. Le premier est réel,
-enregistré verbatim avant le déblocage du 22 septembre : les 44 pipelines
-d'alors et les jobs des 7 pipelines ayant déclenché un déploiement. Le second,
-explicitement nommé `dora-scenario-fabrique`, contient ce que le jeu réel
-n'offre pas : des déploiements réussis. Sans lui, les formules du délai et du
-temps de rétablissement ne seraient empruntées par aucun test, et on ne
-vérifierait qu'une chose — la capacité du collecteur à dire « je n'ai rien ».
-Les fixtures réelles n'ont pas été réenregistrées depuis ; elles décrivent
-toujours correctement la fenêtre qui est la leur.
+jeux coexistent. Le premier est réel : 44 pipelines enregistrés tels quels, sans
+aucun déploiement réussi. Le second, explicitement nommé
+`dora-scenario-fabrique`, contient ce que le jeu réel n'offre pas : des
+déploiements réussis. Sans lui, les formules du délai et du temps de
+rétablissement ne seraient empruntées par aucun test.
 
-### 2.3 Les valeurs : mesurées le 23 septembre 2026, recalculées le 5 octobre
+### 2.3 Les valeurs
 
-| Indicateur                              | 23 septembre (rejoué le 2 octobre) | 5 octobre 2026                    | Observations (avant → après) |
-| --------------------------------------- | ---------------------------------- | --------------------------------- | ---------------------------- |
-| Fréquence de déploiement                | 0,1667 par jour                    | **0,2667** par jour               | 5 → 8                        |
-| Délai de mise en production (médiane)   | 1,38 h (min 0,64 / max 4,87)       | **4,76 h** (min 0,64 / max 40,88) | 5 → 8                        |
-| Temps de rétablissement (MTTR, médiane) | 2,14 h (min 0,09 / max 4,18)       | **2,21 h** (min 0,09 / max 4,18)  | 2 → 4                        |
-| Taux d'échec des changements            | 66,67 % (6 sur 9)                  | **60 %** (9 sur 15)               | 9 → 15                       |
+| Indicateur                              | Référence (23 septembre 2026, 50 pipelines) | Actuel (5 octobre 2026, 67 pipelines) | Observations |
+| --------------------------------------- | ------------------------------------------- | ------------------------------------- | ------------ |
+| Fréquence de déploiement                | 0,1667 par jour                             | **0,2667** par jour                   | 5 → 8        |
+| Délai de mise en production (médiane)   | 1,38 h (min 0,64 / max 4,87)                | **4,76 h** (min 0,64 / max 40,88)     | 5 → 8        |
+| Temps de rétablissement (MTTR, médiane) | 2,14 h (min 0,09 / max 4,18)                | **2,21 h** (min 0,09 / max 4,18)      | 2 → 4        |
+| Taux d'échec des changements            | 66,67 % (6 sur 9)                           | **60 %** (9 sur 15)                   | 9 → 15       |
 
-La colonne du 23 septembre a été mesurée sur 50 pipelines, puis recalculée à
-l'identique le 2 octobre sur 57, faute de déploiement entre-temps. La colonne du
-5 octobre a été calculée à 14 h 39 UTC contre l'API réelle, sur **67
-pipelines**, puis réinjectée dans l'index `microcrm-dora` (21 documents). Sur la
+La référence est le premier relevé où les quatre indicateurs ont une valeur.
+La valeur actuelle a été calculée après le dernier déploiement de la release
+1.0.1, contre l'API réelle, puis injectée dans l'index `microcrm-dora`. Sur la
 fenêtre : quinze jobs de déploiement exécutés, huit réussis, sept en échec, et
-les deux rollbacks du 23 septembre. Les trois réussites nouvelles sont le
-`deploy-staging` de `5296658a` et les deux `deploy-production` de `08a216b0` (le
-pipeline de `main`, puis celui du tag `v1.0.1`).
+les deux rollbacks du 23 septembre.
 
 ![Tableau de bord Kibana des métriques DORA, fenêtre de 30 jours, le 5 octobre 2026. Quatre tuiles : fréquence de déploiement 0,2667 par jour, délai de mise en production 4,76 heures, temps de rétablissement 2,21 heures, taux d'échec des changements 60,00 %. En dessous : 15 tentatives de déploiement, 8 déploiements réussis, 7 échecs de motif script_failure. La chronologie montre trois groupes de barres : le 22 septembre (1 succès, 3 échecs), le 23 septembre (4 succès, 1 échec, et le repère de 2 rollbacks), le 5 octobre (3 succès, 3 échecs). La table du bas reprend les quatre indicateurs avec 8, 8, 4 et 15 observations.](captures/kibana-dora-quatre-indicateurs-2026-10-05.png)
 
 _Ce qu'il faut y lire : les quatre tuiles du haut sont les quatre indicateurs ;
 la chronologie montre que toute l'activité tient sur trois journées, et que les
 trois échecs du 5 octobre (en rouge, à droite) sont aussi nombreux que les
-réussites du même jour. Le texte d'aide en tête du tableau, écrit le 2 octobre,
-parle encore de « deux journées » : il est versionné dans `dora.ndjson` et n'a
-pas été réécrit._
+réussites du même jour. Le texte d'aide en tête du tableau, versionné dans
+`dora.ndjson`, parle de « deux journées » : il est à mettre à jour._
 
-Une lecture honnête de ces quatre valeurs tient en cinq remarques.
+**Analyse.** Une lecture honnête de ces quatre valeurs tient en cinq remarques.
 
-**Le taux d'échec compte des pannes de la plateforme.** Les trois
-`deploy-production` en échec du 5 octobre (7 h 57, 13 h 55 et 14 h 00 UTC) sont
-tombés sur un cluster arrêté : Docker Desktop avait redémarré, et minikube avec
-lui sans que son API ne revienne. Aucun n'a écrit quoi que ce soit dans le
+**Le taux d'échec compte des pannes de la plateforme.** Trois `deploy-production`
+en échec sont tombés sur un cluster arrêté : aucun n'a rien écrit dans le
 namespace de production, et la même image est passée ensuite sans modification.
 Ce ne sont donc pas des changements défectueux. **DORA les compte quand même**,
 et le collecteur ne peut pas les distinguer : GitLab les classe tous en
@@ -282,7 +222,7 @@ et le collecteur ne peut pas les distinguer : GitLab les classe tous en
 50 % (6 sur 12). Le chiffre retenu reste 60 % : retirer après coup les mesures
 qui gênent serait exactement ce que ces indicateurs servent à empêcher. La
 lecture juste est que **le poste de développement, utilisé comme environnement,
-est aujourd'hui la première cause d'échec de livraison mesurée**.
+est la première cause d'échec de livraison mesurée**.
 
 **Le recul est de trois jours, pas de trente.** Les huit déploiements réussis
 tiennent sur les 22 et 23 septembre et le 5 octobre ; la fréquence de 0,2667 par
@@ -291,32 +231,29 @@ sur 15 tentatives et un MTTR sur 4 observations décrivent des faits, pas des
 tendances.
 
 **Le délai de mise en production mesure surtout un geste humain, et un
-week-end.** Les deux jobs de déploiement restent `when: manual`. La médiane a
-triplé (1,38 h → 4,76 h) sans que la chaîne ait ralenti : le maximum de 40,88 h
-est le `deploy-staging` de `5296658a`, commit fusionné le samedi 3 octobre vers
-14 h UTC et déployé le lundi 5 à 6 h 52. La valeur mesure l'attente du clic,
-pas la durée du pipeline (environ 20 minutes de jobs automatiques sur
-`develop`).
+week-end.** Les deux jobs de déploiement sont `when: manual`. Le maximum de
+40,88 h est un commit fusionné un samedi et déployé le lundi. La valeur mesure
+l'attente du clic, pas la durée du pipeline (environ 20 minutes de jobs
+automatiques sur `develop`).
 
-**Le temps de rétablissement mesure ici la relance d'un cluster.** Les deux
-observations nouvelles sont 4,17 h (échec à 7 h 58, succès à 12 h 08) et
-0,25 h (échec à 13 h 56, succès à 14 h 11). Dans les deux cas, ce qui a été
-rétabli est minikube, pas l'application.
+**Le temps de rétablissement mesure ici la relance d'un cluster.** Ses deux
+dernières observations (4,17 h et 0,25 h) couvrent le temps de relancer
+minikube, pas de réparer l'application.
 
 **La fenêtre glisse.** Sans nouveau déploiement, les réussites de septembre
-sortiront de la fenêtre de 30 jours à partir du 22 octobre, celles du 5 octobre
-le 4 novembre ; la fréquence retombera alors à `0` et le délai redeviendra non
+sortent de la fenêtre de 30 jours à partir du 22 octobre, celles du 5 octobre
+le 4 novembre ; la fréquence retombe alors à `0` et le délai redevient non
 mesurable. C'est l'effet attendu d'un indicateur glissant.
 
 **Zéro mesuré et absence de donnée ne sont pas la même chose.** C'est la règle
-qui gouverne tout le collecteur, et la seule qui le rende utile plutôt que
-décoratif. Pendant les deux mois sans déploiement, `deployment_frequency` valait
-`0.0` — une mesure — tandis que `lead_time_for_changes` valait `null`,
-accompagné de sa raison : il n'existait aucune arrivée en production vers
-laquelle mesurer un délai. Le rendre en `0` aurait affiché un délai nul,
-c'est-à-dire **la performance parfaite**, là où il n'y avait jamais eu de mise
-en production. Un test de `run_tests.sh` échoue si un indicateur sans donnée se
-met à ressortir en `0`, et le tableau de bord respecte la même règle :
+qui gouverne tout le collecteur. Sur une fenêtre sans déploiement réussi,
+`deployment_frequency` vaut `0.0` — une mesure — tandis que
+`lead_time_for_changes` vaut `null`, accompagné de sa raison : il n'existe
+aucune arrivée en production vers laquelle mesurer un délai. Le rendre en `0`
+afficherait un délai nul, c'est-à-dire **la performance parfaite**, là où il n'y
+a pas eu de mise en production. Un test de `run_tests.sh` échoue si un
+indicateur sans donnée ressort en `0`, et le tableau de bord respecte la même
+règle :
 
 ![Le même tableau de bord DORA affiché sur le mois d'août 2026, avant tout déploiement réussi. La fréquence affiche 0,0000, le délai de mise en production et le temps de rétablissement affichent N/A, le taux d'échec affiche 100,00 %. En dessous : 5 tentatives, 0 déploiement réussi, 5 échecs de motif ci_quota_exceeded.](captures/kibana-dora-non-mesurable-affiche-na-aout-2026-10-02.png)
 
@@ -325,17 +262,13 @@ qui n'ont pas de définition affichent « N/A », jamais « 0 »._
 
 ⚠️ **Quatre limites à connaître sur cette collecte.**
 
-- **Elle tourne en CI depuis le 3 octobre, mais à un moment fixe.** Le job
-  `dora-metrics` (`.gitlab/ci/deploy.yml`) a tourné pour la première fois dans
-  le pipeline `#2909284076` (3 octobre, 54 s), puis dans ceux de `main` et du
-  tag. Son artefact `reports/dora.json`, relu, rend au 3 octobre les valeurs du
-  23 septembre, sur 66 pipelines. Mais il s'exécute avant les déploiements
-  manuels de son propre pipeline : celui de `main` (5 octobre, 7 h 22 UTC) ne
-  voyait encore que 6 réussites. La valeur de référence est donc celle du
-  recalcul fait après le dernier déploiement.
+- **Le job s'exécute à un moment fixe.** `dora-metrics` tourne avant les
+  déploiements manuels de son propre pipeline : il ne voit pas le déploiement
+  qui le suit. La valeur de référence est donc celle d'un recalcul fait après le
+  dernier déploiement.
 - **Le job n'alimente pas le tableau de bord.** Il n'envoie rien à
-  Elasticsearch, qu'un runner ne peut pas joindre ici. L'index `microcrm-dora` a
-  été réinjecté à la main le 2 puis le 5 octobre.
+  Elasticsearch, qu'un runner ne peut pas joindre ici. L'index `microcrm-dora`
+  est alimenté à la main depuis le poste.
 - **Le collecteur ne distingue pas une panne de la plateforme d'un changement
   défectueux.** Il lit le statut et le motif d'échec que GitLab donne au job ;
   un cluster injoignable et un manifeste faux y portent le même
@@ -343,12 +276,11 @@ qui n'ont pas de définition affichent « N/A », jamais « 0 »._
 - **Le comptage des rollbacks est pessimiste, et assumé tel quel.** Un
   déploiement réussi puis annulé compte comme un échec, conformément à la
   définition DORA, **mais le rattachement d'un rollback à un déploiement est
-  purement chronologique**. Le rollback du 23 septembre à 13:01:30 a échoué sur
-  un timeout et n'a donc rien annulé ; il est quand même compté comme une
-  annulation. Le détail, et ce qu'il faudrait pour le corriger, sont dans
+  purement chronologique** : un rollback qui a échoué compte quand même comme
+  une annulation. Le détail, et ce qu'il faudrait pour le corriger, sont dans
   `MONITORING.md` §9.3.
 
-La liste des pipelines, le 5 octobre 2026, après la release :
+La liste des pipelines après la release :
 
 ![Liste des pipelines du projet sur GitLab, le 5 octobre 2026, vue sans connexion. En haut, #2913490784 sur le tag v1.0.1 et #2912362926 sur main, tous deux au commit 08a216b0, en statut « Bloqué » avec toutes leurs pastilles d'étape automatiques au vert. Puis #2909284076 sur develop, commit 5296658a, « Réussi » en 20 minutes 48. Puis quatre pipelines « Annulé » de develop, pour les PR #31 à #34, et quatre pipelines de branches de travail, dont deux « En échec ».](captures/gitlab-pipelines-liste-2026-10-05.png)
 
@@ -356,56 +288,40 @@ La liste des pipelines, le 5 octobre 2026, après la release :
 capture.** C'est le statut d'un pipeline dont tous les jobs automatiques ont
 réussi et qui attend une action manuelle — ici les `terraform-apply-*` et
 `rollback-production`, qui sont des portes volontaires (§2.4) restées sans
-usage. Les autres lignes se lisent ainsi :
-
-- **Les quatre pipelines « Annulé »** de `develop` (PR #31 à #34, fusionnées en
-  trois minutes le 3 octobre) n'ont exécuté aucun job : durée `00:00:00`. Le
-  pipeline du dernier commit, `#2909284076`, contient tout leur contenu.
-- **Les deux pipelines « En échec »** sont ceux de branches de travail, avant
-  fusion : `#2909274793` (`feature/alerting-kibana`) a perdu `spotbugs-back` sur
-  un `runner_interrupted` (le runner s'est arrêté en cours de job) ; `#2909274777`
-  (`fix/jackson-databind-cve`) a échoué sur `lint-back`, `test-back` et
-  `dependency-check-back`. Les journaux de jobs n'étant pas lisibles sans jeton,
-  la cause de ce second échec n'a pas été relue ; le même code, fusionné, passe
-  ces trois jobs dans les trois pipelines du haut.
-
-L'activité du 23 septembre — quatre déploiements réussis, un échec et les deux
-rollbacks — porte sur les pipelines `#2874278876`, `#2874277560` et
-`#2873813689`, visibles sur la capture `pipelines-liste-apres-deploiements-2026-09-23.png`
-de `docs/captures/`.
+usage. Les pipelines « Annulé » n'ont exécuté aucun job : le pipeline du
+dernier commit, `#2909284076`, contient tout leur contenu. Les deux « En échec »
+sont des branches de travail avant fusion ; le même code, fusionné, passe dans
+les trois pipelines du haut.
 
 ### 2.4 « Ça marche sur un cluster local » n'est pas « ça arrive en production »
 
 C'est la différence que ces quatre chiffres mesurent, et il vaut mieux l'énoncer
 que la laisser deviner.
 
-Ce qui a été **prouvé sur un cluster** : les manifestes s'appliquent, les pods
+Ce qui est **prouvé sur un cluster** : les manifestes s'appliquent, les pods
 démarrent, les sondes se comportent comme prévu sous un vrai kubelet, l'Ingress
 route par hôte, le CORS discrimine, un déploiement vers une image inexistante
 déclenche bien le rollback automatique, et un rollback ramène la version
-précédente réellement déployée. Tout cela a été observé, commande par commande.
+précédente réellement déployée.
 
-Ce qu'un déploiement local ne pouvait pas exercer a depuis été exercé : un
-runner, un registry privé authentifié, des variables protégées, l'accès au
-cluster par le tunnel de l'agent, et un enchaînement que personne ne pilote
-entre le clic et le rollout. Le tirage d'image par `imagePullSecrets` fonctionne
-: les pods de staging et de production tirent leurs images du registry GitLab.
+Ce qui est **prouvé par la CI** : un runner, un registry privé authentifié, des
+variables protégées, l'accès au cluster par le tunnel de l'agent GitLab, et un
+enchaînement que personne ne pilote entre le clic et le rollout. Les pods de
+staging et de production tirent leurs images du registry GitLab par
+`imagePullSecrets`.
 
-Ce qui **n'a toujours pas lieu** : qu'un commit poussé sur `develop` ou `main`
-se retrouve en marche sans intervention humaine. Les deux jobs de déploiement
-sont `when: manual`, et c'est un choix pour la production (`A3.1` du plan
-d'optimisation propose de le lever sur staging seulement).
+Ce qui **n'a pas lieu** : qu'un commit poussé sur `develop` ou `main` se
+retrouve en marche sans intervention humaine. Les deux jobs de déploiement sont
+`when: manual` ; c'est un choix pour la production, et l'action A3.1 du plan
+d'optimisation propose de le lever sur staging seulement.
 
-Ce que la campagne locale porte encore seule : le comportement sous incident.
-Les sept déploiements de CI qui ont échoué l'ont fait sur l'accès au cluster —
-kubeconfig, droits, namespace en septembre, cluster arrêté le 5 octobre — et non
-sur l'application ; aucun n'a donc exercé une image cassée, la perte d'un pod ou
-une sonde en échec. La différence entre les deux registres s'est réduite, elle
-n'a pas disparu — et **les indicateurs DORA restent l'instrument qui refuse de
+Ce que la campagne locale porte seule : le comportement sous incident. Les
+déploiements de CI en échec l'ont été sur l'accès au cluster, et non sur
+l'application ; aucun n'a exercé une image cassée, la perte d'un pod ou une
+sonde en échec. **Les indicateurs DORA restent l'instrument qui refuse de
 confondre « le mécanisme fonctionne » et « les changements arrivent en
-production sans casse »**. C'est la raison pour laquelle ils sont présentés ici
-tels quels, sans correctif ni explication de rattrapage : à 60 % d'échec, ils ne
-flattent personne.
+production sans casse »** : à 60 % d'échec, ils ne flattent personne, et c'est
+pourquoi ils sont présentés tels quels.
 
 ## 3. Tests et couverture
 
@@ -418,24 +334,19 @@ flattent personne.
 | Scripts d'automatisation | **430 assertions** | —                                   | `test-scripts` |
 | Manifestes et chart      | **151 assertions** | —                                   | `lint-helm`    |
 
-Les volumes des deux dernières lignes ont été remesurés le 5 octobre sur
-`develop` : `run_tests.sh` rend « 430 test(s) OK, 0 en échec »,
-`validate_k8s.sh` « 151 test(s) OK » (174 avec `--autotest`, mesuré le 2
-octobre). Les quatre jobs correspondants sont verts dans les pipelines
-`#2909284076` (`develop`), `#2912362926` (`main`) et `#2913490784` (tag
-`v1.0.1`) ; GitLab y affiche les 115 tests du back. Les 112 tests du front et
-leur couverture viennent d'une exécution locale de `ng test` le 2 octobre ; la
-couverture du back n'a pas été remesurée depuis.
+Les quatre jobs sont verts dans les trois pipelines de la release (`#2909284076`,
+`#2912362926`, `#2913490784`), où GitLab affiche les 115 tests du back.
+`run_tests.sh` rend « 430 test(s) OK, 0 en échec » et `validate_k8s.sh`
+« 151 test(s) OK » (174 avec `--autotest`). Les 112 tests du front et leur
+couverture viennent d'une exécution locale de `ng test` le 2 octobre.
 
-L'écart entre lignes et branches était le chiffre intéressant du back ; il est
-refermé : **100 % des embranchements** sont désormais empruntés, contre 62,5 %
-auparavant. Une couverture de lignes élevée ne dit rien des chemins d'erreur, et
-c'est là que se logeait le risque. Le seuil dur du pipeline (`COVERAGE_MIN`) est
-fixé à **90 %** de lignes, contrôlé par `scripts/ci/check_coverage.py` dans le
-job `coverage-gate`, **bloquant** — un contrôle rapide, indépendant de la
-disponibilité de Sonar. Les tests de mutation (`MUTATION_MIN`, 80 %) posent la
-question que la couverture ne sait pas poser : ces tests vérifient-ils quelque
-chose ?
+**100 % des embranchements du back sont empruntés.** Une couverture de lignes
+élevée ne dit rien des chemins d'erreur, et c'est là que se loge le risque. Le
+seuil dur du pipeline (`COVERAGE_MIN`) est fixé à **90 %** de lignes, contrôlé
+par `scripts/ci/check_coverage.py` dans le job `coverage-gate`, **bloquant** —
+un contrôle rapide, indépendant de la disponibilité de Sonar. Les tests de
+mutation (`MUTATION_MIN`, 80 %) posent la question que la couverture ne sait pas
+poser : ces tests vérifient-ils quelque chose ?
 
 ### 3.2 Ce que les tests d'infrastructure vérifient réellement
 
@@ -449,8 +360,8 @@ renvoient le code de sortie voulu. On vérifie ainsi qu'un `rollout undo` est
 réellement déclenché quand un déploiement échoue, qu'il ne l'est **pas** quand
 tout va bien, que le scan d'une image précède son push, qu'aucune image n'est
 poussée si Trivy y trouve une CVE haute ou critique, et qu'aucun secret
-n'apparaît dans les logs. Depuis le 2 octobre, elles couvrent aussi le
-collecteur de sécurité (56 assertions) et l'installation des alertes (33).
+n'apparaît dans les logs. Elles couvrent aussi le collecteur de sécurité (56
+assertions) et l'installation des alertes (33).
 
 **Les 151 assertions de `validate_k8s.sh`** portent sur ce que Kustomize et Helm
 produisent réellement. La plus importante est la dernière : **le rendu du chart
@@ -463,32 +374,24 @@ déploiement.
 `validate_k8s.sh` est **auto-testé** : l'option `--autotest` rejoue ses
 assertions sur des rendus volontairement abîmés — Deployment renommé, ConfigMap
 fantôme, sonde sur un port inconnu, `runAsNonRoot` retiré, image en `latest` —
-et vérifie qu'elles échouent bien. De même, les nouvelles assertions de pipeline
-de `run_tests.sh` ont été vérifiées en échec sur une copie abîmée. Une assertion
-qui ne se déclenche jamais ne prouve rien.
+et vérifie qu'elles échouent bien. Une assertion qui ne se déclenche jamais ne
+prouve rien.
 
-### 3.3 Ce que les tests ont trouvé
+### 3.3 Ce que les tests établissent
 
-Trois trouvailles méritent d'être citées, parce qu'elles justifient le coût de
-ces suites.
+Trois résultats justifient le coût de ces suites.
 
-- **`POST /persons` renvoyait un corps vide.** Signalé dès la première exécution
-  du test de fumée k6. Ce n'était pas un bug de l'API : Spring Data REST ne
-  renvoie la ressource créée que si le client envoie un en-tête `Accept`. Le
-  front Angular l'envoie, k6 non. Le scénario a été corrigé pour se comporter
-  comme le vrai client — un test qui n'aurait vérifié que le code HTTP aurait
-  laissé passer l'écart.
-- **`rollback-production` ne pouvait pas fonctionner.** Découvert lors de la
-  campagne sur cluster réel : chaque déploiement insérait **deux** révisions —
-  un `apply -k` posant l'image _placeholder_, puis `deploy.sh` posant la vraie —
-  si bien que la « révision précédente » d'un déploiement sain était toujours le
-  placeholder. Le seul geste de secours prévu par le pipeline visait donc une
-  image inexistante. Corrigé par un overlay Kustomize éphémère qui pose l'image
-  réelle **avant** l'`apply`, et vérifié sur cluster : deux déploiements, deux
-  révisions, zéro placeholder, rollback sans argument en `0`.
-- **La suppression d'un pod `back` coupe l'API 16,1 secondes.** Non détecté par
-  la première campagne, qui décrivait l'état avant et après sans mesurer
-  l'intervalle. Voir §5.4.
+- **Le scénario k6 se comporte comme le vrai client.** Spring Data REST ne
+  renvoie la ressource créée par `POST /persons` que si le client envoie un
+  en-tête `Accept` ; le front l'envoie, le scénario aussi. Un test qui ne
+  vérifierait que le code HTTP laisserait passer un corps vide.
+- **Le rollback de production vise une image réelle.** Le déploiement pose
+  l'image réelle par un overlay Kustomize éphémère **avant** l'`apply` : chaque
+  déploiement crée une seule révision, et la « révision précédente » est
+  toujours une version réellement déployée, jamais le _placeholder_ des
+  manifestes. Vérifié sur cluster : deux déploiements, deux révisions, zéro
+  placeholder, rollback sans argument en `0`.
+- **La suppression d'un pod `back` coupe l'API 16,1 secondes.** Voir §5.4.
 
 ## 4. Qualité et sécurité du code
 
@@ -499,87 +402,79 @@ voient pas : un test unitaire ne détecte pas une CVE, un scan de CVE ne détect
 pas une mauvaise pratique de code, et aucun des deux ne dit si l'application
 tient la charge.
 
-| Outil                                              | Question à laquelle il répond                          | Étape                   | Bloquant ?                            |
-| -------------------------------------------------- | ------------------------------------------------------ | ----------------------- | ------------------------------------- |
-| Checkstyle, Spotless, ESLint, Prettier, ShellCheck | La forme est-elle tenue ?                              | `lint`                  | oui                                   |
-| SonarQube                                          | Bonnes pratiques, dette, couverture agrégée            | `quality`               | oui                                   |
-| SpotBugs + Find-Sec-Bugs                           | Bugs latents dans le bytecode (~140 motifs sécurité)   | `quality`               | oui                                   |
-| OWASP Dependency-Check                             | CVE des dépendances Java (base NVD)                    | `security`              | oui, score CVSS ≥ 7                   |
-| Trivy                                              | CVE du dépôt et des images, secrets, misconfigurations | `security` et `package` | oui, HIGH et CRITICAL                 |
-| k6                                                 | L'API répond-elle, et assez vite ?                     | `perf`                  | oui pour le smoke, non pour la charge |
+| Outil                          | Question à laquelle il répond                          | Étape                   | Bloquant ?                            |
+| ------------------------------ | ------------------------------------------------------ | ----------------------- | ------------------------------------- |
+| Checkstyle, ESLint, ShellCheck | La forme est-elle tenue ?                              | `lint`                  | oui                                   |
+| SonarQube                      | Bonnes pratiques, dette, couverture agrégée            | `quality`               | Quality Gate sur `main` seulement     |
+| SpotBugs                       | Bugs latents dans le bytecode                          | `quality`               | non, rapport publié                   |
+| OWASP Dependency-Check         | CVE des dépendances Java (base NVD)                    | `security`              | oui, score CVSS ≥ 7                   |
+| Trivy                          | CVE du dépôt et des images, secrets, misconfigurations | `security` et `package` | oui, HIGH et CRITICAL                 |
+| k6                             | L'API répond-elle, et assez vite ?                     | `perf`                  | oui pour le smoke, non pour la charge |
 
-**Tous ces contrôles sont bloquants, à une exception près.** La version
-précédente de ce tableau marquait SonarQube et SpotBugs « non » : c'était
-périmé. Relu dans `.gitlab/ci/quality.yml`, aucun des jobs `sonar-back`,
-`sonar-front`, `spotbugs-back` et `mutation-back` ne porte `allow_failure`, et
-un job GitLab sans cette clé est bloquant par défaut. L'état de départ — six
-jobs en `allow_failure: true` et des scans Trivy en `--exit-code 0` — a été levé
-en deux temps : les contrôles de qualité et `dependency-check-back` le 14
-septembre 2026, les trois scans Trivy le 19 septembre. Le choix de démarrage
-était assumé ; il n'avait pas vocation à être présenté comme final.
+**Les contrôles de sécurité, de forme, de couverture et de mutation sont
+bloquants ; trois ne le sont pas, par choix.** Les deux analyses SonarQube
+tournent à chaque pipeline mais n'attendent pas leur verdict : c'est le job
+`quality-gate`, qui interroge la _Quality Gate_, qui bloque, et il ne tourne que
+sur `main`. SpotBugs publie son rapport sans faire échouer le build
+(`ignoreFailures = true` dans `back/build.gradle`) : ses constats sont relus,
+pas opposés. Spotless et Prettier tournent dans les hooks locaux, pas en CI.
 
-Une précision sur SonarQube : les deux analyses tournent à chaque pipeline, mais
-le job `quality-gate`, qui interroge le verdict de la _Quality Gate_ de Sonar,
-ne tourne que sur `main`.
-
-Un seul contrôle reste non bloquant : **`k6-load`**. Ses mesures varient d'une
+Le troisième contrôle non bloquant est **`k6-load`**. Ses mesures varient d'une
 exécution à l'autre sur un runner mutualisé, et un seuil dur y produirait des
 échecs sans rapport avec le code. Sur un runner dédié, il suffit de basculer son
-`allow_failure`. `k6-smoke`, lui, a toujours été bloquant, parce qu'il ne mesure
-pas une tendance mais un fait binaire : l'image qu'on s'apprête à déployer
-répond, ou elle ne répond pas. Deux autres jobs portent `allow_failure: true`,
+`allow_failure`. `k6-smoke`, lui, est bloquant, parce qu'il ne mesure pas une
+tendance mais un fait binaire : l'image qu'on s'apprête à déployer répond, ou
+elle ne répond pas. Deux autres jobs portent `allow_failure: true`,
 `notify-echec` et `dora-metrics` : ce ne sont pas des contrôles, et une
 notification ou une mesure en panne ne doit pas faire échouer une livraison.
 
-Deux constats connus et non corrigés : Find-Sec-Bugs remonte `PERMISSIVE_CORS`
-dans `SpringDataRestCustomization.java`, et **aucun job ne lance `npm audit`** —
-vérifié le 2 octobre, la commande n'apparaît dans aucun fichier du pipeline. Les
-dépendances du front ne sont couvertes que par `trivy-fs`, qui lit le
-`package-lock.json`. C'est une piste identifiée, pas un contrôle en place.
+**Angle mort connu : aucun job ne lance `npm audit`.** Les dépendances du front
+ne sont couvertes que par `trivy-fs`, qui lit le `package-lock.json`.
 
-### 4.2 Ce que la journée du 2 octobre a corrigé
+### 4.2 Trois choix qui rendent les contrôles de sécurité effectifs
 
-Trois défauts ont été trouvés en cherchant pourquoi `develop` était rouge. Les
-trois affaiblissaient un contrôle de sécurité sans que rien ne le signale. Les
-correctifs ont été fusionnés le 3 octobre et tournent en CI depuis.
+Un contrôle bloquant peut être affaibli sans que rien ne le signale. Trois
+réglages l'empêchent, et chacun est vérifié en CI.
 
-**Dependency-Check n'analysait aucun jar.** Le rapport du job
-`dependency-check-back` contenait une liste de dépendances **vide**, et Gradle y
-passait cinq secondes. Le contrôle était bloquant, vert, et ne regardait rien.
-La cause est une rencontre de deux conventions : le plugin écarte par défaut les
-configurations « de test », qu'il reconnaît à leur nom, et Spring Boot fait
-hériter `runtimeClasspath` d'une configuration nommée `testAndDevelopmentOnly`.
-La seule configuration demandée était donc écartée. Une ligne corrige cela
-(`skipTestGroups = false` dans `back/build.gradle`). Le premier scan réel a lu
-**82 dépendances** et relevé **13 CVE de score ≥ 7** : douze sur Spring
-Framework 6.2.19, une sur Log4j. C'est aussi l'explication d'un écart resté
-longtemps sans réponse : Trivy trouvait des CVE que Dependency-Check ne voyait
-pas, parce que Dependency-Check ne voyait rien.
+**Dependency-Check analyse réellement les 82 dépendances du `runtimeClasspath`.**
+Le plugin écarte par défaut les configurations « de test », qu'il reconnaît à
+leur nom, et Spring Boot fait hériter `runtimeClasspath` d'une configuration
+nommée `testAndDevelopmentOnly`. Sans `skipTestGroups = false`
+(`back/build.gradle`), le rapport sort vide et vert. Une porte bloquante qui ne
+lit rien ne se distingue pas, à l'œil, d'une porte qui n'a rien trouvé : c'est
+pourquoi le rapport en artefact est relu, et pourquoi un contrôle du nombre de
+dépendances analysées est recommandé (§7.2).
 
-**L'image était poussée avant d'être scannée.** Le scan Trivy était une ligne
-placée après `build_and_push.sh`, donc après le push. Quand le scan refusait
-l'image, le job passait au rouge — mais l'image était déjà au registry sous son
-SHA. C'est le cas de `back:5bf1d6a2`, publiée avec ses cinq CVE hautes. Or la
-promotion d'une release ne vérifie que l'existence de ce tag : un tag de version
-posé sur ce commit aurait promu une image refusée. Le scan est désormais fait
-**dans** `build_and_push.sh`, entre la construction et le push (option `--scan`,
-activée dans `package-back` et `package-front`), et un test vérifie cet ordre.
+**L'image est scannée avant d'être poussée.** Le scan Trivy se fait **dans**
+`build_and_push.sh`, entre la construction et le push (option `--scan`, activée
+dans `package-back` et `package-front`), et un test de `run_tests.sh` vérifie
+cet ordre. Une image refusée n'atteint donc jamais le registry, où la promotion
+d'une release, qui ne vérifie que l'existence du tag, pourrait la publier.
 
-**Les scans ne laissaient aucune trace exploitable.** Un job rouge disait « une
-CVE a été trouvée », et il fallait relire son journal pour savoir laquelle. Le
-nouveau script `scripts/ci/trivy_scan.sh` fait deux passages : un relevé au
-format JSON, puis la porte bloquante sous forme de tableau lisible. Les jobs
-`trivy-fs`, `package-back` et `package-front` publient ces rapports en artefacts
-(`reports/`, conservés une semaine, y compris quand le job échoue). Son code de
-sortie distingue enfin un constat (`2`) d'un scan impossible (`1`).
+**Chaque scan laisse une trace exploitable.** `scripts/ci/trivy_scan.sh` fait
+deux passages : un relevé au format JSON, puis la porte bloquante sous forme de
+tableau lisible. Les jobs `trivy-fs`, `package-back` et `package-front` publient
+ces rapports en artefacts (`reports/`, conservés une semaine, y compris quand le
+job échoue). Son code de sortie distingue un constat (`2`) d'un scan impossible
+(`1`).
 
-### 4.3 L'état des vulnérabilités : le tableau de bord au 2 octobre, les images au 5
+### 4.3 L'état des vulnérabilités
+
+**Les images en service ne portent aucun constat HIGH ou CRITICAL.** Les
+rapports Trivy des jobs `package-back` et `package-front`, dans les artefacts
+des pipelines `#2909284076` et `#2912362926`, portent **0 constat HIGH ou
+CRITICAL** sur `back:5296658a`, `front:5296658a`, `back:08a216b0` et
+`front:08a216b0` — système de base compris, et pour le back `microcrm.jar` et
+l'agent OpenTelemetry. Les deux dernières sont, à l'empreinte près, les images
+`1.0.1` en production. Trois versions sont forcées dans `back/build.gradle`
+au-dessus de celles que gère Spring Boot pour y parvenir : Tomcat 10.1.59,
+Jackson 2.21.7, Log4j 2.25.5.
 
 Le collecteur `scripts/ci/collect_security.py` lit les rapports JSON de Trivy et
 de Dependency-Check, ainsi que les exceptions de `.trivyignore.yaml`, et les
-envoie dans l'index Elasticsearch `microcrm-security`. Le tableau de bord «
-sécurité » (§6.4) en est la lecture. Dernier scan de chaque source, toutes
-sévérités :
+envoie dans l'index Elasticsearch `microcrm-security`. Le tableau de bord
+« sécurité » (§6.4) en est la lecture. L'index a été alimenté le 2 octobre ; son
+dernier scan de chaque source, toutes sévérités :
 
 | Source                                  | Ouverts | CRITICAL | HIGH  | MEDIUM | LOW | Exceptés |
 | --------------------------------------- | ------- | -------- | ----- | ------ | --- | -------- |
@@ -590,25 +485,11 @@ sévérités :
 
 Le total de 80 compte aussi un constat de sévérité inconnue sur l'image du
 front. Par nature : 58 défauts de configuration, 22 vulnérabilités, aucun
-secret.
-
-**Les cinq constats HIGH sont identifiés, priorisés et corrigés dans le code.**
-Ce sont cinq CVE de `jackson-core` et `jackson-databind` 2.21.4, toutes dans le
-jar de l'application. Le correctif force Jackson à 2.21.7.
-
-**Les images corrigées sont publiées et en service depuis le 5 octobre.** Les
-rapports Trivy des jobs `package-back` et `package-front`, téléchargés depuis
-les artefacts des pipelines `#2909284076` et `#2912362926`, portent **0 constat
-HIGH ou CRITICAL** sur `back:5296658a`, `front:5296658a`, `back:08a216b0` et
-`front:08a216b0` — système de base compris, et pour le back `microcrm.jar` et
-l'agent OpenTelemetry. Ces deux dernières sont, à l'empreinte près, les images `1.0.1` en
-production. Le tableau ci-dessus, lui, n'a pas été réalimenté : il montre
-encore l'ancienne image `back:5bf1d6a2`, qui reste au registry (§7.2).
-
-Le chemin suivi par ces cinq CVE est celui qu'on attend d'une chaîne DevSecOps :
-détectées par le scan d'image, elles ont arrêté le pipeline avant tout
-déploiement, n'ont jamais atteint staging ni production, et ont été corrigées
-puis mises en service par la même chaîne.
+secret. Les cinq HIGH sont des CVE de `jackson-core` et `jackson-databind`
+2.21.4 dans l'image `back:5bf1d6a2`, qui n'est pas en service : la version
+forcée de Jackson les corrige, et le scan de cette image l'a empêchée d'être
+déployée. ⚠️ **Limite : l'index n'est pas réalimenté automatiquement** ; il ne
+reflète pas encore les images 1.0.1 (§7.2).
 
 ### 4.4 Les exceptions : assumées, justifiées, datées
 
@@ -633,12 +514,11 @@ une migration majeure. Attendre ne sert donc à rien.
   pas : elle ne déclare aucun contrôleur, seulement deux dépôts Spring Data
   REST.
 - **Trois CVE** (CVE-2026-47886, CVE-2026-59282, CVE-2026-59283) touchent au
-  langage d'expression SpEL et à la liaison de données. Elles avaient d'abord
-  été laissées bloquantes, faute d'analyse. L'analyse a été faite le 2 octobre,
-  condition par condition, contre les avis de l'éditeur : pour chacune, au moins
-  une des conditions exigées manque. Elle a été doublée d'un contrôle par
-  exécution sur le back de staging : trois requêtes `PATCH` forgées ont chacune
-  répondu `400` en moins de 0,1 s, sans effet sur la ressource.
+  langage d'expression SpEL et à la liaison de données. L'analyse, condition par
+  condition contre les avis de l'éditeur, montre que pour chacune au moins une
+  des conditions exigées manque. Elle est doublée d'un contrôle par exécution
+  sur le back de staging : trois requêtes `PATCH` forgées ont chacune répondu
+  `400` en moins de 0,1 s, sans effet sur la ressource.
 
 ⚠️ **Ce que ces exceptions ne valent pas.** Elles ne prouvent pas que Spring
 6.2.19 est sain : elles disent que les conditions d'exploitation ne sont pas
@@ -648,11 +528,9 @@ sortie propre est la migration vers Spring Boot 4. Le commentaire de
 `suppressions.xml` porte l'analyse complète.
 
 **La porte passe en CI.** `dependency-check-back` est vert dans les trois
-pipelines de la livraison (`#2909284076`, `#2912362926`, `#2913490784`). Son
-rapport JSON, relu dans les artefacts de `develop` (3 octobre) et de `main` (5
-octobre), porte **82 dépendances analysées, aucune CVE ouverte de score ≥ 7, et
-les 12 CVE Spring écartées par exception** — exactement le résultat obtenu sur
-le poste le 2 octobre.
+pipelines de la release. Son rapport JSON, relu dans les artefacts, porte **82
+dépendances analysées, aucune CVE ouverte de score ≥ 7, et les 12 CVE Spring
+écartées par exception**.
 
 ## 5. Performance mesurée
 
@@ -697,12 +575,9 @@ saturation.
 
 ### 5.2 La latence du front, mesurée en service
 
-Il n'existait au départ **aucune donnée de latence dans toute la chaîne**. Les
-logs applicatifs du back portent ce que l'application raconte, pas le temps
-qu'elle met ; et le Caddyfile n'avait aucune directive `log`. Un écran « latence
-» construit là-dessus aurait été décoratif. Le journal d'accès de Caddy a donc
-été activé — c'est la seule source qui voit passer le trafic du front, et elle
-porte les trois mesures d'un coup.
+Le journal d'accès de Caddy est la seule source qui voit passer le trafic du
+front, et il porte les trois mesures d'un coup. Les logs applicatifs du back
+disent ce que l'application raconte, pas le temps qu'elle met.
 
 | Percentile | Latence mesurée (105 requêtes, vérification initiale) |
 | ---------- | ----------------------------------------------------- |
@@ -721,36 +596,25 @@ bundle Angular et `/config.json` ; les appels à l'API partent du navigateur ver
 un hôte distinct et ne passent pas par lui. Et l'essentiel de ce trafic est fait
 des sondes de Kubernetes, pas d'utilisateurs.
 
-⚠️ **Le front ne produira quasiment jamais de 4xx**, parce que toute route
+⚠️ **Le front ne produit quasiment jamais de 4xx**, parce que toute route
 inconnue renvoie `200` avec `index.html`, à charge pour le routeur Angular de
 décider. Vérifié : 12 requêtes vers des chemins inexistants, 12 réponses `200`.
 Les erreurs réelles se lisent côté back.
 
-### 5.3 La latence de l'API : mesurable depuis le 1ᵉʳ octobre, en service depuis le 5
+### 5.3 La latence de l'API
 
-Ce rapport écrivait qu'il n'existait « aucune latence d'API ». C'est devenu faux,
-en deux temps qu'il faut distinguer.
+Le back embarque un agent OpenTelemetry qui trace chaque requête et l'envoie à
+Elastic APM, sans qu'une ligne du code Java ait changé. **Les traces arrivent de
+staging et de production** : le 5 octobre, après des requêtes envoyées aux deux
+API, l'index `traces-apm*` a reçu 534 documents `service.environment=staging` en
+15 minutes, puis 187 `production` et 180 `staging` en 10 minutes ; les logs du
+back portent un `trace.id`. Ce trafic est provoqué, pas celui d'utilisateurs :
+il prouve que les traces arrivent, il ne fournit pas une latence de référence en
+service, qui n'est pas relevée.
 
-Depuis le commit `143adb7` (1ᵉʳ octobre), le back embarque un agent
-OpenTelemetry qui trace chaque requête et l'envoie à Elastic APM, sans qu'une
-ligne du code Java ait changé. **Jusqu'au 5 octobre, cette chaîne n'était
-éprouvée que depuis le poste** : les pods exécutaient des images du 23
-septembre, antérieures à l'agent.
-
-**Depuis le 5 octobre, elle est en service.** Staging tourne `back:5296658a`,
-la production `back:1.0.1`, et leurs ConfigMaps portent les clés
-OpenTelemetry. Après des requêtes envoyées aux deux API, l'index `traces-apm*` a
-reçu **534 documents `service.environment=staging` en 15 minutes** le matin,
-puis **187 `production` et 180 `staging` en 10 minutes** après le déploiement de
-`08a216b0` ; des logs du back portent désormais un `trace.id`. Les pods
-instrumentés n'avaient redémarré aucune fois en production à 14 h 50 UTC. Ce
-trafic est provoqué, pas celui d'utilisateurs : il prouve que les traces
-arrivent, il ne fournit pas encore une latence de référence en service, qui n'a
-pas été relevée.
-
-Les chiffres de latence disponibles restent ceux de l'essai du 2 octobre :
-l'image instrumentée lancée dans un conteneur local, et 303 requêtes envoyées en
-18 secondes :
+Les chiffres de latence disponibles viennent d'un essai du 2 octobre : l'image
+instrumentée lancée dans un conteneur local, et 303 requêtes envoyées en
+18 secondes.
 
 | Transaction              | Requêtes | p50     | p95     | p99      |
 | ------------------------ | -------- | ------- | ------- | -------- |
@@ -778,11 +642,11 @@ capture agrège aussi les requêtes d'un autre essai local, celui des alertes
 l'agent a un coût, mesuré une seule fois : 408 Mio de mémoire contre 292 Mio, et
 un démarrage en 3,39 s contre 2,45 s. C'est un ordre de grandeur, à confronter à
 la limite de 768 Mio du pod : déployé, le pod n'a pas été tué par manque de
-mémoire, mais sa consommation réelle n'est pas mesurée (ci-dessous).
+mémoire, mais sa consommation réelle n'est pas mesurée.
 
 **Ce qui reste non mesuré : le CPU et la mémoire.** Les traces disent ce que
 l'API fait de ses requêtes, pas ce que ses pods consomment. `kubectl top` répond
-toujours `Metrics API not available`, faute de `metrics-server` (§6.7).
+`Metrics API not available`, faute de `metrics-server` (§6.7).
 
 ### 5.4 Comportement sous déploiement et sous panne
 
@@ -802,20 +666,17 @@ Ces chiffres disent deux choses distinctes, qu'il ne faut pas confondre.
 
 **Un déploiement ne coupe pas.** Le réglage `maxUnavailable: 0` impose que le
 nouveau pod soit prêt avant que l'ancien ne parte ; un déploiement vers une
-image inexistante n'a jamais touché le pod en service (`RESTARTS 0`, âge
-inchangé, API à `200` pendant toute la fenêtre). Le correctif de l'overlay
-éphémère n'a d'ailleurs **rien amélioré sur la disponibilité** — l'ancien
-mécanisme ne coupait pas non plus — il a corrigé la justesse de l'historique des
-révisions, donc la fiabilité du rollback.
+image inexistante ne touche pas le pod en service (`RESTARTS 0`, âge inchangé,
+API à `200` pendant toute la fenêtre).
 
 **Une perte de pod coupe seize secondes.** C'est la conséquence directe du
 `replicas: 1` imposé par une base en mémoire : à un seul pod, il n'y a rien pour
 absorber la perte, et aucun `PodDisruptionBudget` ne protège d'une éviction. Le
-front, statique et à deux replicas en production, n'a pas été affecté. La levée
+front, statique et à deux replicas en production, n'est pas affecté. La levée
 de cette limite passe par la sortie de HSQLDB, pas par un réglage.
 
 La variance du démarrage (6,7 s à 9,8 s sur une machine identique et non
-chargée) renforce le choix d'un `startupProbe` plutôt que d'un
+chargée) justifie le choix d'un `startupProbe` plutôt que d'un
 `initialDelaySeconds` fixe : si le délai bouge de moitié sans qu'aucune variable
 ne change, un délai figé serait le mauvais outil. Le budget actuel — 150 s — est
 très surdimensionné (2 tentatives consommées sur 30) ; son vrai prix est l'autre
@@ -833,21 +694,26 @@ flowchart TB
         back["pod back : Spring Boot<br/>profil container, encodeur ECS"]
         front["pod front : Caddy<br/>journal d'accès"]
     end
+
     tiers["Namespaces dev, staging, default<br/>projets tiers du même cluster"]
+
     back -->|"stdout : JSON ECS"| files
     front -->|"stdout : JSON non-ECS"| files
     tiers -->|"stdout"| files
+
     files["Nœud minikube<br/>/var/log/containers/*.log"]
     files --> fb
+
     subgraph logging["Namespace logging — créé par Terraform"]
         fb["Filebeat, DaemonSet<br/>provider autodiscover kubernetes"]
         f1{"namespace observé<br/>= microcrm-staging ?"}
         drop["écarté : hors périmètre"]
         f2{"quel conteneur ?"}
-        d1["decode_json_fields à la racine<br/>champs ECS"]
-        d2["decode_json_fields sous le<br/>préfixe caddy"]
-        es[("Elasticsearch<br/>data stream microcrm-logs")]
-        kb["Kibana<br/>tableaux de bord exportés en NDJSON"]
+        d1["decode_json_fields à la racine<br/>champs ECS : log.level,<br/>log.logger, service.name"]
+        d2["decode_json_fields sous le<br/>préfixe caddy : caddy.status,<br/>caddy.duration"]
+        es[("Elasticsearch<br/>data stream microcrm-logs-AAAA.MM.JJ")]
+        kb["Kibana<br/>tableaux de bord exportés en NDJSON<br/>et versionnés dans le dépôt"]
+
         fb --> f1
         f1 -->|non| drop
         f1 -->|oui| f2
@@ -857,6 +723,9 @@ flowchart TB
         d2 --> es
         es --> kb
     end
+
+    dora["scripts/ci/collect_dora.py<br/>API GitLab, index microcrm-dora"] -.-> es
+    ope(["kubectl -n logging port-forward svc/kibana 5601"]) -.->|"aucun Ingress :<br/>sécurité Elasticsearch désactivée"| kb
 ```
 
 _Source versionnée : `docs/schemas/flux-logs.mmd`, reprise dans
@@ -879,22 +748,21 @@ pas**.
 **Le second embranchement évite une panne irréversible.** Le back produit de
 l'ECS, décodé à la racine ; le front produit lui aussi du JSON, mais non-ECS,
 dont les champs portent les mêmes noms sans avoir la même forme. Un décodage
-uniforme faisait rejeter ses documents, et une collision de mapping ne se répare
+uniforme ferait rejeter ses documents, et une collision de mapping ne se répare
 pas : une fois le champ typé dans l'index, aucun document contradictoire n'y
-entrera plus.
+entre plus.
 
-### 6.2 Ce qui a été vérifié
+### 6.2 Ce qui est vérifié
 
 | Vérification                              | Résultat                                                              |
 | ----------------------------------------- | --------------------------------------------------------------------- |
 | Rollout Elasticsearch / Kibana / Filebeat | les trois `Running`                                                   |
-| Documents indexés (16 août 2026)          | **50**, dont **36 du conteneur `back`**                               |
 | Documents indexés (2 octobre 2026)        | **92 175**, un seul namespace                                         |
 | Provenance                                | **100 % `microcrm-staging`** — aucun projet voisin collecté           |
 | Champs ECS décodés                        | `log.level`, `log.logger`, `service.name`, `process.thread.name`      |
 | Métadonnées Kubernetes                    | `kubernetes.pod.name`, `kubernetes.namespace`, `container.image.name` |
 | Réimportation des tableaux de bord        | cinq fichiers, `success: true` sur chacun (§6.4)                      |
-| APM Server (2 octobre 2026)               | `1/1 Running`, version 8.19.7 ; aucune trace venue du cluster (§5.3)  |
+| APM Server                                | `1/1 Running`, version 8.19.7                                         |
 | Traces du cluster (5 octobre 2026)        | reçues de staging et de production, logs du back corrélés `trace.id`  |
 
 **Le livrable n'est pas « des écrans dans Kibana », ce sont des fichiers.** Les
@@ -905,34 +773,32 @@ Chaque panneau chiffré a été confronté à la même agrégation jouée direct
 contre Elasticsearch : mêmes chiffres des deux côtés
 (`k8s/elk/dashboards/README.md`).
 
-Le dimensionnement de la stack a été confronté à une charge réelle, ce qui n'est
-pas la même chose qu'un plan validé. Pendant le rollout de Kibana, le quota du
-namespace affichait `limits.memory 5376Mi/6Gi`, `requests.memory 3200Mi/4Gi`,
-`pods 4/12` — **exactement les valeurs calculées dans le `terraform.tfvars`, au
-mégaoctet près**. La règle qui les gouverne mérite d'être retenue : la limite
-mémoire vaut le double du tas, parce qu'un conteneur JVM dont la limite égale le
-tas est tué par l'OOM killer au premier pic hors-tas. C'est la cause la plus
-banale d'une stack ELK qui « ne démarre pas » sans message utile.
+Le dimensionnement de la stack est confronté à une charge réelle. Pendant le
+rollout de Kibana, le quota du namespace affichait `limits.memory 5376Mi/6Gi`,
+`requests.memory 3200Mi/4Gi`, `pods 4/12` — **exactement les valeurs calculées
+dans le `terraform.tfvars`, au mégaoctet près**. La règle qui les gouverne : la
+limite mémoire vaut le double du tas, parce qu'un conteneur JVM dont la limite
+égale le tas est tué par l'OOM killer au premier pic hors-tas.
 
 ### 6.3 Les indicateurs retenus, et pourquoi
 
 Un indicateur n'a de valeur que si l'on sait d'où il vient et ce qu'il ne dit
 pas. Les douze ci-dessous sont ceux que les tableaux de bord affichent.
 
-| Domaine       | Indicateur (KPI)                          | Source                              | Pourquoi celui-là                                                         | Sa limite                                                |
-| ------------- | ----------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------- |
-| Livraison     | Les quatre indicateurs DORA               | API GitLab, `collect_dora.py`       | Mesurent le résultat de la chaîne, vitesse et stabilité ensemble          | Très peu d'observations (§2.3)                           |
-| Disponibilité | Sondes de Kubernetes servies par le front | journal d'accès de Caddy            | Un battement régulier, 18 requêtes par minute : son silence est une panne | Ne distingue pas front arrêté et collecte arrêtée        |
-| Disponibilité | Démarrages du back                        | ligne `Started MicroCRMApplication` | Un back qui redémarre en boucle se voit là                                | Ce sont des démarrages, pas le compteur de redémarrages  |
-| Disponibilité | Requêtes terminées en erreur              | logs du back, traces APM            | Chaque occurrence est une réponse 500 servie à un utilisateur             | Côté traces : en service depuis le 5 octobre, sans recul |
-| Performance   | Latence du front, p50 / p95 / p99         | `caddy.duration`                    | Un percentile montre les utilisateurs lents qu'une moyenne cache          | Latence du serveur de fichiers, pas de l'API             |
-| Performance   | Latence et débit de l'API, par route      | traces OpenTelemetry                | Dit quelle route ralentit, pas seulement « c'est lent »                   | Chiffré sur un conteneur local ; en service sans recul   |
-| Performance   | Volume de logs par conteneur              | `microcrm-logs`                     | Révèle un pic d'activité ou un service devenu muet                        | Compte des lignes, pas des requêtes                      |
-| Sécurité      | Constats CRITICAL et HIGH ouverts         | rapports Trivy, `microcrm-security` | Ce sont les deux sévérités qui arrêtent le pipeline                       | Vaut pour l'image publiée, pas pour le code              |
-| Sécurité      | Constats ouverts dans le temps            | idem                                | Montre si la dette de sécurité monte ou descend                           | Historique rejoué, pas vécu (§6.4)                       |
-| Sécurité      | Exceptions et jours avant échéance        | `.trivyignore.yaml`                 | Une exception oubliée devient une faille acceptée pour toujours           | N'inclut pas les exceptions Dependency-Check             |
-| Sécurité      | Chemins sensibles demandés au front       | `caddy.request.uri`                 | `/.env`, `/.git` : la signature d'un balayage automatique                 | Signale une tentative, pas une fuite                     |
-| Alertes       | Déclenchements par famille et par règle   | index `microcrm-alerts`             | Dit ce qui a sonné, quand, et si c'est rétabli                            | Un écran vide ne veut pas dire que tout va bien          |
+| Domaine       | Indicateur (KPI)                          | Source                              | Pourquoi celui-là                                                         | Sa limite                                               |
+| ------------- | ----------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Livraison     | Les quatre indicateurs DORA               | API GitLab, `collect_dora.py`       | Mesurent le résultat de la chaîne, vitesse et stabilité ensemble          | Très peu d'observations (§2.3)                          |
+| Disponibilité | Sondes de Kubernetes servies par le front | journal d'accès de Caddy            | Un battement régulier, 18 requêtes par minute : son silence est une panne | Ne distingue pas front arrêté et collecte arrêtée       |
+| Disponibilité | Démarrages du back                        | ligne `Started MicroCRMApplication` | Un back qui redémarre en boucle se voit là                                | Ce sont des démarrages, pas le compteur de redémarrages |
+| Disponibilité | Requêtes terminées en erreur              | logs du back, traces APM            | Chaque occurrence est une réponse 500 servie à un utilisateur             | Côté traces : peu de recul                              |
+| Performance   | Latence du front, p50 / p95 / p99         | `caddy.duration`                    | Un percentile montre les utilisateurs lents qu'une moyenne cache          | Latence du serveur de fichiers, pas de l'API            |
+| Performance   | Latence et débit de l'API, par route      | traces OpenTelemetry                | Dit quelle route ralentit, pas seulement « c'est lent »                   | Chiffré sur un conteneur local ; en service sans recul  |
+| Performance   | Volume de logs par conteneur              | `microcrm-logs`                     | Révèle un pic d'activité ou un service devenu muet                        | Compte des lignes, pas des requêtes                     |
+| Sécurité      | Constats CRITICAL et HIGH ouverts         | rapports Trivy, `microcrm-security` | Ce sont les deux sévérités qui arrêtent le pipeline                       | Vaut pour l'image publiée, pas pour le code             |
+| Sécurité      | Constats ouverts dans le temps            | idem                                | Montre si la dette de sécurité monte ou descend                           | Historique rejoué, pas vécu (§6.4)                      |
+| Sécurité      | Exceptions et jours avant échéance        | `.trivyignore.yaml`                 | Une exception oubliée devient une faille acceptée pour toujours           | N'inclut pas les exceptions Dependency-Check            |
+| Sécurité      | Chemins sensibles demandés au front       | `caddy.request.uri`                 | `/.env`, `/.git` : la signature d'un balayage automatique                 | Signale une tentative, pas une fuite                    |
+| Alertes       | Déclenchements par famille et par règle   | index `microcrm-alerts`             | Dit ce qui a sonné, quand, et si c'est rétabli                            | Un écran vide ne veut pas dire que tout va bien         |
 
 ### 6.4 Les tableaux de bord
 
@@ -947,9 +813,8 @@ réimportés sur une instance d'où leurs objets avaient été supprimés.
 | Suivi des alertes | `alertes.ndjson`       | 8      | déclenchements et rétablissements des huit règles | §6.5    |
 | Métriques DORA    | `dora.ndjson`          | 13     | les quatre indicateurs de livraison               | §2.3    |
 
-Les captures ci-dessous datent toutes du 2 octobre 2026. Elles remplacent celles
-du 19 septembre, dont la capture DORA montrait l'état d'avant le déblocage de la
-chaîne.
+Les captures ci-dessous datent du 2 octobre 2026, celle des métriques DORA du
+5 octobre.
 
 #### Sécurité
 
@@ -963,12 +828,12 @@ corrige. La seconde liste les exceptions et leurs 90 jours restants._
 
 **Analyse.** Trois enseignements.
 
-- **Les constats graves ont été divisés par huit sur l'image du back** (40 puis
-  41, puis 5), et ramenés à zéro sur celle du front (40, puis 0). La bascule
-  date du 19 septembre : les scans Trivy sont devenus bloquants, et le même jour
-  Spring Boot est passé de 3.2.5 à 3.5.16 et Caddy a été recompilé pour fermer
-  les CVE (commit `df1634f`).
-- **Le dépôt est passé de 17 constats graves à 0**, les défauts de configuration
+- **Les constats graves sont divisés par huit sur l'image du back** (40, puis 5)
+  et ramenés à zéro sur celle du front (40, puis 0). La bascule correspond au
+  passage des scans Trivy en mode bloquant, accompagné de la montée de Spring
+  Boot de 3.2.5 à 3.5.16 et de la recompilation de Caddy. Les 5 HIGH restants
+  sont ceux de l'image `back:5bf1d6a2`, que la porte a refusée (§4.3).
+- **Le dépôt passe de 17 constats graves à 0**, les défauts de configuration
   restants étant soit corrigés, soit couverts par une exception datée.
 - **Ce qui reste ouvert est de faible sévérité** : 33 MEDIUM et 41 LOW, dont 58
   défauts de configuration. Ils ne bloquent pas la livraison et forment la dette
@@ -976,18 +841,18 @@ corrige. La seconde liste les exceptions et leurs 90 jours restants._
 
 ⚠️ **Trois réserves, sans lesquelles ces courbes se lisent mal.**
 
-- **L'historique est rejoué, il n'a pas été vécu.** Aucun scan n'avait été
-  collecté avant le 2 octobre. Huit anciens commits ont été scannés ce jour-là,
-  avec la base de vulnérabilités de ce jour-là, et datés de leur commit. La
-  courbe dit « ce que ces versions contiennent de vulnérable au regard de ce
-  qu'on sait aujourd'hui », pas « ce que le pipeline voyait à l'époque ».
+- **L'historique est rejoué, il n'a pas été vécu.** Huit anciens commits ont été
+  scannés le 2 octobre, avec la base de vulnérabilités de ce jour-là, et datés
+  de leur commit. La courbe dit « ce que ces versions contiennent de vulnérable
+  au regard de ce qu'on sait aujourd'hui », pas « ce que le pipeline voyait à
+  l'époque ».
 - **Les trois panneaux du bas sont vides par construction.** Le front répond
   `200` à tout chemin, et le back, seul à pouvoir répondre 401 ou 403, ne
   journalise pas ses accès. Leur titre le dit. L'application n'a d'ailleurs pas
   d'authentification.
 - **Dependency-Check n'y figure pas.** Le collecteur sait lire son rapport —
-  testé sur un rapport fabriqué — mais aucun rapport réel n'a été collecté. Et
-  le collecteur n'a pas encore été exécuté sur les rapports d'un pipeline.
+  testé sur un rapport fabriqué — mais le rapport réel, disponible en artefact,
+  ne lui a pas été passé.
 
 #### Disponibilité
 
@@ -1007,15 +872,14 @@ présence de logs**.
   répond.
 - **Sur les 360 heures de la fenêtre, 189 portent au moins une sonde**, soit
   52,5 %. Ce n'est pas un taux de disponibilité : le cluster est un minikube de
-  poste, éteint la nuit, et un trou ne distingue pas « front arrêté » de «
-  collecte arrêtée ».
+  poste, éteint la nuit, et un trou ne distingue pas « front arrêté » de
+  « collecte arrêtée ».
 - **Onze démarrages du back en quinze jours**, dont trois le 2 octobre. Ces
   trois-là s'expliquent par la relance du cluster et les essais d'alerte, pas
   par des pannes — c'est ce que les annotations permettent de vérifier d'un coup
   d'œil.
-- **Sur cette capture, les panneaux APM ne décrivent pas l'application
-  déployée** : leurs transactions viennent des deux essais locaux du 2 octobre.
-  Depuis le 5 octobre, staging et production y alimentent leurs propres
+- **Les panneaux APM de cette capture viennent des deux essais locaux du 2
+  octobre.** Staging et production y alimentent depuis leurs propres
   transactions ; le tableau n'a pas été recapturé.
 - **La production n'apparaît pas.** Le panneau « par environnement » n'a qu'une
   série, et il existe pour que cette absence se voie.
@@ -1036,16 +900,15 @@ voisin compte les avertissements du back, jour par jour._
   conforme au p95 médian de 1,54 ms.
 - **Le back n'a journalisé aucune erreur.** Sur 90 jours : 52 lignes `WARN`, 0
   `ERROR`. Les avertissements du back sont ceux qu'il écrit en démarrant,
-  auxquels s'ajoutent ceux de l'essai d'alerte du 2 octobre. La cause du pic de
-  25 lignes sur une seule journée n'a pas été établie ligne à ligne.
+  auxquels s'ajoutent ceux de l'essai d'alerte. La cause du pic de 25 lignes sur
+  une seule journée n'est pas établie ligne à ligne.
 - **Le volume suit les heures d'allumage du poste**, pas un trafic
   d'utilisateurs : il n'y a pas d'Ingress exposé, donc pas de visiteur.
 
 ### 6.5 Les alertes
 
-Jusqu'au 2 octobre, la supervision se consultait : rien ne prévenait. Huit
-règles d'alerte Kibana couvrent désormais les trois familles attendues. Ce sont
-des fichiers (`k8s/elk/alerting/rules/`), installés par
+Huit règles d'alerte Kibana couvrent les trois familles attendues. Ce sont des
+fichiers (`k8s/elk/alerting/rules/`), installés par
 `scripts/monitoring/install_alerting.py`, et non des réglages faits à la souris.
 Toutes s'évaluent chaque minute.
 
@@ -1081,16 +944,18 @@ déclenchée volontairement, puis s'est rétablie seule.
 | `perf-front-p95`               | front de staging bridé à 10 m CPU, sous charge     | 21:45:44   | 909,1 ms       | 21:51:45 |
 | `dispo-front-muet`             | front de staging ramené à 0 replica                | 21:50:39   | 0 requête      | 21:51:39 |
 
+`dispo-back-redemarrages` relève 3 et non 2 parce que le démarrage du cluster
+avait lui-même lancé le back douze minutes plus tôt.
+
 ![Tableau de bord Kibana « suivi des alertes », sur la dernière heure, le 2 octobre 2026. Une tuile affiche 8 déclenchements. Une chronologie les situe entre 21 h 35 et 21 h 50. Un histogramme les répartit par famille : 4 en disponibilité, 2 en performance, 2 en sécurité. Un second montre, pour chacune des huit règles, un déclenchement et un rétablissement. En bas, le journal de 16 lignes donne pour chaque changement d'état la famille, la sévérité, la règle, la valeur mesurée et le seuil.](captures/kibana-alertes-suivi-declenchements-2026-10-02.png)
 
-_Ce qu'il faut y lire : chaque règle apparaît deux fois, « declenchee » puis «
-retablie ». Le journal du bas donne la valeur qui a fait sonner — 909,1 ms pour
-la latence du front, 269,2 ms pour celle de l'API._
+_Ce qu'il faut y lire : chaque règle apparaît deux fois, « declenchee » puis
+« retablie ». Le journal du bas donne la valeur qui a fait sonner — 909,1 ms
+pour la latence du front, 269,2 ms pour celle de l'API._
 
-**Un défaut applicatif découvert en testant.** La requête `GET /persons/abc`
-renvoie une erreur 500 au lieu d'un 400 : l'application traite une saisie
-invalide comme une panne. C'est un défaut à corriger côté code, que l'alerte a
-rendu visible.
+**Un défaut applicatif rendu visible.** La requête `GET /persons/abc` renvoie
+une erreur 500 au lieu d'un 400 : l'application traite une saisie invalide
+comme une panne. C'est un défaut à corriger côté code.
 
 ⚠️ **Ce qu'il ne faut pas sur-lire.**
 
@@ -1098,24 +963,22 @@ rendu visible.
   index et une ligne dans le journal de Kibana : il faut ouvrir le tableau de
   bord pour la voir. Les connecteurs courriel, Slack et webhook exigent une
   licence payante.
-- **Les trois règles fondées sur les traces surveillent de vrais pods depuis le
-  5 octobre, mais n'ont sonné que sur un conteneur local.** Leurs requêtes
-  regroupent par `service.environment` et couvrent donc staging comme
-  production ; elles n'ont pas été re-déclenchées sur les pods déployés.
+- **Les trois règles fondées sur les traces surveillent de vrais pods, mais
+  n'ont sonné que sur un conteneur local.** Leurs requêtes regroupent par
+  `service.environment` et couvrent donc staging comme production ; elles n'ont
+  pas été re-déclenchées sur les pods déployés.
 - **Les cinq autres ne voient que staging**, seul environnement dont Filebeat
   collecte les logs.
 - **L'alerting ne se surveille pas lui-même.** Si Kibana tombe, aucune règle ne
   s'évalue, et un écran vide se lit alors comme « tout va bien ».
-- **Un back arrêté sans redémarrer n'est détecté par aucune règle** aujourd'hui.
-- `dispo-back-redemarrages` affiche 3 et non 2 parce que le démarrage du cluster
-  avait lui-même lancé le back douze minutes plus tôt.
+- **Un back arrêté sans redémarrer n'est détecté par aucune règle.**
 
 ### 6.6 Ce que les données apprennent : points de vigilance et actions
 
 | Constat tiré des tableaux de bord                       | Ce qu'il signifie                                                | Action proposée (§7.4)                                  |
 | ------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------- |
 | 3 déploiements sur 15 échoués sur un cluster arrêté     | La plateforme fait échouer des livraisons saines                 | Vérifier le cluster avant de déployer ; cluster dédié   |
-| 5 CVE hautes sur l'ancienne image du back               | `back:5bf1d6a2`, remplacée en service, reste au registry         | La supprimer ; réalimenter l'index de sécurité          |
+| 5 CVE hautes sur une image refusée du back              | `back:5bf1d6a2`, jamais en service, reste au registry            | La supprimer ; réalimenter l'index de sécurité          |
 | Une seule série dans « présence par environnement »     | Les logs de la production ne sont pas collectés                  | Étendre la collecte à la production                     |
 | 52,5 % des heures seulement portent des sondes          | La disponibilité n'est pas mesurable sur un poste éteint la nuit | Une sonde externe, sur un cluster permanent             |
 | Les panneaux 401/403 et 4xx sont vides par construction | Les logs ne voient pas les accès à l'API ; les traces, si        | Construire ces panneaux sur `traces-apm*`               |
@@ -1125,54 +988,54 @@ rendu visible.
 
 ### 6.7 Ce que la supervision ne fait pas
 
-| Volet                            | État au 5 octobre 2026                                                                  |
-| -------------------------------- | --------------------------------------------------------------------------------------- |
-| Sondes de santé (Actuator)       | fait, vérifiées sous kubelet ; `/actuator/health` à `UP` en production 1.0.1            |
-| Centralisation des logs          | fait, pour staging seulement                                                            |
-| Tableaux de bord versionnés      | fait : cinq fichiers                                                                    |
-| Alerting                         | fait : 8 règles déclenchées et rétablies ; **aucune notification hors de Kibana**       |
-| Latence et débit de l'API        | fait : traces reçues de staging et de production depuis le 5 octobre, sans recul (§5.3) |
-| **Métriques CPU et mémoire**     | **absentes** — pas de `metrics-server`, métriques JVM de l'agent coupées                |
-| **Supervision de la production** | **partielle** — traces oui ; logs non, Filebeat ne collecte que `microcrm-staging`      |
-| **Disponibilité du cluster**     | **non surveillée** — un minikube arrêté ne se découvre qu'à l'échec d'un déploiement    |
-| **Rétention des logs**           | **absente** — sans ILM, les données s'accumulent jusqu'au PVC de 5 Gio                  |
-| **Sécurité d'Elasticsearch**     | **désactivée** (`xpack.security.enabled: false`)                                        |
-| Exposition de Kibana             | aucun Ingress ; accès par `port-forward` uniquement                                     |
-| Automatisation                   | aucun job de CI ne déploie, ne teste ni n'alimente cette stack                          |
+| Volet                            | État                                                                                 |
+| -------------------------------- | ------------------------------------------------------------------------------------ |
+| Sondes de santé (Actuator)       | fait, vérifiées sous kubelet ; `/actuator/health` à `UP` en production 1.0.1         |
+| Centralisation des logs          | fait, pour staging seulement                                                         |
+| Tableaux de bord versionnés      | fait : cinq fichiers                                                                 |
+| Alerting                         | fait : 8 règles déclenchées et rétablies ; **aucune notification hors de Kibana**    |
+| Latence et débit de l'API        | fait : traces reçues de staging et de production, sans recul (§5.3)                  |
+| **Métriques CPU et mémoire**     | **absentes** — pas de `metrics-server`, métriques JVM de l'agent coupées             |
+| **Supervision de la production** | **partielle** — traces oui ; logs non, Filebeat ne collecte que `microcrm-staging`   |
+| **Disponibilité du cluster**     | **non surveillée** — un minikube arrêté ne se découvre qu'à l'échec d'un déploiement |
+| **Rétention des logs**           | **absente** — sans ILM, les données s'accumulent jusqu'au PVC de 5 Gio               |
+| **Sécurité d'Elasticsearch**     | **désactivée** (`xpack.security.enabled: false`)                                     |
+| Exposition de Kibana             | aucun Ingress ; accès par `port-forward` uniquement                                  |
+| Automatisation                   | aucun job de CI ne déploie, ne teste ni n'alimente cette stack                       |
 
-L'absence de métriques de ressources a une conséquence directe qu'il faut nommer
-: **il manque jusqu'au signal sur lequel un autoscaler déciderait**, et les
-valeurs de `resources` des manifestes restent des estimations — `kubectl top`
-répond `Metrics API not available`. Aucun `OOMKill` n'a été observé, ce qui est
-un indice, pas une mesure.
+L'absence de métriques de ressources a une conséquence directe : **il manque
+jusqu'au signal sur lequel un autoscaler déciderait**, et les valeurs de
+`resources` des manifestes restent des estimations. Aucun `OOMKill` n'a été
+observé, ce qui est un indice, pas une mesure.
 
 La sécurité désactivée d'Elasticsearch est assumée pour une stack locale de
 démonstration ; elle serait inacceptable ailleurs, et c'est la première chose à
 reprendre si cette stack devait sortir du poste. Les captures du §6.5 en portent
 la trace : Kibana y affiche lui-même « Your data is not secure ». C'est aussi
 pourquoi il n'y a pas d'Ingress : exposer une console d'administration sans
-authentification serait cohérent avec le point précédent, c'est-à-dire une
-mauvaise idée.
+authentification serait une mauvaise idée.
 
 ## 7. Gains obtenus et recommandations d'amélioration continue
 
 ### 7.1 Les indicateurs, avant et après
 
-Chaque ligne ci-dessous est un état antérieur réel du dépôt, corrigé et vérifié
-— pas une amélioration théorique. Le premier tableau compare les indicateurs
-mesurés ; le second, les propriétés de la chaîne.
+« Avant » désigne l'état initial du dépôt ou, pour les indicateurs de
+livraison, la période qui précède le premier déploiement réussi depuis la CI
+(jusqu'au 21 septembre 2026). « Après » désigne l'état livré, version 1.0.1. Le
+premier tableau compare les indicateurs mesurés ; le second, les propriétés de
+la chaîne.
 
 | Indicateur                        | Avant                                               | Après                                                | Réserve                                       |
 | --------------------------------- | --------------------------------------------------- | ---------------------------------------------------- | --------------------------------------------- |
-| Déploiements réussis depuis la CI | **0** sur 7 tentatives (jusqu'au 21 septembre)      | **8** sur 15 (fenêtre de 30 jours)                   | sur trois journées                            |
-| Fréquence de déploiement          | 0,0 par jour                                        | 0,2667 par jour (0,1667 au 23 septembre)             | retombera à 0 sans nouveau déploiement        |
+| Déploiements réussis depuis la CI | **0** sur 7 tentatives                              | **8** sur 15 (fenêtre de 30 jours)                   | sur trois journées                            |
+| Fréquence de déploiement          | 0,0 par jour                                        | 0,2667 par jour (0,1667 au 23 septembre)             | retombe à 0 sans nouveau déploiement          |
 | Délai de mise en production       | non mesurable                                       | 4,76 h (médiane ; 1,38 h au 23 septembre)            | contient l'attente du clic et un week-end     |
 | Temps de rétablissement           | non mesurable                                       | 2,21 h (médiane ; 2,14 h au 23 septembre)            | 4 observations                                |
 | Taux d'échec des changements      | 100 %                                               | 60 % (66,67 % au 23 septembre)                       | dont 3 échecs sur un cluster arrêté           |
-| Versions publiées                 | 0 (`v1.0.0` n'a jamais abouti)                      | **1.0.1**, promue sans reconstruction, en production | une seule release                             |
+| Versions publiées                 | 0                                                   | **1.0.1**, promue sans reconstruction, en production | une seule release                             |
 | Contrôles non bloquants           | 6 jobs en `allow_failure`, Trivy en `--exit-code 0` | 1 seul contrôle non bloquant (`k6-load`)             | —                                             |
-| Dépendances Java analysées        | **0**                                               | **82**                                               | en CI depuis le 3 octobre                     |
-| Constats graves, image du back    | 40 (commit du 1ᵉʳ août)                             | **0** sur `back:1.0.1`, en service                   | historique rejoué avant le 2 octobre          |
+| Dépendances Java analysées        | **0**                                               | **82**                                               | —                                             |
+| Constats graves, image du back    | 40                                                  | **0** sur `back:1.0.1`, en service                   | historique rejoué                             |
 | Constats graves, image du front   | 40                                                  | 0                                                    | historique rejoué                             |
 | Constats graves, dépôt            | 17                                                  | 0                                                    | historique rejoué                             |
 | Couverture des branches du back   | 62,5 %                                              | 100 %                                                | —                                             |
@@ -1190,8 +1053,8 @@ mesurés ; le second, les propriétés de la chaîne.
 | Images d'outillage du pipeline    | 9 images flottantes ou en `latest`                         | toutes figées, déclarées une seule fois                                             |
 | Chaîne de compilation du back     | trois JDK pour un même artefact (17 / 21 / 21)             | une seule version, alignée Dockerfile ↔ pipeline                                    |
 | URL de l'API du front             | compilée dans le bundle → `localhost:8080` en prod         | lue au démarrage depuis `/config.json` — **une image pour tous les environnements** |
-| Utilisateur des conteneurs        | le front tournait en `root`                                | UID 1000 des deux côtés, aligné sur les manifestes                                  |
-| Port déclaré par le back          | `EXPOSE 4200` pour une application sur `8080`              | corrigé                                                                             |
+| Utilisateur des conteneurs        | `root`, aucun utilisateur déclaré                          | UID 1000 des deux côtés, aligné sur les manifestes                                  |
+| Port déclaré par le back          | `EXPOSE 4200` pour une application sur `8080`              | `8080`                                                                              |
 | Création d'un environnement       | `kubectl create namespace` tapé par quelqu'un              | décrit en Terraform, avec quota, limites et policies                                |
 | Prérequis du poste                | deux phrases dans deux documents                           | playbook Ansible idempotent (`ok=23 changed=0`)                                     |
 | Capacité de retour arrière        | `rollback-production` ramenait un _placeholder_ inexistant | ramène la version précédente réellement déployée, vérifié sur cluster               |
@@ -1199,112 +1062,94 @@ mesurés ; le second, les propriétés de la chaîne.
 | Lecture des logs                  | `kubectl logs`, un pod à la fois, sans historique          | data stream Elasticsearch, cinq tableaux de bord versionnés                         |
 | Détection d'un incident           | quelqu'un regarde un écran, ou personne                    | 8 règles évaluées chaque minute                                                     |
 | Mesure de la livraison            | aucune                                                     | 4 indicateurs DORA calculés sur 67 pipelines, tous renseignés, et un job en CI      |
-| Release                           | un tag sans image ni Release, faute d'avoir abouti         | tag `v1.0.1` → images promues à l'identique → Release GitLab créée par la CI        |
+| Release                           | aucune                                                     | tag `v1.0.1` → images promues à l'identique → Release GitLab créée par la CI        |
 
 Trois de ces gains valent plus que les autres, parce qu'ils changent une
 propriété et pas seulement un chiffre.
 
-**« Construire une fois, déployer partout » est devenu vrai.** Tant que l'URL de
-l'API était compilée dans le bundle, il fallait une image par environnement :
-l'image testée n'était pas celle déployée. Aujourd'hui Caddy fabrique un
+**« Construire une fois, déployer partout » est vrai.** Caddy fabrique un
 `/config.json` à partir de son environnement et le bundle le lit avant de
-démarrer. La même image, construite et scannée une fois, passe de staging à
-production sans être reconstruite. La release 1.0.1 l'a prouvé jusqu'au bout :
-`back:1.0.1` et `back:08a216b0` ont la même empreinte (§7.3).
+démarrer : l'URL de l'API n'est plus compilée dans l'image. La même image,
+construite et scannée une fois, passe de staging à production sans être
+reconstruite. La release 1.0.1 le prouve : `back:1.0.1` et `back:08a216b0` ont
+la même empreinte (§7.3).
 
-**La capacité de retour arrière est passée de nulle à réelle.** Avant
-correction, `kubectl get deploy` affichait `READY 1/1 UP-TO-DATE 1 AVAILABLE 1`
-pendant que le Deployment pointait sur une image inexistante — une supervision
-branchée sur ce résumé n'aurait levé aucune alerte. C'est le genre de défaut
-qu'aucune relecture de YAML ne trouve, et que seule une campagne sur cluster
-révèle.
+**Le retour arrière vise une version réelle.** Avec deux révisions par
+déploiement, `kubectl get deploy` affichait `READY 1/1` pendant que le rollback
+aurait visé une image inexistante — une supervision branchée sur ce résumé
+n'aurait levé aucune alerte. C'est le genre de défaut qu'aucune relecture de
+YAML ne trouve, et que seule une campagne sur cluster révèle.
 
-**La reconstruction d'un environnement a été jouée, pas seulement écrite.** Le
-22 septembre, le namespace de staging a été détruit puis reconstruit depuis le
-seul dépôt : Ansible en `ok=23 changed=0`, six ressources recréées par
-Terraform, rollout des deux Deployments en 11 secondes, API de nouveau servie.
-L'exercice a révélé trois écarts, écrits dans `RELEASE.md` §9.5 : le namespace
-n'avait jamais été sous gouvernance Terraform, une étape de la procédure était
-incomplète, et l'état Terraform a dû être substitué puis migré. La restauration
-de _données_, elle, n'a pas d'objet tant que la base vit en mémoire.
+**La reconstruction d'un environnement est jouée, pas seulement écrite.** Le
+namespace de staging a été détruit puis reconstruit depuis le seul dépôt :
+Ansible en `ok=23 changed=0`, six ressources recréées par Terraform, rollout des
+deux Deployments en 11 secondes, API de nouveau servie (`RELEASE.md` §9.5). La
+restauration de _données_, elle, n'a pas d'objet tant que la base vit en
+mémoire.
 
 ### 7.2 Les gains de sécurité
 
-| Sujet                             | Avant                                                | Après                                                                            | État de la preuve                                 |
-| --------------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Scans Trivy                       | informatifs (`--exit-code 0`)                        | bloquants sur HIGH et CRITICAL                                                   | en CI depuis le 19 septembre                      |
-| Dependency-Check                  | bloquant, vert, et n'analysant aucun jar             | analyse 82 dépendances                                                           | en CI : rapport relu dans les artefacts           |
-| Écart Dependency-Check / Trivy    | inexpliqué                                           | expliqué : le premier ne lisait rien                                             | journal `--info` du plugin                        |
-| Scan d'image                      | après le push : l'image refusée restait au registry  | avant le push : une image refusée n'est jamais publiée                           | en CI : `package-*` verts dans trois pipelines    |
-| Rapports de scan                  | à relire dans le journal du job                      | JSON et tableau lisible, en artefacts de `trivy-fs` et `package-*`               | en CI, téléchargeables sans jeton                 |
-| Vue d'ensemble des vulnérabilités | aucune                                               | collecteur `collect_security.py`, index `microcrm-security`, tableau de bord     | alimenté à la main le 2 octobre                   |
-| Exceptions                        | un fichier vide, parce que le scan était vide        | 7 exceptions Trivy et 3 Dependency-Check, toutes justifiées, échéance 31/12/2026 | relues dans les deux fichiers                     |
-| Supervision de la sécurité        | aucune                                               | 2 règles d'alerte, déclenchées et rétablies                                      | l'une sur staging, l'autre sur un conteneur local |
-| CVE de Jackson et de Log4j        | 5 HIGH sur l'image publiée, 1 CVE Log4j de score ≥ 7 | Jackson 2.21.7 et Log4j 2.25.5 forcés                                            | 0 constat sur `back:1.0.1`, en production         |
+| Sujet                             | Avant                                     | Après                                                                            | État de la preuve                                 |
+| --------------------------------- | ----------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Scans Trivy                       | aucun, puis informatifs (`--exit-code 0`) | bloquants sur HIGH et CRITICAL                                                   | en CI                                             |
+| Dependency-Check                  | aucun                                     | analyse 82 dépendances, bloquant à CVSS ≥ 7                                      | en CI : rapport relu dans les artefacts           |
+| Scan d'image                      | aucun                                     | avant le push : une image refusée n'est jamais publiée                           | en CI : `package-*` verts dans trois pipelines    |
+| Rapports de scan                  | aucun                                     | JSON et tableau lisible, en artefacts de `trivy-fs` et `package-*`               | en CI, téléchargeables sans jeton                 |
+| Vue d'ensemble des vulnérabilités | aucune                                    | collecteur `collect_security.py`, index `microcrm-security`, tableau de bord     | alimenté à la main le 2 octobre                   |
+| Exceptions                        | aucune règle                              | 7 exceptions Trivy et 3 Dependency-Check, toutes justifiées, échéance 31/12/2026 | relues dans les deux fichiers                     |
+| Supervision de la sécurité        | aucune                                    | 2 règles d'alerte, déclenchées et rétablies                                      | l'une sur staging, l'autre sur un conteneur local |
+| CVE de Jackson et de Log4j        | —                                         | Jackson 2.21.7 et Log4j 2.25.5 forcés                                            | 0 constat sur `back:1.0.1`, en production         |
 
 Ce que ces gains apportent à la fiabilité d'ensemble : **une faille connue est
-désormais arrêtée au plus tôt, et de façon visible**. Deux des trois échecs de
-`develop` en sont la démonstration, même s'ils ne flattent pas les indicateurs :
-le 1ᵉʳ octobre, la chaîne s'est arrêtée sur `trivy-fs`, puis sur le scan de
-l'image du back.
+arrêtée au plus tôt, et de façon visible**. La chaîne s'est déjà arrêtée sur
+`trivy-fs` et sur le scan de l'image du back, pour des CVE réelles : c'est un
+échec de pipeline qui protège la production, même s'il ne flatte pas les
+indicateurs.
 
 **Recommandations pour renforcer le suivi et la correction des vulnérabilités**,
 par ordre d'utilité :
 
-1. **Brancher le collecteur de sécurité dans le pipeline.** Aujourd'hui, l'index
+1. **Brancher le collecteur de sécurité dans le pipeline.** L'index
    `microcrm-security` n'est alimenté qu'à la main : l'historique du tableau de
-   bord ne grandira pas tout seul. Un job qui exécute `collect_security.py`
+   bord ne grandit pas tout seul. Un job qui exécute `collect_security.py`
    après les scans le rendrait vivant.
-2. **Collecter le rapport Dependency-Check réel.** Il existe désormais, dans les
-   artefacts de `dependency-check-back`, mais n'a pas été passé au collecteur ;
-   tant que ce n'est pas fait, les douze exceptions Spring n'apparaissent dans
-   aucun tableau de bord.
-3. **Suivre l'échéance des exceptions.** Elles expirent toutes le 31
+2. **Collecter le rapport Dependency-Check réel.** Il existe dans les artefacts
+   de `dependency-check-back`, mais n'est pas passé au collecteur ; tant que ce
+   n'est pas fait, les douze exceptions Spring n'apparaissent dans aucun tableau
+   de bord.
+3. **Vérifier qu'un scan a lu quelque chose.** Un contrôle du nombre de
+   dépendances analysées dans `dependency-check-back` distinguerait un scan vide
+   d'un scan sain.
+4. **Suivre l'échéance des exceptions.** Elles expirent toutes le 31
    décembre 2026. La tuile « jours avant la première échéance » existe ; une
    alerte à 30 jours éviterait de le découvrir par un pipeline rouge.
-4. **Migrer vers Spring Boot 4** avant cette date : c'est la seule sortie qui
+5. **Migrer vers Spring Boot 4** avant cette date : c'est la seule sortie qui
    retire les douze exceptions au lieu de les renouveler.
-5. **Ajouter `npm audit` à l'étape `security`**, seul angle mort de dépendances
+6. **Ajouter `npm audit` à l'étape `security`**, seul angle mort de dépendances
    du projet.
-6. **Supprimer du registry l'image `back:5bf1d6a2`**, publiée avec ses cinq CVE
-   avant le correctif d'ordre du scan. Elle n'est plus en service, mais elle
-   reste promouvable par erreur.
-7. **Scanner périodiquement les images déjà déployées.** Une image acceptée le
-   23 septembre peut être déclarée vulnérable le lendemain : un scan planifié
-   des images en service, indépendant des commits, comblerait cet écart.
-8. **Activer la sécurité d'Elasticsearch**, sans quoi l'outil qui supervise la
+7. **Supprimer du registry l'image `back:5bf1d6a2`**, refusée par le scan pour
+   ses cinq CVE. Elle n'a jamais été en service, mais elle reste promouvable par
+   erreur.
+8. **Scanner périodiquement les images déjà déployées.** Une image acceptée un
+   jour peut être déclarée vulnérable le lendemain : un scan planifié des images
+   en service, indépendant des commits, comblerait cet écart.
+9. **Activer la sécurité d'Elasticsearch**, sans quoi l'outil qui supervise la
    sécurité est lui-même ouvert.
 
 ### 7.3 Observations sur la phase de release
 
 Une release, ici, consiste à poser un tag de version sur un commit de `main`. Le
 pipeline de tag ne reconstruit rien : il **promeut** les images déjà construites
-et scannées pour ce commit, en leur ajoutant le numéro de version.
+et scannées pour ce commit, en leur ajoutant le numéro de version, puis le job
+`release` crée la Release GitLab. La procédure est dans `RELEASE.md` §7.
 
-**Le tag `v1.0.0` n'a jamais abouti, et la cause est établie.** Posé le 22
-septembre sur le commit `5d459fb`, son pipeline a échoué sur `test-front`, avant
-la promotion : `Can not find the binary /opt/google/chrome/chrome`. Le runner du
-projet tourne sur Apple Silicon. L'image de test, alors désignée par son tag, y
-résolvait vers sa variante arm64, qui n'embarque pas Chrome. Le correctif —
-désigner l'image par son empreinte amd64 — est arrivé une heure et demie plus
-tard, dans un commit postérieur au tag. Aucune image `1.0.0` n'existe au
-registry, aucune Release n'a été créée. Un tag ne se déplace pas : `v1.0.0`
-reste où il est, comme trace.
+**Preuve : la release 1.0.1, jouée le 5 octobre 2026.**
 
-**La release 1.0.1 a été jouée de bout en bout le 5 octobre 2026.** Les
-horaires sont en UTC, relevés dans l'API GitLab ; le compte rendu détaillé est
-dans `RELEASE.md` §7.5.
-
-| Étape                              | Pipeline et commit                          | Résultat                                                                                                                                       |
-| ---------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Fusion du lot du 2 octobre         | PR #31 à #35 dans `develop`, 3 octobre      | pipeline `#2909284076` (`5296658a`) créé à 14 h 00, démarré à 14 h 58 (runner unique, un temps figé), puis vert sur tous ses jobs automatiques |
-| `deploy-staging`                   | `#2909284076`, lancé à la main le 5 octobre | succès en 54 s à 6 h 52 : staging en `5296658a`                                                                                                |
-| Fusion `develop` → `main`          | PR #36, commit de fusion `08a216b0`         | pipeline `#2912362926` vert sur ses jobs automatiques, dont `quality-gate`, qui ne tourne que sur `main`                                       |
-| `deploy-production`                | `#2912362926`                               | échec à 7 h 57 (38 s, cluster arrêté), succès à 12 h 07 (49 s) : production en `08a216b0`                                                      |
-| Tag annoté `v1.0.1` sur `08a216b0` | pipeline de tag `#2913490784`               | `version-consistency`, tests, qualité, sécurité et `build-*` verts ; aucun `package-*` : rien n'est reconstruit                                |
-| `promote-back`, `promote-front`    | `#2913490784`                               | 44 s et 32 s : `back:1.0.1` et `front:1.0.1` ajoutés aux images de `08a216b0`                                                                  |
-| `release`                          | `#2913490784`                               | 24 s : **Release GitLab `v1.0.1` créée à 12 h 44**, première exécution réelle du job                                                           |
-| `deploy-production`                | `#2913490784`                               | échecs à 13 h 55 et 14 h 00 (39 et 48 s, cluster de nouveau arrêté), **succès à 14 h 10** (45 s)                                               |
+| Pipeline      | Référence                           | Résultat                                                                                                                  |
+| ------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `#2909284076` | `develop`, commit `5296658a`        | vert sur tous ses jobs automatiques ; `deploy-staging` réussi                                                             |
+| `#2912362926` | `main`, commit de fusion `08a216b0` | vert sur ses jobs automatiques, dont `quality-gate` ; `deploy-production` réussi (après un échec sur cluster arrêté)      |
+| `#2913490784` | tag `v1.0.1` sur `08a216b0`         | aucun `package-*` ; `promote-back`, `promote-front` et `release` verts ; Release `v1.0.1` créée ; production en **1.0.1** |
 
 **La promotion sans reconstruction est prouvée par les empreintes.** Lues dans
 le registry, `back:1.0.1` et `back:08a216b0` ont le même digest
@@ -1312,15 +1157,15 @@ le registry, `back:1.0.1` et `back:08a216b0` ont le même digest
 `front:1.0.1` et `front:08a216b0` le même digest
 `sha256:74474e9b81ebc2c8241bf04d2095b0729de5e31b62418b8419edc0dbe5e0e99e`. Ce
 qui tourne en production est donc, octet pour octet, ce que le pipeline de
-`main` a testé, scanné (0 HIGH ou CRITICAL) et mis sous charge. Après le dernier
-déploiement, la production exécutait `back:1.0.1` (1 replica) et `front:1.0.1`
-(2 replicas), `/actuator/health` répondait `UP`, `GET /persons` `200`, et la
-ConfigMap portait les clés OpenTelemetry.
+`main` a testé, scanné (0 HIGH ou CRITICAL) et mis sous charge. La production
+exécute `back:1.0.1` (1 replica) et `front:1.0.1` (2 replicas),
+`/actuator/health` répond `UP`, `GET /persons` `200`, et la ConfigMap porte les
+clés OpenTelemetry.
 
 ![Page publique de la Release GitLab « MicroCRM v1.0.1 », le 5 octobre 2026. Les notes de version donnent le commit 08a216b0 et le lien du pipeline 2913490784, puis un tableau « Images promues » : pour le back et le front, l'image en version 1.0.1 et l'image éprouvée du commit 08a216b0, avec la mention « même digest ». En dessous, quatre déploiements vers production : deux en échec, un en attente, un en succès.](captures/gitlab-release-v1.0.1-2026-10-05.png)
 
-_Ce qu'il faut y lire : la Release n'a pas été rédigée à la main, c'est le job
-`release` qui l'a écrite. Elle relie le numéro de version au commit, au pipeline
+_Ce qu'il faut y lire : la Release n'est pas rédigée à la main, c'est le job
+`release` qui l'écrit. Elle relie le numéro de version au commit, au pipeline
 et aux deux images. Les deux échecs de déploiement listés en bas sont ceux du
 cluster arrêté ; la ligne « En attente » est le job `rollback-production`,
 manuel, jamais lancé._
@@ -1338,77 +1183,36 @@ environnement. Les lignes « En attente » sont des jobs manuels jamais lancés 
 `terraform-apply-logging` et `terraform-apply-staging` du pipeline de `main`,
 `rollback-production` du pipeline de tag._
 
-**Ce qui a fait échouer la release, et ce que ce n'était pas.** Aucun des
-incidents n'est venu de l'application ni d'un contrôle de la chaîne. Tous
-viennent de la plateforme : Docker Desktop, qui porte à la fois le runner et
-minikube, a décroché ou redémarré à quatre reprises du 2 au 5 octobre, avec 8 Go
-de mémoire dont 6 réservés à minikube et partagés avec d'autres piles. À chaque
-fois, minikube est resté à moitié arrêté.
+**Observations issues de l'exécution du pipeline et des déploiements.** Aucun
+incident n'est venu de l'application ni d'un contrôle de la chaîne. Tous
+viennent de la plateforme : Docker Desktop porte à la fois le runner et
+minikube, avec 8 Go de mémoire dont 6 réservés à minikube et partagés avec
+d'autres piles.
 
-| Observation pendant la phase de release                                                                                       | Amélioration apportée ou recommandée                                                                                         | État                                |
-| ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| Le pipeline de tag `v1.0.0` a échoué sur une image d'outillage résolue vers la mauvaise architecture                          | image désignée par son empreinte amd64                                                                                       | en CI, `test-front` vert sur le tag |
-| Un tag disait « cette version existe » sans dire quelles images la portent                                                    | job `release` : crée la Release GitLab après les deux promotions, avec le commit, le pipeline et les images                  | **exécuté le 5 octobre**            |
-| Une image refusée par le scan pouvait être promue, puisqu'elle était déjà au registry                                         | scan avant le push                                                                                                           | en CI, trois pipelines              |
-| `package-lock.json` portait `0.0.0` à deux endroits                                                                           | aligné, et contrôlé par `version-consistency`                                                                                | **vert sur le tag `v1.0.1`** (7 s)  |
-| Le 3 octobre, `spotbugs-back` est resté bloqué 36 min (`runner_interrupted`), et `develop` a attendu 58 min avant de démarrer | le runner (`gitlab-runner run`, `concurrent = 1`) ne prenait plus de jobs après un redémarrage de Docker : relancé à la main | contourné ; à corriger (ci-dessous) |
-| `terraform-plan` a échoué deux fois le 3 octobre (~75 s chacun)                                                               | cluster minikube figé ; relancé, le job passe en 22 s le 5 octobre                                                           | contourné                           |
-| Trois `deploy-production` ont échoué le 5 octobre (7 h 57, 13 h 55, 14 h 00)                                                  | cluster arrêté (l'agent GitLab journalisait `dial tcp 10.96.0.1:443: i/o timeout`) ; `minikube start`, puis relance du job   | contourné ; compté par DORA (§2.3)  |
-| Un pipeline de `main` sain s'affiche « Bloqué », ce qui se lit comme un échec                                                 | expliqué dans la procédure et dans ce rapport (§2.3)                                                                         | documenté                           |
-
-Le cas du 5 octobre après-midi mérite une phrase de plus : le conteneur minikube
-avait été arrêté puis redémarré à 13 h 07 UTC **sans `minikube start`**. Docker
-le disait en marche, mais kubelet et l'API Kubernetes étaient `Stopped`. Rien,
-dans la chaîne, ne le signalait avant que le déploiement n'échoue. Le job
-`deploy-production` a fait ce qu'il devait — échouer sans rien écrire dans le
-namespace de production — mais il a fallu deux échecs pour que la cause soit
-lue.
+| Observation                                                                                             | Cause                                                                                                                         | Recommandation (état)                                                                                                          |
+| ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Trois `deploy-production` en échec (38 à 48 s) sans rien écrire dans le namespace                       | cluster minikube arrêté, ou redémarré sans `minikube start` : l'agent GitLab journalise `dial tcp 10.96.0.1:443: i/o timeout` | Vérifier le cluster (`kubectl get --raw /readyz`) en tête des jobs de déploiement (à faire)                                    |
+| `develop` attend près d'une heure avant de démarrer ; un job reste bloqué 36 min (`runner_interrupted`) | runner unique à `concurrent = 1`, qui ne prend plus de jobs après un redémarrage de Docker                                    | `concurrent` > 1 ou un second runner (à faire)                                                                                 |
+| `terraform-plan` échoue deux fois (~75 s), puis passe en 22 s une fois le cluster relancé               | cluster figé                                                                                                                  | Une alerte sur la disponibilité du cluster, hors du cluster (à faire)                                                          |
+| Un pipeline de tag peut échouer sur une image d'outillage résolue pour la mauvaise architecture         | runner sur Apple Silicon : un tag d'image multi-architecture y résout vers arm64, sans Chrome                                 | Images d'outillage désignées par leur empreinte amd64 (en place) ; tester le chemin de tag par un tag de pré-version (à faire) |
+| Un tag ne dit pas quelles images portent la version                                                     | aucune trace écrite entre tag et images                                                                                       | Job `release` : Release GitLab avec commit, pipeline et images (en place)                                                      |
+| Une image refusée par le scan pourrait être promue si elle était au registry                            | la promotion ne vérifie que l'existence du tag de commit                                                                      | Scan avant le push (en place)                                                                                                  |
+| La version déclarée peut diverger entre fichiers                                                        | `package-lock.json`, `package.json` et `build.gradle` portent chacun la version                                               | Contrôle `version-consistency` sur les tags (en place, 7 s)                                                                    |
+| Un pipeline de `main` sain s'affiche « Bloqué », ce qui se lit comme un échec                           | jobs manuels non `allow_failure` en attente (`terraform-apply-*`, `rollback-production`)                                      | Expliqué dans la procédure et dans ce rapport (§2.3)                                                                           |
+| Le délai de mise en production mesure un clic, et un week-end                                           | les deux déploiements sont `when: manual`                                                                                     | Déploiement de staging automatique, production manuelle (à faire, A3.1 du plan)                                                |
 
 **Ce que ces observations enseignent.** La promotion est le bon mécanisme :
 l'image mise en production est exactement celle qui a été testée et scannée, et
-les empreintes le prouvent. Les contrôles ont tenu. Ce qui a lâché, c'est
-l'hôte : une chaîne entière — runner, cluster, supervision — qui dépend d'un
-seul Docker Desktop de poste n'est pas plus disponible que lui. D'où les
-recommandations, dans l'ordre où elles auraient évité les incidents observés :
-
-1. **Vérifier le cluster avant de déployer.** Une première étape de
-   `deploy-staging` et `deploy-production` qui interroge
-   `kubectl get --raw /readyz` (ou, sur le poste, `minikube status`) et échoue
-   avec un message explicite transformerait un échec opaque en diagnostic
-   immédiat — et permettrait de le classer à part.
-2. **Ne plus dépendre d'un seul runner à `concurrent = 1`.** Monter `concurrent`
-   au-dessus de 1, ou ajouter un second runner, évite qu'un runner figé gèle
-   toute la livraison sans que rien ne le signale.
-3. **Surveiller la plateforme elle-même.** Une alerte sur l'indisponibilité du
-   cluster ne peut pas vivre dans ce cluster : elle suppose une sonde externe
-   (§7.4).
-4. **Un cluster dédié**, hors du poste de développement. C'est la seule
-   réponse de fond, et c'est la décision attendue du CTO.
-5. **Tester le chemin de tag sans attendre une vraie version**, par exemple avec
-   un tag de pré-version : il a fonctionné pour `v1.0.1`, rien ne garantit qu'il
-   fonctionnera après le prochain changement d'outillage.
-6. **Rendre le déploiement de staging automatique**, en gardant celui de
-   production manuel : le délai de mise en production cessera de mesurer un clic
-   — et un week-end.
+les empreintes le prouvent. Les contrôles tiennent. Ce qui lâche, c'est l'hôte :
+une chaîne entière — runner, cluster, supervision — qui dépend d'un seul Docker
+Desktop de poste n'est pas plus disponible que lui. La réponse de fond est un
+**cluster dédié**, hors du poste de développement : c'est la décision attendue
+du CTO.
 
 ### 7.4 Recommandations d'amélioration continue
 
 Classées par ce qu'elles débloquent, et non par leur difficulté. L'effort est
 noté S (quelques heures), M (quelques jours).
-
-#### Ce qui est déjà fait
-
-| Piste annoncée dans les versions précédentes de ce rapport | Date           | État                                                    |
-| ---------------------------------------------------------- | -------------- | ------------------------------------------------------- |
-| Un runner disponible                                       | 22/09          | fait — runner auto-hébergé, plus aucune minute facturée |
-| Un premier `deploy-staging` mené à son terme               | 22/09          | fait — les quatre indicateurs sont renseignés           |
-| Retirer `allow_failure` contrôle par contrôle              | 14/09 et 19/09 | fait — seul `k6-load` reste non bloquant                |
-| Jouer la reconstruction complète d'un environnement        | 22/09          | fait — `RELEASE.md` §9.5                                |
-| Activer `--scan` dans `package-back` et `package-front`    | 02/10 → 03/10  | fait — en CI depuis le 3 octobre                        |
-| Un job exécutant `collect_dora.py`                         | 02/10 → 03/10  | fait — `dora-metrics`, premier passage le 3 octobre     |
-| Alerting sur les erreurs applicatives                      | 02/10          | fait — 8 règles versionnées et installées               |
-| Remettre `develop` au vert, publier la 1.0.1               | 03/10 et 05/10 | fait — release jouée de bout en bout (§7.3)             |
-| Déployer l'image instrumentée                              | 05/10          | fait — traces de staging et de production               |
 
 #### Ce qui fiabilise la chaîne
 
@@ -1446,33 +1250,28 @@ noté S (quelques heures), M (quelques jours).
 
 **Le contexte d'Orion derrière cet ordre.** Une petite équipe ne peut pas tout
 mener de front. La première série demande peu : elle fiabilise une chaîne qui
-livre déjà, et répond directement aux incidents de la release 1.0.1 — sauf le
-cluster dédié, qui est une décision de moyens. La deuxième transforme une supervision de
-démonstration en outil d'exploitation. La troisième engage des choix
-d'architecture, et c'est elle qui appelle une décision du CTO.
+livre déjà, et répond directement aux observations de la release 1.0.1 — sauf
+le cluster dédié, qui est une décision de moyens. La deuxième transforme une
+supervision de démonstration en outil d'exploitation. La troisième engage des
+choix d'architecture, et c'est elle qui appelle une décision du CTO.
 
 ## 8. Ce qui manque, et ce qui n'est pas prouvé
 
 Cette liste est donnée sans enrobage : elle est ce qu'un jury est en droit
 d'attaquer, et il vaut mieux qu'elle vienne du rapport que de la lecture.
 
-### 8.1 Ce qui n'est pas encore prouvé en conditions réelles
-
-Ce qui figurait ici le 2 octobre — travail non commité, `develop` rouge, release
-non publiée, jobs `release` et `dora-metrics` jamais exécutés, scans d'image
-jamais passés par un runner, traces non déployées — est désormais prouvé par
-les pipelines `#2909284076`, `#2912362926` et `#2913490784` (§7.3). Reste :
+### 8.1 Ce qui n'est pas prouvé en conditions réelles
 
 - **Les trois règles d'alerte fondées sur les traces n'ont sonné que sur un
-  conteneur local.** Elles portent sur de vrais pods depuis le 5 octobre, mais
-  n'y ont pas été re-déclenchées.
+  conteneur local.** Elles portent sur de vrais pods, mais n'y ont pas été
+  re-déclenchées.
 - **La latence de l'API en service n'est pas relevée.** Les traces arrivent ;
   le seul trafic reçu est celui de requêtes provoquées pour le vérifier.
 - **Les journaux de jobs ne sont pas lisibles sans jeton.** Les causes d'échec
   citées viennent des statuts et motifs de l'API, du cluster et des artefacts ;
   les sorties des jobs eux-mêmes n'ont pas été relues.
 - **L'historique du tableau de bord de sécurité est rejoué**, et le rapport
-  Dependency-Check réel, disponible en artefact, n'y a pas été collecté.
+  Dependency-Check réel, disponible en artefact, n'y est pas collecté.
 - **Le taux d'échec DORA mêle pannes de la plateforme et échecs de
   changement**, sans que le collecteur sache les séparer (§2.3).
 - **La tenue des alertes dans la durée n'est pas connue** : aucun recul sur les
@@ -1481,8 +1280,8 @@ les pipelines `#2909284076`, `#2912362926` et `#2913490784` (§7.3). Reste :
 ### 8.2 Ce qui manque
 
 - **Une plateforme fiable.** Le runner, le cluster et la supervision dépendent
-  d'un seul Docker Desktop de poste, qui a décroché quatre fois du 2 au 5
-  octobre. Aucune alerte ne porte sur la disponibilité du cluster lui-même.
+  d'un seul Docker Desktop de poste. Aucune alerte ne porte sur la
+  disponibilité du cluster lui-même.
 - **Aucune métrique de ressources.** Ni CPU, ni mémoire, ni disque.
 - **La disponibilité n'est pas mesurée.** Elle est déduite de la présence de
   logs, en staging seulement. Les logs de la production ne sont pas collectés ;
@@ -1497,20 +1296,19 @@ les pipelines `#2909284076`, `#2912362926` et `#2913490784` (§7.3). Reste :
 - **Douze CVE de Spring Framework sont acceptées par exception** jusqu'au 31
   décembre 2026 (§4.4). L'analyse est écrite ; elle n'est pas une preuve
   d'innocuité.
-- **Aucun `npm audit`**, et la porte de qualité Sonar ne tourne que sur `main`
-  (verte dans les pipelines de `main` du 23 septembre comme dans `#2912362926`).
+- **Aucun `npm audit`**, et la porte de qualité Sonar ne tourne que sur `main`.
 - **Le comportement sous incident n'a été exercé qu'à la main.** Les échecs
   mesurés en CI portent sur l'accès au cluster, pas sur l'application : le
-  rollback automatique de `deploy.sh` n'a donc été déclenché pour de vrai que
-  lors de la campagne locale de `K8S.md` §14. Le rollback joué en production le
+  rollback automatique de `deploy.sh` n'a été déclenché pour de vrai que lors de
+  la campagne locale de `K8S.md` §14. Le rollback joué en production le
   23 septembre appelait `rollback.sh` depuis `rollback-production`, un job
   manuel — ce n'est pas le même chemin de code.
-- **La reconstruction d'environnement a été jouée avec trois écarts.** Images
-  chargées localement et non tirées du registry, état Terraform substitué puis
-  migré depuis un poste, et non depuis un job (`RELEASE.md` §9.5).
+- **La reconstruction d'environnement est jouée depuis un poste**, pas depuis
+  un job de CI, et ne couvre pas la restauration de données, sans objet tant
+  que la base vit en mémoire (`RELEASE.md` §9.5).
 - **Les `NetworkPolicy` sont décrites, pas prouvées.** Le CNI par défaut de
   minikube ne les implémente pas et les ignore sans rien signaler. Celle d'APM
-  Server n'a d'ailleurs pas été appliquée.
+  Server n'est pas appliquée.
 - **Le chart Helm n'a jamais déployé.** Il est rendu, linté, comparé au rendu
   Kustomize et accepté en `--dry-run=server`. Rien de plus.
 - **La production n'existe pas.** L'environnement `production` vise le même
@@ -1524,27 +1322,30 @@ Ce rapport ne remplace pas les documents techniques du dépôt : il les résume.
 Chaque chiffre cité y est accompagné de la commande qui l'a produit et de la
 sortie observée.
 
-| Document                                        | Ce qu'il porte                                                                                      |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `MONITORING.md`                                 | La stack ELK, les indicateurs DORA (§9), les traces et leur relevé (§10)                            |
-| `k8s/elk/alerting/README.md`                    | Les huit règles, la justification de chaque seuil, les preuves de déclenchement                     |
-| `k8s/elk/alerting/rules/`                       | Les règles elles-mêmes, une par fichier, requête comprise                                           |
-| `k8s/elk/dashboards/README.md`                  | Chaque panneau, confronté à l'agrégation Elasticsearch équivalente                                  |
-| `back/config/dependency-check/suppressions.xml` | Les douze exceptions Spring et leur analyse, condition par condition                                |
-| `.trivyignore.yaml`                             | Les sept exceptions Trivy, justifiées et datées                                                     |
-| `RELEASE.md` §7, §7.5 et §9.5                   | La procédure de release, le précédent `v1.0.0`, la reconstruction du 22 septembre, la release 1.0.1 |
-| Projet GitLab public                            | Pipelines `#2909284076`, `#2912362926`, `#2913490784`, Release `v1.0.1`, artefacts des jobs         |
-| `K8S.md` §14                                    | Les deux campagnes de déploiement réel, commandes et sorties                                        |
-| `QUALITY.md`                                    | Les six outils, leurs seuils, et ce qu'ils ont trouvé                                               |
-| `SCRIPTS.md`                                    | Les scripts, leurs codes de sortie, et comment ils sont testés                                      |
-| `TERRAFORM.md`, `ANSIBLE.md`, `HELM.md`         | L'infrastructure, ses frontières et ses limites assumées                                            |
-| `ARCHITECTURE.md` §9 à §11                      | Pourquoi l'option locale, sa transposition au cloud, et ses angles morts                            |
-| `documentation-infrastructure.md`               | Le document jumeau : architecture et procédures                                                     |
-| `docs/captures/`                                | Les captures d'écran : pipelines, environnements, tableaux de bord, alertes                         |
+| Document                                        | Ce qu'il porte                                                                              |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `MONITORING.md`                                 | La stack ELK, les indicateurs DORA (§9), les traces et leur relevé (§10)                    |
+| `k8s/elk/alerting/README.md`                    | Les huit règles, la justification de chaque seuil, les preuves de déclenchement             |
+| `k8s/elk/alerting/rules/`                       | Les règles elles-mêmes, une par fichier, requête comprise                                   |
+| `k8s/elk/dashboards/README.md`                  | Chaque panneau, confronté à l'agrégation Elasticsearch équivalente                          |
+| `back/config/dependency-check/suppressions.xml` | Les douze exceptions Spring et leur analyse, condition par condition                        |
+| `.trivyignore.yaml`                             | Les sept exceptions Trivy, justifiées et datées                                             |
+| `RELEASE.md` §7, §7.5 et §9.5                   | La procédure de release, la release 1.0.1, la reconstruction d'environnement                |
+| Projet GitLab public                            | Pipelines `#2909284076`, `#2912362926`, `#2913490784`, Release `v1.0.1`, artefacts des jobs |
+| `K8S.md` §14                                    | Les campagnes de déploiement réel, commandes et sorties                                     |
+| `QUALITY.md`                                    | Les outils de qualité, leurs seuils, et ce qu'ils ont trouvé                                |
+| `SCRIPTS.md`                                    | Les scripts, leurs codes de sortie, et comment ils sont testés                              |
+| `TERRAFORM.md`, `ANSIBLE.md`, `HELM.md`         | L'infrastructure, ses frontières et ses limites assumées                                    |
+| `ARCHITECTURE.md` §9 à §11                      | Pourquoi l'option locale, sa transposition au cloud, et ses angles morts                    |
+| `documentation-infrastructure.md`               | Le document jumeau : architecture et procédures                                             |
+| `docs/captures/`                                | Les captures d'écran : pipelines, environnements, tableaux de bord, alertes                 |
 
-**Sur `docs/captures/`.** Vingt-sept fichiers s'y trouvent, dont treize sont
-repris dans ce rapport. Les quatre captures GitLab du 5 octobre ont été prises
-sans connexion, sur les pages publiques du projet.
+**Sur `docs/captures/`.** Treize captures sont reprises dans ce rapport ; les
+quatre captures GitLab du 5 octobre ont été prises sans connexion, sur les
+pages publiques du projet. Les autres fichiers du dossier montrent des états
+antérieurs de la chaîne (pipelines et environnements de septembre, tableaux de
+bord du 19 septembre) et restent disponibles pour qui voudrait vérifier un
+pipeline étape par étape.
 
 | Reprises dans ce rapport                                           | Section |
 | ------------------------------------------------------------------ | ------- |
@@ -1561,16 +1362,6 @@ sans connexion, sur les pages publiques du projet.
 | `gitlab-release-v1.0.1-2026-10-05.png`                             | §7.3    |
 | `gitlab-pipeline-tag-v1.0.1-2913490784-2026-10-05.png`             | §7.3    |
 | `gitlab-environnements-2026-10-05.png`                             | §7.3    |
-
-Les quatorze autres ne sont pas reprises, et il faut dire pourquoi. Deux sont
-remplacées par leur version du 5 octobre : le tableau DORA du 2 octobre et la
-liste des pipelines du 23 septembre. Deux sont les anciennes captures Kibana du
-19 septembre (`…-90j.jpg`), dont la capture DORA montre l'état d'avant le
-déblocage. Quatre montrent les environnements GitLab et le commit du 23
-septembre. Six montrent le détail des graphes de jobs de deux pipelines
-antérieurs. Aucun passage du texte
-n'en avait besoin, et une galerie d'images sans propos ne prouve rien. Elles
-restent dans le dépôt pour qui voudrait vérifier un pipeline étape par étape.
 
 ## 10. Glossaire
 

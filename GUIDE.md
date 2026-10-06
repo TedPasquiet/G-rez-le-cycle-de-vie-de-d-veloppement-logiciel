@@ -13,7 +13,7 @@ alimentée au démarrage par une fixture — les données repartent donc de zér
 chaque redémarrage. Le front est une application Angular servie par Caddy. Les
 deux vivent dans le même dépôt (monorepo) et se déploient séparément.
 
-**Fichiers** : `back/src/main/java/…/` (5 classes), `front/src/app/`,
+**Fichiers** : `back/src/main/java/…/` (7 classes), `front/src/app/`,
 `back/src/main/resources/application.properties`, `docker-compose.yml`
 **Pour aller plus loin** : [README.md](README.md), [ARCHITECTURE.md](ARCHITECTURE.md), [DATABASE.md](DATABASE.md), [schema.md](schema.md)
 
@@ -24,30 +24,31 @@ plus loin par la CI. Ils couvrent trois niveaux : les entités seules
 (`PersonTest`, `OrganizationTest`), les dépôts sur une base réelle — HSQLDB en
 mémoire par défaut, PostgreSQL dès que `SPRING_DATASOURCE_URL` est fournie, ce
 que fait la CI — (`*RepositoryIntegrationTest`), et l'API HTTP de bout en bout
-(`PersonRestApiTest`). Couverture actuelle : **97,40 % des lignes** et **100 %
-des branches**, au-dessus du seuil bloquant de 95 % / 90 %.
+(`PersonRestApiTest`). Couverture mesurée le 6 octobre 2026 : **97,4 % des
+lignes** et **100 % des branches**. Seuils bloquants : 90 % des lignes en CI
+(`coverage-gate`), 95 % des lignes et 90 % des branches en local.
 
 **Fichiers** : `back/src/test/java/…/` (16 classes), `back/build.gradle` (tâche `test`, `jacocoTestReport`), `back/gradle.properties` (2 Go de tas, sans quoi l'analyse des dépendances manque de mémoire)
 **Job CI** : `test-back`
 
 ## 3. Les tests du front
 
-73 tests Karma/Jasmine exécutés dans un Chrome sans interface. Ils couvrent les
-deux services qui parlent à l'API, les composants de détail, le routage, et
-depuis peu le chargement de la configuration d'exécution (`config.spec.ts`,
-10 tests sur les régimes de repli). Couverture : **100 % des lignes**,
-88,6 % des branches. À savoir : **aucun job ne contrôle ce seuil** — le rapport
-part vers SonarCloud, dont le verdict n'est relu que sur `main`. Le message
-« Some of your tests did a full page reload! » est pré-existant et ne fait pas
-échouer le job.
+112 tests Karma/Jasmine exécutés dans un Chrome sans interface. Ils couvrent les
+deux services qui parlent à l'API, les composants de détail, le routage, et le
+chargement de la configuration d'exécution (`config.spec.ts`, sur les régimes de
+repli). Couverture mesurée le 6 octobre 2026 : **100 % des lignes**, 90,2 % des
+branches. Le seuil (lignes 90 %, branches 80 %) est dans `front/karma.conf.js`
+et s'applique dans `test-front`, lancé avec `--code-coverage`. Le message
+« Some of your tests did a full page reload! » ne fait pas échouer le job.
 
-**Fichiers** : `front/src/app/*.spec.ts` (5 fichiers), `front/karma.conf.js`, `front/src/app/test-helpers.ts`
+**Fichiers** : `front/src/app/**/*.spec.ts` (12 fichiers), `front/karma.conf.js`, `front/src/app/test-helpers.ts`
 **Job CI** : `test-front`
 
 ## 4. Les tests des scripts d'automatisation
 
 430 assertions qui vérifient les scripts du pipeline **avant** qu'ils ne servent
-en production. Le principe : `kubectl`, `docker`, `trivy` et `k6` sont remplacés
+en production. Le principe : `kubectl`, `docker`, `trivy`, `k6`, `terraform` et
+`ansible` sont remplacés
 par de faux programmes placés en tête du `PATH`, qui journalisent ce qu'on leur
 demande et renvoient le code de sortie voulu. On peut ainsi tester les chemins
 d'échec — déploiement raté, rollback raté, login refusé — sans cluster ni
@@ -61,18 +62,18 @@ passe par l'entrée standard et jamais en argument.
 
 98 assertions dans le job `lint-k8s`, dont l'image n'a pas helm, et 174 dans
 `lint-helm`, qui l'a — comptes `--autotest` compris, comme les jobs les jouent
-(151 sans `--autotest`, helm présent). Elles construisent chaque overlay avec le Kustomize
-embarqué dans `kubectl` et vérifient le rendu, **sans cluster**.
-Elles attrapent ce qu'aucun validateur de schéma ne verrait : le contrat de
-nommage avec `deploy.sh`, une ConfigMap référencée mais absente, une sonde
-visant un port non déclaré, un patch d'overlay qui ne mord pas. `--autotest`
-rejoue les assertions sur des rendus volontairement abîmés et vérifie qu'elles
-échouent — une assertion
-qui ne se déclenche jamais ne prouve rien. Limite : pas de validation de schéma,
-faute de `kubeconform` dans l'image.
+(151 sans `--autotest`, helm présent). Elles construisent chaque overlay avec le
+Kustomize embarqué dans `kubectl`, et le chart avec `helm template`, puis
+vérifient le rendu, **sans cluster**. Elles attrapent ce qu'aucun validateur de
+schéma ne verrait : le contrat de nommage avec `deploy.sh`, une ConfigMap
+référencée mais absente, une sonde visant un port non déclaré, un patch
+d'overlay qui ne s'applique pas, un chart dont le rendu diverge des overlays.
+`--autotest` rejoue les assertions sur des rendus volontairement abîmés et
+vérifie qu'elles échouent : une assertion qui ne se déclenche jamais ne prouve
+rien. Limite : pas de validation de schéma, faute de `kubeconform` dans l'image.
 
 **Fichiers** : `scripts/tests/validate_k8s.sh`
-**Job CI** : `lint-k8s`
+**Jobs CI** : `lint-k8s`, `lint-helm`
 
 ## 6. Le pipeline CI/CD
 
@@ -83,11 +84,11 @@ contrôle tournent sur toute branche `feature/*`, `fix/*`, `docs/*`,
 `release/*`, `hotfix/*`, `develop`, `main` et les tags ; les jobs qui produisent
 un artefact sont réservés à `develop`, `release/*`, `hotfix/*`, `main` et aux
 tags, et les déploiements à `develop` et `main`. Un tag ne reconstruit rien : il
-promeut l'image déjà construite et crée une Release GitLab. Toutes les images d'outillage sont
-épinglées à une version précise dans le bloc `variables:` — un tag flottant fait
-casser un pipeline sans qu'aucun commit ne l'explique.
+promeut l'image déjà construite et crée une Release GitLab. Toutes les images
+d'outillage sont épinglées à une version précise dans `.gitlab/ci/variables.yml`
+: un tag flottant fait casser un pipeline sans qu'aucun commit ne l'explique.
 
-**Fichiers** : `.gitlab-ci.yml`, `scripts/ci/`, `.github/workflows/mirror-to-gitlab.yaml`
+**Fichiers** : `.gitlab-ci.yml`, `.gitlab/ci/` (13 fichiers), `scripts/ci/`, `.github/workflows/mirror-to-gitlab.yaml`
 **Détail** : [QUALITY.md](QUALITY.md), [RELEASE.md](RELEASE.md)
 
 ## 7. La qualité du code
@@ -113,10 +114,11 @@ les images avant leur envoi au registry. Les conteneurs déployés tournent en
 utilisateur non privilégié, système de fichiers en lecture seule et sans aucune
 capability. `dependency-check-back`, `trivy-fs` et les scans d'image de
 `package-back` et `package-front` sont **bloquants** ; chaque scan publie son
-rapport en artefact, et l'image est scannée **avant** d'être poussée. Un piège
-découvert le 2 octobre 2026 : Dependency-Check « ne trouvait rien » parce qu'il
-n'analysait aucun jar ; il en lit 82 depuis, et 12 CVE de Spring Framework y
-sont exceptées, datées et justifiées ([QUALITY.md](QUALITY.md) §3).
+rapport en artefact, et l'image est scannée **avant** d'être poussée.
+Dependency-Check analyse les 82 dépendances du `runtimeClasspath`
+(`skipTestGroups = false` est indispensable pour qu'il les voie) ; 12 CVE de
+Spring Framework y sont exceptées, datées et justifiées
+([QUALITY.md](QUALITY.md) §3).
 
 **Fichiers** : `back/config/dependency-check/suppressions.xml`, `.trivyignore.yaml`, `scripts/ci/build_and_push.sh`, `scripts/ci/trivy_scan.sh`, `k8s/base/*-deployment.yaml`
 **Jobs CI** : `dependency-check-back`, `trivy-fs` · **Détail** : [AUDIT.md](AUDIT.md)
@@ -138,26 +140,28 @@ plutôt qu'un `NaN` silencieux qui fausserait la mesure.
 
 L'état voulu du cluster est décrit en manifestes Kustomize versionnés : une base
 commune, deux overlays qui ne diffèrent que par ce qui doit différer (replicas,
-hôtes, origines CORS, ressources). La CI applique l'overlay, crée le Secret
-d'accès au registry, puis pose l'image du commit ; `deploy.sh` attend la fin du
-rollout et revient en arrière tout seul en cas d'échec. Les manifestes ont été
-appliqués sur un cluster réel le 10 août 2026, rollback compris ([K8S.md](K8S.md)
-§14) ; le back reste plafonné à 1 replica tant que la base vit en mémoire.
+hôtes, origines CORS, ressources). La CI crée le Secret d'accès au registry,
+compose un overlay éphémère qui pose l'image du commit, l'applique, puis
+`deploy.sh` attend la fin du rollout et revient en arrière tout seul en cas
+d'échec. Le back reste plafonné à 1 replica tant que la base vit en mémoire.
+Preuves sur cluster : reconstruction d'un environnement le 22 septembre 2026,
+rollback de production le 23 septembre, release 1.0.1 en production le
+5 octobre ([K8S.md](K8S.md) §14, [RELEASE.md](RELEASE.md)).
 
 **Fichiers** : `k8s/base/`, `k8s/overlays/{staging,production}/`, `scripts/deploy/`
-**Jobs CI** : `deploy-staging`, `deploy-production`, `rollback-production` · **Détail** : [K8S.md](K8S.md)
+**Jobs CI** : `deploy-staging`, `deploy-production`, `rollback-production` · **Détail** : [K8S.md](K8S.md), [HELM.md](HELM.md)
 
 ## 11. La configuration
 
 Aucune valeur dépendant de l'environnement n'est écrite en dur. Les versions
-d'outillage et les réglages partagés vivent dans le `.gitlab-ci.yml` ; les
+d'outillage et les réglages partagés vivent dans `.gitlab/ci/variables.yml` ; les
 secrets et les coordonnées d'infrastructure restent dans l'interface GitLab ; ce
 qui varie entre staging et production vit dans les overlays Kustomize. Le front
 lit son URL d'API **au démarrage** et non à la compilation, ce qui permet de
 construire une seule image et de la déployer partout. Chaque réglage garde un
 défaut fonctionnel, pour que le projet démarre en local sans configuration.
 
-**Fichiers** : `.gitlab-ci.yml` (bloc `variables:`), `.env.example`, `docker-compose.yml`, `front/Caddyfile`, `front/src/app/config.ts`, `k8s/base/configmap.yaml`
+**Fichiers** : `.gitlab/ci/variables.yml`, `.env.example`, `docker-compose.yml`, `front/Caddyfile`, `front/src/app/config.ts`, `k8s/base/configmap.yaml`
 **Détail** : [VARIABILISATION.md](VARIABILISATION.md)
 
 ## 12. Les conventions de contribution

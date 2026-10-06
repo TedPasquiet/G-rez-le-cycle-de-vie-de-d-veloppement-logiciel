@@ -19,12 +19,13 @@ Kustomize.** Il n'a jamais déployé quoi que ce soit.
 ## 1. Pourquoi ce chart existe
 
 Le brief du projet nomme Helm deux fois et le liste dans les outils attendus. Le
-dépôt avait choisi Kustomize, avec une justification écrite ([K8S.md](K8S.md) §2)
-et une soixantaine d'assertions de test qui en dépendent. Trois issues étaient
-possibles : migrer vers Helm, assumer l'écart, ou ajouter le chart.
+dépôt déploie avec Kustomize, pour des raisons écrites ([K8S.md](K8S.md) §2), et
+une soixantaine d'assertions de test en dépendent. Migrer vers Helm aurait
+remis en cause ces deux acquis ; ignorer Helm aurait laissé l'exigence du brief
+sans réponse. Le chart s'ajoute donc à Kustomize, sans le remplacer.
 
-C'est la troisième qui a été retenue, et elle a un coût qu'il faut nommer :
-**deux descriptions de la même application, c'est deux occasions de diverger.**
+Ce choix a un coût qu'il faut nommer : **deux descriptions de la même
+application, c'est deux occasions de diverger.**
 Tout ce qui suit — et en particulier le contrôle d'équivalence du §6 — existe
 pour que cette divergence soit impossible à commettre en silence.
 
@@ -69,20 +70,21 @@ Sans ambiguïté, et pour des raisons vérifiables :
    `helm upgrade`.
 2. **Le mécanisme qui corrige le rollback est propre à Kustomize.** L'overlay
    éphémère qui pose l'image réelle _avant_ l'`apply` ([K8S.md](K8S.md) §6)
-   s'appuie sur le transformateur `images:`. C'est lui qui a supprimé la
-   révision « placeholder » qui rendait `rollback-production` destructeur. Le
-   chart offre l'équivalent par `--set image.tag`, mais il n'a jamais été
-   éprouvé sur un cluster.
-3. **Le chart n'a jamais rien déployé.** Kustomize, si — campagne complète
-   consignée en [K8S.md](K8S.md) §14.
+   s'appuie sur le transformateur `images:`. C'est lui qui garde l'historique
+   des révisions exempt de toute image « placeholder », et donc un
+   `rollback-production` qui revient toujours à une image réelle. Le chart offre
+   l'équivalent par `--set image.tag`, mais il n'est pas éprouvé sur un cluster.
+3. **Le chart n'a jamais rien déployé.** Kustomize, si : staging et production
+   sont déployés par la CI, et le comportement en exploitation est vérifié en
+   [K8S.md](K8S.md) §14.
 
 Le chart répond à l'exigence du brief et prouve que le déploiement est
 portable d'un outil à l'autre. Il ne remplace rien.
 
 ### Les deux mécanismes ne peuvent pas cohabiter sur un même namespace
 
-Ce n'est pas une précaution théorique, c'est un refus explicite de Helm.
-Observé sur le namespace `microcrm-staging`, déployé par Kustomize :
+Ce n'est pas une précaution théorique, c'est un refus explicite de Helm,
+observé sur le namespace `microcrm-staging`, déployé par Kustomize :
 
 ```
 $ helm upgrade --install microcrm helm/microcrm \
@@ -179,7 +181,7 @@ le rendu de référence. `alpine/helm` n'embarque pas `kubectl` (vérifié).
 **Le chart n'a jamais déployé.** Il est rendu, linté, comparé, et accepté par le
 serveur d'API en `--dry-run=server`. Rien de plus. Un `helm install` réel n'a été
 joué qu'une fois, dans un namespace jetable, pour observer les métadonnées du
-§2 — et il s'est arrêté sur l'Ingress (voir ci-dessous).
+§2 — et il s'arrête sur l'Ingress (voir ci-dessous).
 
 **L'Ingress entre en collision avec l'environnement déjà déployé.** Sur ce
 cluster, `microcrm-staging` porte un Ingress sur `microcrm.staging.example.com`.

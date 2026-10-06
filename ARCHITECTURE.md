@@ -25,7 +25,7 @@ flowchart LR
     end
 
     user -->|"HTTP — charge l'app"| caddy
-    user -->|"HTTP — appels API<br/>(API_BASE_URL=:8080)"| boot
+    user -->|"HTTP — appels API<br/>(URL lue dans /config.json)"| boot
 ```
 
 **Composants**
@@ -36,9 +36,13 @@ flowchart LR
 | Back   | **Spring Boot** (Tomcat intégré)       | `8080` | Expose l'API REST                         |
 | Base   | **HSQLDB** _en mémoire_                | —      | Stockage (données perdues au redémarrage) |
 
-> ⚠️ Le navigateur parle **directement** au back : le front appelle
-> `http://localhost:8080` (`front/src/app/config.ts`). Caddy ne fait **pas** de
-> reverse-proxy vers le back ici — les deux sont exposés séparément.
+> ⚠️ **À savoir : le navigateur parle directement au back.** Au démarrage, le
+> front lit l'URL de l'API dans `/config.json`, que Caddy fabrique à partir de
+> la variable `FRONT_API_BASE_URL` du conteneur (`front/Caddyfile`,
+> `front/src/app/config.ts`) ; sans elle, le défaut est `http://localhost:8080`.
+> La même image sert donc dans tous les environnements. Caddy ne fait **pas** de
+> reverse-proxy vers le back : en Kubernetes, les deux sont exposés sur deux
+> hôtes d'Ingress distincts, d'où la configuration CORS du back.
 
 ---
 
@@ -46,8 +50,9 @@ flowchart LR
 
 Deux entités liées en **many-to-many** (voir `DATABASE.md` pour le détail) : une
 organisation (`ORGANIZATION` : `id`, `name`) regroupe zéro, une ou plusieurs
-personnes (`PERSON` : `id`, `firstName`, `lastName`, `email`), et une personne
-peut appartenir à zéro, une ou plusieurs organisations.
+personnes (`PERSON` : `id`, `firstName`, `lastName`, `email`, plus `phone`,
+`bio` et les horodatages, détaillés dans `DATABASE.md`), et une personne peut
+appartenir à zéro, une ou plusieurs organisations.
 
 ```mermaid
 erDiagram
@@ -82,9 +87,13 @@ flowchart LR
 
 - **Étape 1** (build) : contient tous les outils de compilation → **jetée** à la fin.
 - **Étape 2** (runtime) : ne garde que l'artefact (le `.jar` / les fichiers statiques).
-- Depuis le 2026-10-01, `back/Dockerfile` compte une étape intermédiaire de plus :
-  elle télécharge l'agent OpenTelemetry et vérifie son empreinte SHA-256, et
-  seul le jar vérifié passe dans l'image livrée ([MONITORING.md](MONITORING.md) §10).
+- `back/Dockerfile` compte une étape intermédiaire de plus : elle télécharge
+  l'agent OpenTelemetry et vérifie son empreinte SHA-256, et seul le jar vérifié
+  passe dans l'image livrée ([MONITORING.md](MONITORING.md) §10).
+- Les images de base sont figées (`gradle:8.14.5-jdk21`, `node:22-alpine`,
+  `caddy:2.11.4-builder-alpine`, `alpine:3.24`) et alignées sur celles de la
+  CI : le jar est compilé avec le JDK 21 qui l'exécute, le bundle avec le Node
+  qui l'a testé.
 - Bénéfices : images plus petites, moins de surface d'attaque, build reproductible.
 
 ### Taille des images livrées
@@ -102,18 +111,14 @@ dans sa couche et porté l'image à 158 Mo.
 
 Le back, lui, est dominé par `openjdk21-jre-headless` — environ 376 des 390 Mo.
 
-> **Comment ce chiffre est mesuré, et pourquoi il a bougé.** `docker image ls`
-> sur l'image que la CI construit, relevé le 2026-09-24. Ce document a porté
-> successivement 399 puis 377 Mo : le premier venait d'une mesure antérieure à
-> la montée de version, le second de l'image `t2-*` d'avant Spring Boot 3.5.16,
-> encore présente dans le cache local. La taille dépend aussi de
-> l'architecture — les images sont aujourd'hui construites en arm64 par le
-> runner auto-hébergé, là où les runners partagés produisaient de l'amd64.
+> **Comment ce chiffre est mesuré.** `docker image ls` sur l'image que la CI
+> construit, relevé le 2026-09-24. La taille dépend de l'architecture : les
+> images sont construites en arm64 par le runner auto-hébergé.
 > C'est le prix d'un JRE complet. Un runtime taillé sur mesure avec `jlink`, ne
 > contenant que les modules réellement utilisés, ramènerait l'image autour de
-> 150 Mo. Ce n'est pas fait aujourd'hui : la complexité ajoutée au Dockerfile ne
-> se justifie pas encore pour une application de démonstration, mais c'est la
-> première optimisation à envisager si la taille devient un sujet.
+> 150 Mo. Ce n'est pas fait : la complexité ajoutée au Dockerfile ne se
+> justifie pas pour une application de démonstration, mais c'est la première
+> optimisation à envisager si la taille devient un sujet.
 
 ### Contexte de build
 
@@ -123,12 +128,13 @@ et `--context ./front`, or Docker ne lit que le `.dockerignore` situé **à la
 racine du contexte**. Celui du dépôt n'est donc jamais appliqué lors de ces
 builds.
 
-L'effet est loin d'être cosmétique :
+L'effet est loin d'être cosmétique (contexte envoyé à Docker, mesuré sur le
+poste) :
 
-| Contexte | Avant    | Après      |
-| -------- | -------- | ---------- |
-| `front`  | 1 195 Mo | **0,6 Mo** |
-| `back`   | 51 Mo    | **0,1 Mo** |
+| Contexte | Sans `.dockerignore` d'application | Avec       |
+| -------- | ---------------------------------- | ---------- |
+| `front`  | 1 195 Mo                           | **0,6 Mo** |
+| `back`   | 51 Mo                              | **0,1 Mo** |
 
 Côté front, l'essentiel venait du cache de compilation Angular (`.angular`,
 920 Mo) et de `node_modules` (329 Mo) — deux répertoires que l'image régénère
@@ -162,18 +168,18 @@ flowchart LR
     commit([git push]) --> lint --> test --> quality --> security --> infra --> build --> package --> perf --> deploy --> infra-apply
 ```
 
-| Stage         | Jobs                                                                                           | Rôle                                                  |
-| ------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `lint`        | `lint-front`, `lint-back`, `shellcheck`, `lint-k8s`, `lint-helm`, `version-consistency`        | ESLint, Checkstyle, Bash, manifestes et chart         |
-| `test`        | `test-scripts`, `test-front`, `test-back`                                                      | Tests des scripts d'automatisation, Karma, JUnit      |
-| `quality`     | `sonar-back`, `sonar-front`, `spotbugs-back`, `coverage-gate`, `mutation-back`, `quality-gate` | Analyse Sonar, bugs, seuil de couverture, mutation    |
-| `security`    | `dependency-check-back`, `trivy-fs`                                                            | CVE des dépendances, secrets, misconfigurations       |
-| `infra`       | `terraform-validate`, `ansible-lint`, `terraform-plan`                                         | L'infrastructure se valide **avant** qu'on ne compile |
-| `build`       | `build-front`, `build-back`                                                                    | Compilation des artefacts                             |
-| `package`     | `package-back`, `package-front`, `promote-back`, `promote-front`, `release`                    | Images Docker taguées par SHA + scan Trivy            |
-| `perf`        | job `perf` → **pipeline enfant** (`k6-smoke`, `k6-load`, `k6-stress`)                          | Tests de performance k6 sur l'image construite        |
-| `deploy`      | `deploy-staging`, `deploy-production`, `rollback-production`, `dora-metrics`                   | Déploiement Kubernetes et retour arrière              |
-| `infra-apply` | `terraform-apply-{staging,logging,production}`, `notify-echec`                                 | Manuels et **bloquants** : d'où leur place en dernier |
+| Stage         | Jobs                                                                                           | Rôle                                                   |
+| ------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `lint`        | `lint-front`, `lint-back`, `shellcheck`, `lint-k8s`, `lint-helm`, `version-consistency`        | ESLint, Checkstyle, Bash, manifestes et chart          |
+| `test`        | `test-scripts`, `test-front`, `test-back`                                                      | Tests des scripts d'automatisation, Karma, JUnit       |
+| `quality`     | `sonar-back`, `sonar-front`, `spotbugs-back`, `coverage-gate`, `mutation-back`, `quality-gate` | Analyse Sonar, bugs, seuil de couverture, mutation     |
+| `security`    | `dependency-check-back`, `trivy-fs`                                                            | CVE des dépendances, secrets, misconfigurations        |
+| `infra`       | `terraform-validate`, `ansible-lint`, `terraform-plan`                                         | L'infrastructure se valide **avant** qu'on ne compile  |
+| `build`       | `build-front`, `build-back`                                                                    | Compilation des artefacts                              |
+| `package`     | `package-back`, `package-front`, `promote-back`, `promote-front`, `release`                    | Images taguées par SHA, scan Trivy, promotion, Release |
+| `perf`        | job `perf` → **pipeline enfant** (`k6-smoke`, `k6-load`, `k6-stress`)                          | Tests de performance k6 sur l'image construite         |
+| `deploy`      | `deploy-staging`, `deploy-production`, `rollback-production`, `dora-metrics`                   | Déploiement Kubernetes et retour arrière               |
+| `infra-apply` | `terraform-apply-{staging,logging,production}`, `notify-echec`                                 | Manuels et **bloquants** : d'où leur place en dernier  |
 
 Le détail du déclenchement par branche et de la procédure de release est dans
 [RELEASE.md](RELEASE.md) ; celui des scripts appelés par ces jobs dans
@@ -192,7 +198,7 @@ Les deux déploiements sont en `when: manual` : ils ne partent pas tout seuls, i
 faut cliquer dans GitLab. Le passage de staging en automatique est décrit dans
 [RELEASE.md](RELEASE.md) §6.
 
-Chaque cible est déclarée via le mot-clé `environment:` dans `.gitlab-ci.yml`
+Chaque cible est déclarée via le mot-clé `environment:` dans `.gitlab/ci/deploy.yml`
 (suivi des déploiements dans GitLab → _Operate → Environments_).
 
 ---
@@ -240,8 +246,7 @@ Le projet suit **GitFlow**. Le nommage n'est pas cosmétique : les règles de
 Le séparateur est un **slash**, pas un underscore : la règle est
 `$CI_COMMIT_BRANCH =~ /^(feature|fix|docs)\//`. Une branche
 `feature_ma-fonctionnalite` ou `feat/ma-fonction` ne correspond à aucune règle
-et son pipeline ne partira jamais — `fix/` et `docs/` ont été ajoutés à la règle
-parce que le dépôt les employait réellement.
+et son pipeline ne partira jamais.
 Les mots composés s'écrivent avec un tiret : `feature/initial-documentation`.
 
 ---
@@ -304,15 +309,15 @@ flowchart TB
 
     subgraph pipe["Pipeline GitLab CI : 10 étapes, 39 jobs"]
         direction LR
-        s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
+        s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"] --> s10["infra-apply"]
     end
 
-    s7 -->|"docker push<br/>tag = CI_COMMIT_SHORT_SHA, jamais latest"| reg[("Registry GitLab<br/>privé")]
-    s5 -.->|"terraform plan / apply<br/>manuels"| tf["Namespace, quota,<br/>limites, policies"]
+    s7 -->|"docker push<br/>tag = SHA du commit, seul tag déployé"| reg[("Registry GitLab<br/>privé")]
+    s10 -.->|"terraform apply<br/>manuel, un job par environnement"| tf["Namespace, quota,<br/>limites, policies"]
 
     s9 == "déclenchement MANUEL<br/>develop, main ou tag" ==> jobs
 
-    subgraph jobs["Étape deploy : 3 jobs, aboutis depuis le 2026-09-22"]
+    subgraph jobs["Jobs deploy-staging et deploy-production"]
         direction TB
         j1["1. kubectl create secret docker-registry"]
         j2["2. overlay éphémère Kustomize<br/>images: newName + newTag"]
@@ -334,51 +339,44 @@ flowchart TB
         ing --> pf
     end
 
-    poste(["Poste : docker build<br/>+ minikube image load"]) ==>|"chemin manuel,<br/>campagne K8S.md §14"| ns
+    poste(["Poste : docker build<br/>+ minikube image load"]) ==>|"chemin manuel,<br/>hors CI"| ns
 
-    classDef jamais stroke-dasharray: 5 5;
-    class tf jamais;
+    classDef manuel stroke-dasharray: 5 5;
+    class tf manuel;
 ```
 
-**Ce que le trait plein de l'étape deploy veut dire, depuis peu.** Ce cadre
-était en tirets, avec le reste de la convention : écrit, testé, jamais mené à son
-terme. **Il ne l'est plus depuis le 2026-09-22.** Un runner auto-hébergé a été
-enregistré sur le poste, ce qui a supprimé la contrainte de quota et rendu
-visibles trois défauts qu'aucun job n'allait assez loin pour rencontrer — un
-kubeconfig pointant sur `127.0.0.1` depuis un conteneur, un RBAC d'agent qui ne
-couvrait pas les objets applicatifs, un `$STAGING_NAMESPACE` absent qui faisait
-déployer dans `default` en silence. Les trois sont corrigés ; staging et
-production tournent aujourd'hui sur des images tirées du registry GitLab par ces
-jobs, `imagePullSecrets` compris.
+**Le trait plein : la CI déploie.** Les jobs `deploy-staging` et
+`deploy-production` tournent sur le runner auto-hébergé du poste et atteignent
+le cluster par le tunnel de l'agent GitLab pour Kubernetes : aucun kubeconfig
+n'est stocké en variable, et le rôle de l'agent couvre les objets applicatifs
+qu'ils écrivent ([TERRAFORM.md](TERRAFORM.md) §4.1). Staging et production
+tournent sur des images tirées du registry GitLab par ces jobs,
+`imagePullSecrets` compris. Un `$STAGING_NAMESPACE` ou `$PROD_NAMESPACE` vide
+fait échouer le job, au lieu de déployer dans `default` (§8.2).
 
-Ce que les indicateurs DORA en disent est à lire en entier
-([MONITORING.md](MONITORING.md) §9) : au 2026-10-05, **8 déploiements réussis
-sur 30 jours, 60 % de taux d'échec sur 15 tentatives**, deux rollbacks dont un
-qui a échoué, et trois échecs dus à un cluster arrêté. La chaîne aboutit, et la
-release 1.0.1 l'a parcourue jusqu'à la production ([RELEASE.md](RELEASE.md)
-§7.5) ; elle n'est pas pour autant une chaîne de livraison régulière, et ces
-chiffres portent sur trop peu d'observations pour décrire autre chose que trois
-journées de livraison.
+**Les quatre étapes du job sont testées sans cluster.** Les 430 assertions de
+`scripts/tests/run_tests.sh` les couvrent, et l'overlay éphémère a un garde-fou
+qui échoue si la substitution d'image ne mord plus ([K8S.md](K8S.md) §6). Cet
+overlay pose la vraie image dès l'`apply` : aucune révision « placeholder »
+n'entre dans l'historique, et `rollback-production` revient toujours à une image
+réelle.
 
-**Le trait pointillé qui reste** est celui de Terraform, dont l'`apply` demeure
-un geste manuel (§8.2).
+**Ce que les indicateurs DORA en disent** ([MONITORING.md](MONITORING.md) §9),
+au 2026-10-05 : **8 déploiements réussis sur 30 jours, 60 % de taux d'échec sur
+15 tentatives**, deux rollbacks dont un qui a échoué, et trois échecs dus à un
+cluster arrêté. La chaîne aboutit, et la release 1.0.1 l'a parcourue jusqu'à la
+production ([RELEASE.md](RELEASE.md) §7.5) ; ces chiffres portent sur trois
+journées de livraison, trop peu pour décrire une cadence régulière.
 
-**Le trait épais du bas n'est plus le seul chemin qui produit des pods en
-marche**, mais il reste celui de la campagne de vérification : images construites
-sur le poste, chargées par `minikube image load` (décision D3), overlay appliqué
-à la main. Le rollout, le rollback automatique sur une image volontairement
-cassée, la résilience à la suppression d'un pod et le comportement des sondes
-sous kubelet y ont été observés un par un — c'est consigné dans
-[K8S.md](K8S.md) §14, et aucun déploiement de CI ne réexerce ce détail.
+**Le trait pointillé** est celui de Terraform, dont l'`apply` est un geste
+manuel, un job par environnement (§8.2).
 
-**Ce que le mécanisme devait à sa description.** Les quatre étapes du job de
-déploiement sont couvertes par les 430 assertions de
-`scripts/tests/run_tests.sh`, l'overlay éphémère a un garde-fou qui échoue si la
-substitution d'image ne mord plus ([K8S.md](K8S.md) §6), et c'est précisément cet
-overlay qui a supprimé la révision « placeholder » qui rendait
-`rollback-production` destructeur. Quand l'exécution est enfin devenue possible,
-rien de tout cela n'a eu à être réécrit : ce qui manquait était bien le runner,
-pas le mécanisme.
+**Le trait épais du bas** est le chemin de vérification manuelle : images
+construites sur le poste, chargées par `minikube image load` (décision D3),
+overlay appliqué à la main. Le rollout, le rollback automatique sur une image
+volontairement cassée, la résilience à la suppression d'un pod et le
+comportement des sondes sous kubelet y sont observés un par un
+([K8S.md](K8S.md) §14) ; aucun déploiement de CI ne réexerce ce détail.
 
 ### 8.2 L'infrastructure comme code, et sa frontière
 
@@ -426,7 +424,8 @@ flowchart TB
 
 Les numéros sont un ordre d'exécution autant qu'une hiérarchie : depuis un poste
 nu, `ansible-playbook site.yml` puis `terraform apply` puis
-`kubectl apply -k k8s/overlays/<env>`. Chaque couche suppose la précédente et
+`kubectl apply -k` d'un overlay qui complète `k8s/overlays/<env>` de l'image à
+déployer ([RELEASE.md](RELEASE.md) §9.4). Chaque couche suppose la précédente et
 n'empiète pas dessus — **Ansible sait parfaitement appliquer un manifeste
 (`kubernetes.core.k8s`), et c'est justement pour cela qu'il est écrit qu'il ne le
 fera pas** ([ANSIBLE.md](ANSIBLE.md) §2).
@@ -454,12 +453,10 @@ Trois conséquences se lisent directement sur le schéma :
 > divergence, le job échoue sur un namespace inexistant, ou pire en crée un
 > second, sans quota ni policy.
 >
-> **Le cas s'est produit le 2026-09-22, en pire que prévu.** `$STAGING_NAMESPACE`
-> n'était pas définie du tout côté GitLab : `kubectl -n ""` ne proteste pas, il
-> vise `default`. Le déploiement a donc réussi — dans le mauvais namespace, sans
-> quota ni policy, et sans rien signaler. Le garde-fou `exige_namespace` de
-> `.deploy_template` couvre désormais ce cas : une variable vide fait échouer le
-> job. Il ne couvre toujours pas la divergence entre deux noms tous les deux
+> Le cas extrême est une variable absente : `kubectl -n ""` ne proteste pas, il
+> vise `default`, et le déploiement réussirait sans quota ni policy. Le
+> garde-fou `exige_namespace` de `.deploy_template` fait échouer le job sur une
+> variable vide. Il ne couvre pas la divergence entre deux noms tous les deux
 > renseignés, qui reste à la charge de la relecture.
 
 ### 8.3 Le flux des logs
@@ -514,14 +511,14 @@ n'est pas dédié à MicroCRM : il héberge aussi les namespaces `dev` et `stagi
 d'autres projets et quatre pods dans `default`. Un Filebeat non filtré y
 ingérerait les logs de tiers. Le filtre est posé deux fois — sur ce que le
 provider `autodiscover` **observe**, et en condition sur ce qu'il **traite** —
-pour que l'élargissement de l'un ne fasse pas tomber l'autre. Vérifié après
-coup : sur 50 documents indexés, dont 36 du conteneur `back`, **100 % viennent de
+pour que l'élargissement de l'un ne fasse pas tomber l'autre. Mesuré : sur 50
+documents indexés, dont 36 du conteneur `back`, **100 % viennent de
 `microcrm-staging`**.
 
 **Le second embranchement évite une panne irréversible.** Le back produit de
 l'ECS, décodé à la racine ; le front produit lui aussi du JSON, mais non-ECS,
 dont les champs portent les mêmes noms sans avoir la même forme. Un décodage
-uniforme faisait rejeter ses documents
+uniforme fait rejeter ses documents
 (`object mapping for [file] tried to parse field [file] as object`), et une
 collision de mapping ne se répare pas : une fois le champ typé dans l'index,
 aucun document contradictoire n'y entrera plus. Le journal du front est donc
@@ -533,7 +530,7 @@ souffre pas d'exception. Et la bascule texte → JSON du back tient à la seule 
 `SPRING_PROFILES_ACTIVE` de la ConfigMap : **sans elle, le pod journalise en
 texte sans que rien ne le signale**, et Kibana n'a plus rien à filtrer.
 
-Ce que le schéma ne montre pas, parce que ce n'est plus du transport : les logs
+Ce que le schéma ne montre pas, parce que ce n'est pas du transport : les logs
 collectés alimentent cinq tableaux de bord versionnés dans
 `k8s/elk/dashboards/`, et huit règles d'alerte Kibana, versionnées dans
 `k8s/elk/alerting/`, les surveillent chaque minute. Ces règles écrivent dans un
@@ -613,13 +610,10 @@ Server n'a **aucune authentification** : son périmètre tient à la
 `NetworkPolicy`, que le CNI par défaut de minikube n'applique pas. Et le front
 n'est pas instrumenté : la trace commence à l'API, pas dans le navigateur.
 
-**Ce schéma décrit ce qui tourne depuis le 2026-10-05.** Jusqu'au 2026-10-02,
-les pods `back` exécutaient des images antérieures à l'agent, et la chaîne
-n'avait été éprouvée que depuis le poste, avec un conteneur local. Depuis le
-déploiement de `back:5296658a` en staging et de `back:1.0.1` en production,
-leurs ConfigMaps portent ces clés et des traces arrivent des deux
-environnements. Le relevé, les mesures et les pièges sont dans
-[MONITORING.md](MONITORING.md) §10.
+**Ce que le cluster montre.** Staging tourne `back:5296658a`, production
+`back:1.0.1` ; leurs ConfigMaps portent les clés OpenTelemetry, et des traces
+arrivent des deux environnements (relevé du 2026-10-05). Le relevé, les mesures
+et les pièges sont dans [MONITORING.md](MONITORING.md) §10.
 
 ---
 
@@ -660,15 +654,14 @@ ni plan simulé, ni dry-run présenté comme une preuve. Ce qui manque est le
 fournisseur, pas la mécanique — et c'est exactement ce que la table du §10 sert à
 montrer.
 
-**5. Une nuance, et elle s'est vérifiée dans les deux sens : gratuit ne veut pas
-dire sans limite.** Pendant deux mois, aucun pipeline du projet ne s'est arrêté
-sur un test rouge mais sur `ci_quota_exceeded` : les minutes du Free Tier GitLab
-étaient épuisées et aucun job ne démarrait. La sortie a été d'enregistrer un
-**runner auto-hébergé** sur le poste — depuis le 2026-09-22, les jobs n'y
-consomment plus une minute de quota. Ce qui confirme la nuance plutôt que de la
-lever : l'option locale supprime la facture, pas la contrainte de ressource, elle
-la déplace vers le poste. Le quota gratuit s'est manifesté d'abord ; c'est
-maintenant la machine qui porte la charge des jobs.
+**5. Une nuance : gratuit ne veut pas dire sans limite.** Les minutes de CI du
+Free Tier GitLab ne suffisent pas à ce pipeline : une fois épuisées, les jobs
+s'arrêtent sur `ci_quota_exceeded`. Les jobs tournent donc sur un **runner
+auto-hébergé**, enregistré sur le poste, qui ne consomme aucune minute de
+quota. L'option locale supprime la facture, pas la contrainte de ressource :
+elle la déplace vers le poste, qui porte à la fois le runner (un job à la fois,
+`concurrent = 1`) et le cluster. Un cluster arrêté sur le poste se lit
+directement dans les indicateurs DORA (§8.1).
 
 ---
 
@@ -710,10 +703,9 @@ ne se remplace pas par un autre secret, il **disparaît**, absorbé par l'identi
 de la charge de travail. C'est un cas rare où le passage au cloud retire une
 pièce du dispositif au lieu d'en ajouter une.
 
-Le chemin de migration de l'état Terraform, lui, est déjà écrit et ne demande
-même pas de cloud : GitLab héberge gratuitement des états sur le Free Tier via un
-backend `http`, et la bascule ne touche qu'un bloc suivi d'un
-`terraform init -migrate-state` ([TERRAFORM.md](TERRAFORM.md) §4).
+L'état Terraform, lui, n'a pas à migrer : il vit déjà hors du poste, dans
+l'état managé GitLab (backend `http`, un état par environnement, verrouillé),
+utilisable tel quel depuis un cloud ([TERRAFORM.md](TERRAFORM.md) §4).
 
 ---
 
@@ -744,12 +736,15 @@ restauration éprouvée. Côté application la question ne se pose pas davantage
 base vit en mémoire, **il n'y a rien à sauvegarder**, ce qui est un fait
 structurel et non un oubli de procédure.
 
-**L'IAM et la gestion fine des droits.** Un seul kubeconfig, celui de
-l'administrateur du poste, avec tous les droits. Aucun cloisonnement par équipe,
-aucun rôle limité à un namespace, aucune identité de charge de travail. Le seul
-RBAC écrit dans tout le projet est celui de Filebeat, et il existe parce que
-`autodiscover` a besoin d'interroger l'API — pas parce qu'on aurait modélisé des
-droits. Terraform, lui, s'exécute avec les droits de la personne qui le lance.
+**L'IAM et la gestion fine des droits.** Sur le poste, un seul kubeconfig,
+celui de l'administrateur, avec tous les droits. Aucun cloisonnement par équipe,
+aucun rôle limité à un namespace, aucune identité de charge de travail. Deux
+RBAC seulement sont écrits : celui de Filebeat, parce que `autodiscover` doit
+interroger l'API, et celui de l'agent GitLab, qui restreint les jobs de CI aux
+objets qu'ils écrivent — mais par un `ClusterRoleBinding`, donc à l'échelle du
+cluster et non des seuls namespaces du projet ([TERRAFORM.md](TERRAFORM.md)
+§4.1). Terraform lancé depuis un poste s'exécute avec les droits de la personne
+qui le lance.
 
 **Les coûts et leur maîtrise.** Zéro dépense, donc zéro arbitrage. Les quotas des
 namespaces ont été dimensionnés contre la capacité du nœud — 7,75 Gio
@@ -758,11 +753,11 @@ Rien dans ce projet ne démontre qu'on sait choisir une taille d'instance en
 regardant une facture.
 
 **La montée en charge automatique.** Ni `HorizontalPodAutoscaler`, ni
-`metrics-server`, ni autoscaler de nœuds. Le projet collecte des **logs** ; des
-**traces**, qui donnent la latence et le débit de l'API, sont en service depuis
-le 2026-10-05 ; et il n'existe toujours aucune
+`metrics-server`, ni autoscaler de nœuds. Le projet collecte des **logs** et
+des **traces**, qui donnent la latence et le débit de l'API, mais aucune
 métrique de ressources, ni CPU ni mémoire ([MONITORING.md](MONITORING.md) §10.4
-et §12) : il manque donc jusqu'au signal sur lequel un autoscaler déciderait. Et les tests k6 s'exécutent contre l'image
+et §12) : il manque donc jusqu'au signal sur lequel un autoscaler déciderait. Et
+les tests k6 s'exécutent contre l'image
 construite dans la CI, pas contre le cluster — ils mesurent l'application, pas
 l'élasticité de l'infrastructure.
 
@@ -798,19 +793,16 @@ aujourd'hui.
    qu'aucune erreur ne soit levée. Une base externe (PostgreSQL) avec un
    `PersistentVolumeClaim` lèverait les deux d'un coup.
 
-2. **La chaîne de déploiement aboutit depuis la CI, mais sur trois journées
-   seulement.** Elle a échoué sept fois avant le 2026-09-22 ; elle a posé
-   staging et production les 22 et 23 septembre, et exercé un rollback de
-   production suivi d'un redéploiement (§8.1). Après trois pipelines rouges de
-   `develop` fin septembre, elle a livré la release 1.0.1 le 2026-10-05 — non
-   sans trois échecs de déploiement dus à un minikube arrêté par un redémarrage
-   de Docker Desktop ([RELEASE.md](RELEASE.md) §7.5). Le recul reste faible et
-   les indicateurs le disent : **60 % d'échec sur 15 tentatives**
-   ([MONITORING.md](MONITORING.md) §9). Le
-   détail du comportement en exploitation — rollback automatique sur image
-   cassée, sondes sous kubelet, résilience à la perte d'un pod — reste établi par
-   la campagne manuelle de [K8S.md](K8S.md) §14, qu'aucun déploiement de CI ne
-   réexerce.
+2. **La chaîne de déploiement aboutit depuis la CI, sur peu d'observations.**
+   Elle a déployé staging et production, exercé un rollback de production suivi
+   d'un redéploiement (2026-09-23), et livré la release 1.0.1 jusqu'à la
+   production (2026-10-05, [RELEASE.md](RELEASE.md) §7.5). Le recul est faible et
+   les indicateurs le disent : **60 % d'échec sur 15 tentatives** sur 30 jours,
+   dont trois échecs dus au cluster du poste arrêté
+   ([MONITORING.md](MONITORING.md) §9). Le comportement fin en exploitation —
+   rollback automatique sur image cassée, sondes sous kubelet, résilience à la
+   perte d'un pod — est établi par la vérification manuelle de [K8S.md](K8S.md)
+   §14, qu'aucun déploiement de CI ne réexerce.
 
 3. **L'image du back pèse 390 Mo**, dont ~376 pour le JRE. Voir §3 pour la piste
    `jlink`.
@@ -819,14 +811,3 @@ aujourd'hui.
    d'Ingress), donc le CORS n'est pas décoratif : `MICROCRM_CORS_ALLOWED_ORIGINS`
    doit contenir l'hôte du front de chaque environnement, sinon le navigateur
    bloquera les requêtes.
-
-### Corrigé depuis
-
-Ces quatre points figuraient ici comme incohérences ; ils ne le sont plus.
-
-| Point                                          | Résolution                                                           |
-| ---------------------------------------------- | -------------------------------------------------------------------- |
-| `back/Dockerfile` exposait le port `4200`      | corrigé en `8080`, le port réellement écouté                         |
-| `API_BASE_URL` compilée en dur dans le bundle  | lue au démarrage depuis `/config.json` servi par Caddy               |
-| Aucun `.dockerignore` dans `back/` ni `front/` | créés ; le contexte du front passe de 1 195 Mo à 0,6 Mo              |
-| L'image front tournait en `root`               | tourne en UID 1000, comme le back et comme les manifestes Kubernetes |

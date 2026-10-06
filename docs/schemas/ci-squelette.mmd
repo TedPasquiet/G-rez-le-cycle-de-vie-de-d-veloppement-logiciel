@@ -1,6 +1,6 @@
 %% Schéma — Le squelette du pipeline : dix étapes, deux régimes.
 %% Source versionnée du bloc Mermaid de docs/pipeline-ci.md §2.
-%% La dixième étape, `infra-apply`, est un correctif : un job manuel sans
+%% La dixième étape, `infra-apply`, vient en dernier : un job manuel sans
 %% allow_failure est BLOQUANT, il ne peut donc pas vivre au milieu du pipeline.
 flowchart LR
     subgraph V["Vérification — toutes branches + MR"]

@@ -1,74 +1,47 @@
 # Supervision — la stack ELK, les traces et l'alerting
 
-Centralisation des logs de MicroCRM : Elasticsearch, Kibana et Filebeat sur le
-cluster local. Depuis le 2026-10-01, **traces de l'API** : un agent
-OpenTelemetry dans le back, APM Server dans la même stack. Et depuis le
-2026-10-02, **alerting** : huit règles Kibana versionnées, qui écrivent dans un
-index et dans le journal de Kibana. Ce document dit ce que la chaîne fait, ce
-qu'elle ne fait pas, et les pièges qu'il a fallu écarter pour qu'elle
-fonctionne.
+Supervision de MicroCRM sur le cluster local, en trois volets :
 
-Les trois volets n'en sont pas au même point. **Les logs sont en service**
-depuis le 2026-08-16. **Les traces sont en service depuis le 2026-10-05** :
-éprouvées d'abord depuis le poste, elles arrivent désormais des pods de staging
-et de production, sans recul encore (§10.4). **L'alerting est installé sur le cluster et ses huit règles ont
-été déclenchées une fois, volontairement** (§11) ; il n'envoie aucune
-notification hors de Kibana.
+- **les logs** : Filebeat, Elasticsearch et Kibana (8.19.7) centralisent les
+  logs des pods de staging ;
+- **les traces de l'API** : un agent OpenTelemetry dans le back envoie ses
+  traces à APM Server, dans la même stack, depuis staging et production ;
+- **l'alerting** : huit règles Kibana versionnées, qui écrivent dans un index et
+  dans le journal de Kibana, sans notification hors de Kibana.
 
-**État : la chaîne des logs est déployée et vérifiée de bout en bout.** Un log
-écrit par le pod `back` se retrouve dans Elasticsearch, décodé et enrichi.
+S'y ajoutent cinq tableaux de bord versionnés et le calcul des indicateurs DORA.
+Ce document dit comment la chaîne fonctionne, pourquoi elle est construite
+ainsi, comment la rejouer, et ce qu'elle ne fait pas.
 
-La vérification initiale, à la mise en service (2026-08-16) :
+**Preuves de fonctionnement**
 
-| Vérification                              | Résultat                                                              |
-| ----------------------------------------- | --------------------------------------------------------------------- |
-| Rollout Elasticsearch / Kibana / Filebeat | les trois `Running`                                                   |
-| Documents indexés                         | 50, dont **36 du conteneur `back`**                                   |
-| Provenance                                | **100 % `microcrm-staging`** — aucun projet voisin collecté           |
-| Champs ECS décodés                        | `log.level`, `log.logger`, `service.name`, `process.thread.name`      |
-| Métadonnées Kubernetes                    | `kubernetes.pod.name`, `kubernetes.namespace`, `container.image.name` |
+| Date       | Ce qui a été vérifié                             | Résultat                                                                                                                 |
+| ---------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| 2026-08-16 | Mise en service des logs                         | Elasticsearch, Kibana et Filebeat `Running` ; champs ECS et métadonnées Kubernetes décodés ; 100 % `microcrm-staging`    |
+| 2026-10-02 | Collecte des logs                                | 92 175 documents `microcrm-logs-*`, tous de `microcrm-staging` ; pods du namespace `logging` `1/1`                       |
+| 2026-10-02 | Traces, conteneur lancé sur le poste             | 325 transactions et 1 211 spans ; latence par route mesurée (§10.4)                                                      |
+| 2026-10-02 | Déclenchement volontaire des 8 règles d'alerte   | 8 déclenchements, 8 rétablissements, 16 documents dans `microcrm-alerts` (§11.3)                                         |
+| 2026-10-02 | Réimport à froid des tableaux de bord            | 69 objets en 5 fichiers, `successCount` 8, 13, 22, 18 et 8 (§8) ; `microcrm.ndjson` vérifié à la mise en service         |
+| 2026-10-05 | Traces venues du cluster, après la release 1.0.1 | 534 documents `staging` en 15 min, puis 187 `production` et 180 `staging` en 10 min ; logs du back portant un `trace.id` |
+| 2026-10-05 | Indicateurs DORA recalculés et injectés          | 67 pipelines, 21 documents dans `microcrm-dora` (§9.1)                                                                   |
 
-L'état relevé le 2026-10-02, en fin de journée — les compteurs de logs bougent
-d'une minute à l'autre, la collecte étant continue :
+## 1. Ce que ça couvre
 
-| Vérification                               | Résultat                                                                                       |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| Pods du namespace `logging`                | Elasticsearch, Kibana, APM Server et Filebeat `1/1`, tous en 8.19.7                            |
-| Documents `microcrm-logs-*`                | **92 175**, tous de `microcrm-staging` : la production n'est pas collectée                     |
-| Niveaux journalisés par le back (47 jours) | 325 `INFO`, 49 `WARN`, 0 `ERROR` avant les essais d'alerting                                   |
-| Traces venues du cluster                   | **0** — les images déployées précèdent l'agent (§10.4)                                         |
-| Traces d'un conteneur local                | 325 transactions, 1 211 spans, latence par route (§10.4)                                       |
-| Règles d'alerte                            | **8** installées, activées, dernière exécution réussie, 0 alerte active après les essais (§11) |
-| Index `microcrm-alerts`                    | 16 documents : 8 déclenchements et 8 rétablissements, tous provoqués (§11.3)                   |
-| Index `microcrm-security`                  | 966 documents, produits par `collect_security.py` sur des scans rejoués (§8)                   |
-| Index `microcrm-dora`                      | 26 documents ; réalimenté le 2026-10-02, il ne l'avait pas été depuis le 2026-08-16 (§9)       |
-| Tableaux de bord versionnés                | **5** fichiers NDJSON, 69 objets sauvegardés (§8)                                              |
+Les contrôles du pipeline agissent tous **avant** le déploiement
+([QUALITY.md](QUALITY.md) §6). Sans supervision, la seule façon de lire un log
+serait `kubectl logs`, un pod à la fois, sans historique : un pod redémarré
+emporterait ses logs avec lui.
 
-Ce qui a changé le 2026-10-05, avec la livraison du lot du 2 octobre et la
-release 1.0.1 (`RELEASE.md` §7.5) :
+Trois besoins, trois réponses :
 
-| Vérification                | Résultat                                                                                                                          |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Images en service           | staging `back:5296658a` / `front:5296658a` ; production `back:1.0.1` / `front:1.0.1`, toutes avec l'agent OpenTelemetry côté back |
-| Traces venues du cluster    | **reçues** : 534 documents `staging` en 15 min le matin, puis 187 `production` et 180 `staging` en 10 min (§10.4)                 |
-| Corrélation logs ↔ traces   | des logs du back portent un `trace.id`                                                                                            |
-| Index `microcrm-dora`       | réalimenté à la main le 2026-10-05 à 14 h 39 UTC, 21 documents, après le dernier déploiement (§9)                                 |
-| Documents `microcrm-logs-*` | toujours de `microcrm-staging` seulement : la production n'est pas collectée par Filebeat                                         |
+| Besoin                             | Réponse                                                | Section |
+| ---------------------------------- | ------------------------------------------------------ | ------- |
+| Lire et filtrer ce que dit l'appli | logs JSON ECS collectés par Filebeat, lus dans Kibana  | §2 à §8 |
+| Mesurer la latence de l'API        | traces OpenTelemetry vers Elastic APM                  | §10     |
+| Être prévenu d'un écart            | règles d'alerte Kibana, consignées dans un index dédié | §11     |
 
-## 1. Le manque que ça comble
-
-`QUALITY.md` §6 l'annonçait sans détour : les contrôles du projet agissent tous
-**avant** le déploiement. Une fois l'application en marche, plus rien ne disait
-si elle répondait ni ce qu'elle racontait. Le seul moyen de lire un log était
-`kubectl logs`, c'est-à-dire un pod à la fois, sans historique — un pod
-redémarré emportait ses logs avec lui.
-
-Les logs ont comblé ce premier manque. Il en restait un second, écrit en toutes
-lettres au §5 : **aucune mesure de la latence de l'API**. Les traces (§10) sont
-faites pour le combler, et lui seulement — le CPU et la mémoire des pods ne sont
-toujours mesurés par rien (§12). Un troisième manque tenait en une phrase :
-**rien ne prévenait personne**. L'alerting (§11) y répond en partie — il
-détecte et consigne, il ne notifie pas hors de Kibana.
+Ce qui reste hors de portée : le CPU et la mémoire des pods, que rien ne mesure
+(§12), et toute notification hors de Kibana (§11.5).
 
 ## 2. La chaîne, maillon par maillon
 
@@ -85,16 +58,16 @@ pod front ┘            (sur le nœud)
 3. **Elasticsearch** indexe dans un _data stream_ dédié au projet.
 4. **Kibana** lit Elasticsearch.
 
-Un second chemin est décrit depuis le 2026-10-01 — celui des traces, du pod
-`back` à APM Server. Il a sa propre section (§10) et son propre schéma.
+Le chemin des traces, du pod `back` à APM Server, a sa propre section (§10) et
+son propre schéma.
 
 ## 3. Les logs applicatifs : deux formats, un profil
 
-Le _structured logging_ natif de Spring Boot n'est arrivé qu'en 3.4, après le
-choix fait ici sur la 3.2.5. La bascule passe donc par un encodeur Logback,
+Le _structured logging_ natif de Spring Boot n'existe qu'à partir de la 3.4 ; le
+projet est en 3.2.5. La sortie JSON passe donc par un encodeur Logback,
 `co.elastic.logging:logback-ecs-encoder:1.7.0`, choisi plutôt que l'encodeur
 Logstash parce qu'il émet directement le schéma qu'attendent Elasticsearch et
-Kibana ; l'autre aurait imposé de renommer chaque champ, donc de maintenir une
+Kibana ; l'autre imposerait de renommer chaque champ, donc de maintenir une
 traduction en double.
 
 `back/src/main/resources/logback-spring.xml` rend **deux** formats :
@@ -112,47 +85,46 @@ Filebeat déverse dans Elasticsearch des lignes que Kibana ne sait pas filtrer.
 Le défaut lisible-par-l'humain est délibéré côté application ; c'est donc la
 ConfigMap, et elle seule, qui décide. Elle existe en **deux exemplaires** —
 `k8s/base/configmap.yaml` et `helm/microcrm/templates/configmap.yaml` — et
-l'assertion d'équivalence de `scripts/tests/validate_k8s.sh` échouerait en
-nommant le champ si l'un des deux était oublié.
+l'assertion d'équivalence de `scripts/tests/validate_k8s.sh` échoue en nommant
+le champ si l'un des deux est oublié.
 
 ## 4. Filebeat ne collecte pas tout, et c'est délibéré
 
 **Ce cluster n'est pas dédié à MicroCRM.** Il héberge aussi les namespaces `dev`
-et `staging` (projets `olympic-games-app` et `workshop-organizer`) et quatre pods
-dans `default`. Un Filebeat non filtré y ingérerait les logs de projets tiers :
-ce n'est pas une question de volume, c'est une question de périmètre.
+et `staging` d'autres projets (`olympic-games-app`, `workshop-organizer`) et des
+pods dans `default`. Un Filebeat non filtré y ingérerait les logs de projets
+tiers : ce n'est pas une question de volume, c'est une question de périmètre.
 
 L'autodiscover ne collecte donc que le namespace de l'application, et ce
-namespace est une valeur de configuration, pas une chaîne enfouie dans le YAML.
-Vérifié après coup : sur 50 documents, **100 % viennent de `microcrm-staging`**.
+namespace est une valeur de configuration (`MICROCRM_NAMESPACE` dans
+`k8s/elk/elk-config.yaml`, valeur `microcrm-staging`), pas une chaîne enfouie
+dans le YAML. Un second filtre, sur `kubernetes.namespace`, double le premier.
+Vérifié : 100 % des documents indexés viennent de `microcrm-staging`.
+Conséquence assumée : **la production n'est pas dans les logs** (§12).
 
 **Deux décodages JSON, et un seul à la racine.** Le back produit de l'ECS, décodé
 à la racine. Le front (Caddy) écrit lui aussi du JSON, mais **non-ECS**, dont les
 champs portent les mêmes noms que ceux de Filebeat sans avoir la même forme. Un
-décodage appliqué à tous les conteneurs faisait rejeter ses documents :
+décodage appliqué à tous les conteneurs fait rejeter ses documents :
 
 ```
 document_parsing_exception: object mapping for [file] tried to parse field [file] as object
 ```
 
 Une collision de mapping est **irréversible** : une fois le champ typé dans
-l'index, aucun document contradictoire n'y entrera plus. Le journal du front est
+l'index, aucun document contradictoire n'y entre plus. Le journal du front est
 donc décodé sous le préfixe `caddy`, ce qui isole ses champs de l'espace ECS et
 laisse les deux formats cohabiter.
 
-## 5. La latence : d'où elle vient, et pourquoi elle n'existait pas
+## 5. La latence du front : le journal d'accès de Caddy
 
-Il n'y avait, au départ, **aucune donnée de latence dans toute la chaîne**. Les
-logs applicatifs du back portent ce que l'application raconte, pas le temps
-qu'elle met ; et le Caddyfile n'avait aucune directive `log`, donc le front
-n'écrivait que ses journaux internes de démarrage et de maintenance TLS. Un
-écran « latence » construit là-dessus aurait été décoratif.
+Les logs applicatifs du back portent ce que l'application raconte, pas le temps
+qu'elle met. La seule source qui voit passer le trafic du front est le journal
+d'accès de Caddy, activé par la directive `log` de `front/Caddyfile`. Il porte
+les trois mesures d'un coup : `caddy.status`, `caddy.duration` et le simple
+comptage.
 
-Le journal d'accès de Caddy a donc été activé (`front/Caddyfile`). C'est la
-seule source qui voit réellement passer le trafic, et elle porte les trois
-mesures d'un coup : `caddy.status`, `caddy.duration` et le simple comptage.
-
-Mesuré après 105 requêtes :
+Mesuré sur 105 requêtes :
 
 ```
 p50 = 0,14 ms     p95 = 1,60 ms     p99 = 3,11 ms
@@ -160,12 +132,11 @@ p50 = 0,14 ms     p95 = 1,60 ms     p99 = 3,11 ms
 
 ⚠️ **C'est la latence vue par le serveur web, pas par l'API.** Caddy sert le
 bundle Angular et `/config.json` ; les appels à l'API partent du navigateur vers
-un hôte distinct et ne passent pas par lui. Mesurer la latence de l'API
-demandait de l'instrumenter elle-même : c'est l'objet des traces (§10), écrites
-depuis le 2026-10-01 et en service depuis le 2026-10-05. Les deux mesures ne se remplacent
-pas — celle-ci reste la seule qui voie le front.
+un hôte distinct et ne passent pas par lui. La latence de l'API est mesurée par
+les traces (§10). Les deux mesures ne se remplacent pas — celle-ci reste la
+seule qui voie le front.
 
-⚠️ **Le front ne produira quasiment jamais de 4xx.** C'est une application
+⚠️ **Le front ne produit quasiment jamais de 4xx.** C'est une application
 Angular servie avec `try_files {path} /index.html` : tout chemin inconnu renvoie
 `200` avec la page, à charge pour le routeur Angular de décider. Vérifié — 12
 requêtes vers des chemins inexistants ont toutes renvoyé `200`. Les erreurs
@@ -173,14 +144,15 @@ réelles se lisent donc côté back, dans `log.level`.
 
 ## 6. Le dimensionnement, et pourquoi il tient
 
-Point de vigilance explicite du brief : une stack sous-dimensionnée ne démarre
-pas. Les chiffres, et la règle qui les gouverne :
+Une stack ELK sous-dimensionnée ne démarre pas. Les chiffres, et la règle qui
+les gouverne :
 
 | Composant     | requests      | limits         | tas                    |
 | ------------- | ------------- | -------------- | ---------------------- |
 | Elasticsearch | 500m / 1536Mi | 2 CPU / 2Gi    | 1 Gio (`ES_JAVA_OPTS`) |
 | Kibana        | 200m / 768Mi  | 1 CPU / 1536Mi | 768 Mio                |
 | Filebeat      | 100m / 128Mi  | 500m / 256Mi   | —                      |
+| APM Server    | 50m / 64Mi    | 500m / 256Mi   | —                      |
 
 **La limite mémoire vaut le double du tas.** Un conteneur JVM dont la limite
 égale le tas est tué par l'OOM killer au premier pic hors-tas — metaspace, cache
@@ -190,16 +162,16 @@ de code, piles de threads. C'est la cause la plus banale d'une stack ELK qui
 Le namespace porte un `ResourceQuota` créé par Terraform
 (`terraform/environments/logging/`), calé sur le **pic d'un déploiement** et non
 sur l'état stable. Le calcul du pic diffère de celui des environnements
-applicatifs, parce que les trois composants n'ont pas la même stratégie :
+applicatifs, parce que les composants n'ont pas la même stratégie :
 
 - **Elasticsearch est en `Recreate`**, pas en `RollingUpdate`. Son PVC est
   `ReadWriteOnce` et son répertoire de données verrouillé par `node.lock` : un
   second pod resterait bloqué en `ContainerCreating`, pendant que l'ancien reste
   en place — un déploiement qui ne finit jamais. Son pic vaut donc **1 pod**.
-- Kibana surge à 2. Filebeat est un DaemonSet : il remplace sans ajouter.
+- Kibana et APM Server surgent à 2. Filebeat est un DaemonSet : il remplace sans
+  ajouter.
 
-**Vérifié en conditions réelles**, en relançant Kibana et en observant le quota
-pendant le rollout :
+Vérifié en relançant Kibana et en observant le quota pendant le rollout :
 
 ```
 $ kubectl -n logging describe quota logging-quota      # pendant le rollout
@@ -209,8 +181,9 @@ pods             4       12
 ```
 
 Ce sont exactement les valeurs calculées dans `terraform.tfvars`, au mégaoctet
-près. C'est aussi la première fois qu'un quota posé par Terraform est confronté à
-une charge réelle — ce que `TERRAFORM.md` §9.4 listait comme non vérifié.
+près. Au pic d'un double rollout Kibana + APM Server, le 2026-09-29, le quota
+affichait `limits.memory 5888Mi/6Gi` : **la marge restante est de 256 Mio**, et
+le prochain composant ajouté à `logging` devra relever le quota.
 
 ## 7. Les pièges écartés
 
@@ -242,9 +215,7 @@ comme contrepartie d'un nommage propre au projet.
 
 ## 8. Les tableaux de bord, et pourquoi ils sont dans le dépôt
 
-**Cinq tableaux de bord**, un fichier chacun dans `k8s/elk/dashboards/`. Le
-premier date de la mise en service ; les quatre autres ont été ajoutés ou
-refondus le 2026-10-02.
+**Cinq tableaux de bord**, un fichier NDJSON chacun dans `k8s/elk/dashboards/`.
 
 | Fichier                | Ce qu'il montre                                                                                           | Objets | Données lues                                           |
 | ---------------------- | --------------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------ |
@@ -262,63 +233,42 @@ l'agrégation Elasticsearch équivalente, sont dans
   (`SCRIPTS.md`), qui transforme les rapports JSON de Trivy et de
   Dependency-Check en documents de l'index `microcrm-security`. Son historique
   est **rejoué** : huit commits scannés le 2026-10-02 avec la base de
-  vulnérabilités du jour, datés du commit. Aucun rapport Dependency-Check réel
-  n'y a été collecté, et le collecteur n'a jamais lu les rapports publiés par un
-  pipeline. Ces rapports existent depuis le 2026-10-03 en artefacts de
-  `trivy-fs`, `package-*` et `dependency-check-back` ; aucun job ne les passe au
-  collecteur, et l'index n'a pas été réalimenté depuis le 2026-10-02.
+  vulnérabilités du jour, datés du commit. Aucun job ne passe au collecteur les
+  rapports publiés par `trivy-fs`, `package-*` et `dependency-check-back` :
+  l'index reflète le 2026-10-02.
 - **Le tableau de disponibilité ne mesure pas une disponibilité.** Il montre une
   présence de logs, en staging seulement, sur un minikube éteint la nuit : 189
   heures sur 360 portent au moins une sonde, et ce n'est pas un taux de service.
-  Jusqu'au 2026-10-05, ses panneaux APM ne décrivaient que les conteneurs
-  d'essai lancés sur le poste ; ils reçoivent depuis les traces des pods de
-  staging et de production.
-- **Le tableau DORA a été refondu.** Construit le 2026-08-16, quand rien n'avait
-  été déployé, il affirmait encore « aucun déploiement réussi » dans son titre et
-  « Non mesurable » dans deux panneaux de texte écrits en dur. Il s'intitule
-  désormais « MicroCRM — métriques DORA (quatre indicateurs, fenêtre de
-  30 jours) », ses indicateurs sont des tuiles qui lisent la dernière collecte,
-  et sa période par défaut est passée de 90 à 30 jours — la fenêtre du
-  collecteur.
-
-Le premier tableau, celui de la supervision, tient en six panneaux : volume par
-conteneur, latence (p50/p95/p99), erreurs applicatives, erreurs HTTP,
-répartition des statuts, et une table des logs récents. C'est sur lui que
-portent les vérifications qui suivent.
+- **Le tableau DORA** s'intitule « MicroCRM — métriques DORA (quatre
+  indicateurs, fenêtre de 30 jours) ». Ses indicateurs sont des tuiles qui
+  lisent la dernière collecte, et sa période par défaut est de 30 jours — la
+  fenêtre du collecteur. Aucun texte n'y cite de chiffre écrit en dur : rien ne
+  peut y contredire l'index.
 
 **Le livrable n'est pas « des écrans dans Kibana », c'est un fichier.** Un
 tableau de bord qui n'existe que dans une instance disparaît avec elle — et
-celle-ci tourne sur un `emptyDir` de poste de développement. Les huit objets
-sauvegardés sont donc exportés dans `k8s/elk/dashboards/microcrm.ndjson`, vue de
-données comprise : un export qui l'oublierait produirait à la réimportation des
-panneaux vides et un message obscur.
+celle-ci tourne sur un minikube de poste de développement. Les objets
+sauvegardés sont donc exportés en NDJSON, vues de données comprises : un export
+qui les oublierait produirait à la réimportation des panneaux vides et un
+message obscur.
 
-Vérifié en supprimant d'abord les objets de l'instance, pour que le test soit
-froid et non un simple écrasement :
-
-```
-$ curl -X POST '…/api/saved_objects/_import?overwrite=true' \
-    -H 'kbn-xsrf: true' --form file=@k8s/elk/dashboards/microcrm.ndjson
-{"success": true, "successCount": 8, "warnings": []}
-```
-
-Et chaque panneau a été confronté à la même agrégation jouée directement contre
-Elasticsearch : mêmes chiffres des deux côtés, y compris la latence après
+Vérifié **à froid**, objets supprimés de l'instance avant l'import pour que le
+test ne soit pas un simple écrasement : `successCount` 8, 22, 18, 13 et 8, aucune
+erreur. Chaque panneau a été confronté à la même agrégation jouée directement
+contre Elasticsearch : mêmes chiffres des deux côtés, y compris la latence après
 conversion des secondes en millisecondes.
 
 ⚠️ **L'unité de `caddy.duration` est déclarée dans la vue de données**
 (`fieldFormatMap`, secondes → millisecondes), pas dans une formule de chaque
-panneau. Un panneau ajouté demain en hérite ; c'est aussi ce qui rend la vue de
-données indispensable à l'export.
+panneau. Un panneau ajouté en hérite ; c'est aussi ce qui rend la vue de données
+indispensable à l'export.
 
 ⚠️ **Un NDJSON écrit à la main ne s'importe pas.** Sans `typeMigrationVersion`,
 Kibana rejoue toute la chaîne de migration 7.x → 8.x et échoue sur
-`Cannot read properties of undefined (reading 'layers')`. Les objets doivent
-être créés par l'API puis exportés — jamais rédigés à la main. C'est écrit dans
-`k8s/elk/dashboards/README.md`, avec la commande de régénération. Les quatre
-fichiers du 2026-10-02 suivent la règle : leurs objets ont été créés par l'API,
-contrôlés à l'écran, puis exportés par Kibana. Leur réimport à froid, objets
-supprimés au préalable, rend `successCount` 22, 18, 13 et 8.
+`Cannot read properties of undefined (reading 'layers')`. Les objets sont créés
+par l'API ou dans l'interface, contrôlés à l'écran, puis exportés par Kibana —
+jamais rédigés à la main. La commande de régénération est dans
+`k8s/elk/dashboards/README.md`.
 
 ## 9. Les métriques DORA
 
@@ -331,69 +281,49 @@ réservées aux offres payantes. Sur le Free Tier, il faut les calculer soi-mêm
 depuis l'API — et le projet est mesurable sans jeton : le dépôt GitHub se
 miroite vers un projet GitLab **public**, où le pipeline tourne réellement.
 
-### 9.1 Ce que les chiffres disent, et il faut l'entendre
+### 9.1 Les valeurs de référence et les valeurs actuelles
 
-Recalculé le 2026-10-05 à 14 h 39 UTC, après le dernier déploiement de la
-release 1.0.1, sur les **67 pipelines** des 30 derniers jours, puis réinjecté
-dans `microcrm-dora` (21 documents). La colonne de gauche est la mesure du
-2026-09-23 (50 pipelines), rejouée à l'identique le 2026-10-02 sur 57 pipelines
-et le 2026-10-03 par le job `dora-metrics` (66 pipelines) : aucun déploiement
-n'avait eu lieu entre-temps.
+Valeur de référence : la mesure du 2026-09-23 (50 pipelines), au lendemain des
+premiers déploiements réussis. Valeur actuelle : recalculée le 2026-10-05 à
+14 h 39 UTC, après le dernier déploiement de la release 1.0.1, sur les
+**67 pipelines** des 30 derniers jours, puis injectée dans `microcrm-dora`
+(21 documents).
 
-| Indicateur                            | 2026-09-23                   | 2026-10-05                        | Observations |
+| Indicateur                            | Référence (2026-09-23)       | Actuel (2026-10-05)               | Observations |
 | ------------------------------------- | ---------------------------- | --------------------------------- | ------------ |
 | Fréquence de déploiement              | 0,1667 par jour              | **0,2667** par jour               | 5 → 8        |
 | Délai de mise en production (médiane) | 1,38 h (min 0,64 / max 4,87) | **4,76 h** (min 0,64 / max 40,88) | 5 → 8        |
 | Temps de rétablissement (médiane)     | 2,14 h (min 0,09 / max 4,18) | **2,21 h** (min 0,09 / max 4,18)  | 2 → 4        |
 | Taux d'échec des changements          | 66,67 % (6 sur 9)            | **60 %** (9 sur 15)               | 9 → 15       |
 
-**La chaîne aboutit depuis le 2026-09-22.** Quinze jobs de déploiement ont
-réellement tourné sur la fenêtre, huit ont réussi, et deux rollbacks ont été
-joués. Staging et production tournent avec des images du registry GitLab,
-posées par la CI ; la production en `1.0.1` depuis le 2026-10-05.
+Sur la fenêtre, quinze jobs de déploiement ont réellement tourné, huit ont
+réussi, et deux rollbacks ont été joués. Staging et production tournent avec
+des images du registry GitLab, posées par la CI ; la production en `1.0.1`. Les
+jobs de déploiement tournent sur un runner auto-hébergé et atteignent le
+cluster par le tunnel de l'agent GitLab ([TERRAFORM.md](TERRAFORM.md) §4.1) ;
+le garde-fou `exige_namespace` fait échouer un job dont le namespace n'est pas
+défini, plutôt que de le laisser déployer dans `default`.
 
-⚠️ **Le taux d'échec du 2026-10-05 compte des pannes de la plateforme.** Les
-trois `deploy-production` en échec ce jour-là (07:57, 13:55, 14:00) sont tombés
-sur un minikube arrêté par un redémarrage de Docker Desktop ; aucun n'a rien
-écrit en production, et le même job est passé ensuite sans changement. DORA les
-compte comme des échecs de changement, et le collecteur ne peut pas faire
-autrement : GitLab les classe en `script_failure`, comme un manifeste faux. Sans
-eux, le taux serait de 50 % (6 sur 12). Le chiffre publié reste 60 % — c'est
-une limite du poste de développement comme environnement, pas une erreur de
-mesure à corriger après coup.
+⚠️ **Le taux d'échec compte des pannes de la plateforme.** Les trois
+`deploy-production` en échec le 2026-10-05 sont tombés sur un minikube arrêté ;
+aucun n'a rien écrit en production, et le même job est passé ensuite sans
+changement. DORA les compte comme des échecs de changement, et le collecteur ne
+peut pas faire autrement : GitLab les classe en `script_failure`, comme un
+manifeste faux. Sans eux, le taux serait de 50 % (6 sur 12). Le chiffre publié
+reste 60 % : c'est une limite du poste de développement comme environnement,
+pas une erreur de mesure.
 
-Ce n'est pas le mécanisme qui a changé — il n'a pas bougé — mais une contrainte
-et trois défauts :
+⚠️ **Ces chiffres n'ont pas de valeur statistique.** Un taux d'échec sur 15
+tentatives, un MTTR sur 4 observations : ce sont des faits, pas des tendances.
+Les huit déploiements réussis tiennent sur trois journées (22 et 23 septembre,
+5 octobre). Le délai de mise en production mesure surtout l'intervalle entre un
+commit et le clic qui déclenche le déploiement — les deux jobs sont
+`when: manual` : son maximum de 40,88 h est un `deploy-staging` fusionné un
+samedi et déployé le lundi. Deux des temps de rétablissement (4,17 h et 0,25 h)
+mesurent la relance d'un cluster, pas la réparation d'une application.
 
-- **Un runner auto-hébergé** a été enregistré sur le poste. Le Free Tier n'est
-  plus consommé du tout, donc `ci_quota_exceeded` ne peut plus arrêter un
-  pipeline. C'est ce qui a rendu les trois défauts suivants observables : ils
-  étaient là avant, aucun job n'allait assez loin pour les rencontrer.
-- **`deploy-*` recevait un kubeconfig par variable de projet**
-  (`KUBECONFIG: $KUBE_CONFIG`), lequel désigne le serveur d'API en `127.0.0.1` —
-  dans un conteneur de job, c'est le conteneur lui-même, donc une adresse
-  structurellement injoignable. Ces jobs passent maintenant par le tunnel de
-  l'agent GitLab, comme `terraform-apply-*` le faisait déjà.
-- **Le RBAC de l'agent ne couvrait pas les objets applicatifs.** Il a été élargi
-  aux Deployments, Services, Ingress, ConfigMaps et Secrets, avec un
-  resserrement volontaire sur les Secrets : ni `list`, ni `watch`, ni `delete`.
-- **`$STAGING_NAMESPACE` n'était pas définie côté GitLab**, et le job déployait
-  dans `default` en silence. Le garde-fou `exige_namespace` fait désormais
-  échouer le job — un déploiement qui atterrit ailleurs qu'annoncé est pire
-  qu'un déploiement qui n'a pas lieu.
-
-⚠️ **Ces chiffres n'ont pas de valeur statistique, et il faut le dire avant de
-les commenter.** Un taux d'échec sur 15 tentatives, un MTTR sur 4 observations :
-ce sont des faits, pas des tendances. Les huit déploiements réussis tiennent
-sur trois journées : les 22 et 23 septembre, quand la chaîne a été débloquée,
-et le 5 octobre. Le délai de mise en production mesure surtout l'intervalle
-entre un commit et le clic qui déclenche le déploiement — les deux jobs restent
-`when: manual` : son maximum de 40,88 h est le `deploy-staging` de `5296658a`,
-fusionné le samedi 3 octobre et déployé le lundi 5. Les deux temps de
-rétablissement nouveaux (4,17 h et 0,25 h) mesurent la relance d'un cluster,
-pas la réparation d'une application.
-
-Les dix-sept jobs retenus, dans l'ordre :
+Les dix-sept jobs retenus, dans l'ordre (heure de fin, UTC ; les annotations
+entre parenthèses ne sont pas produites par le collecteur) :
 
 ```
 2026-09-22T14:36:39  deploy-production    failed   main
@@ -415,29 +345,26 @@ Les dix-sept jobs retenus, dans l'ordre :
 2026-10-05T14:11:11  deploy-production    success  v1.0.1
 ```
 
-Les horaires sont ceux de fin de job, en UTC, tels que l'index les porte ; les
-annotations entre parenthèses ne sont pas produites par le collecteur. Le
-rollback de production a été exercé pour de bon le 2026-09-23, puis suivi d'un
+Le rollback de production a été exercé le 2026-09-23, puis suivi d'un
 redéploiement ; la production est passée ensuite sur `08a216b0`, puis sur
 `1.0.1`, la même image sous son numéro de version.
 
 ### 9.2 ⚠️ Zéro mesuré et absence de donnée ne sont pas la même chose
 
-C'est la règle qui gouverne tout le collecteur, et la seule qui puisse le rendre
-utile plutôt que décoratif. Elle ne se voit plus dans la sortie d'aujourd'hui —
-les quatre indicateurs ont une valeur — mais c'est elle qui a tenu pendant les
-deux mois où le projet n'avait rien déployé :
+C'est la règle qui gouverne tout le collecteur. Sur une fenêtre sans aucun
+déploiement réussi :
 
-- `deployment_frequency` valait alors **`0.0`** : c'était une mesure. Zéro
-  déploiement avait bien eu lieu, sur une fenêtre connue, après sept tentatives.
-- `lead_time_for_changes` valait **`null`**, accompagné de sa raison : il
-  n'existait aucune arrivée en production vers laquelle mesurer un délai.
+- `deployment_frequency` vaut **`0.0`** : c'est une mesure. Zéro déploiement a
+  bien eu lieu, sur une fenêtre connue.
+- `lead_time_for_changes` vaut **`null`**, accompagné de sa raison : il n'existe
+  aucune arrivée en production vers laquelle mesurer un délai.
 
-Rendre le second en `0` aurait affiché un délai de mise en production de zéro
-heure, c'est-à-dire **la performance parfaite** — là où il n'y avait simplement
+Rendre le second en `0` afficherait un délai de mise en production de zéro
+heure, c'est-à-dire **la performance parfaite** — là où il n'y a simplement
 jamais eu de mise en production. Un test de `run_tests.sh` échoue si un
-indicateur sans donnée se met à ressortir en `0`, et il n'a aucune raison de
-partir : le cas se reproduit dès qu'on interroge une fenêtre sans déploiement.
+indicateur sans donnée ressort en `0`. Le tableau de bord respecte la même
+règle : sur une période où l'index porte `valeur: null`, les tuiles affichent
+`N/A`, pas `0` (`k8s/elk/dashboards/README.md`).
 
 ### 9.3 Comment un rollback est compté, et la limite qu'on assume
 
@@ -450,10 +377,10 @@ puisse les distinguer d'un job simplement rouge :
 "details": { "tentatives": 15, "echecs_directs": 7, "reussites_annulees": 2 }
 ```
 
-Le collecteur retient par ailleurs les jobs en `success` **et** en `failed`
-(`STATUTS_EXECUTES`, ligne 103 de `scripts/ci/collect_dora.py`) : un job qui a
-tourné compte, quel que soit son verdict. `manual`, `skipped`, `created` et
-`canceled` sont exclus — ils décrivent des déploiements qui n'ont pas eu lieu.
+Le collecteur retient les jobs en `success` **et** en `failed`
+(`STATUTS_EXECUTES` dans `scripts/ci/collect_dora.py`) : un job qui a tourné
+compte, quel que soit son verdict. `manual`, `skipped`, `created` et `canceled`
+sont exclus — ils décrivent des déploiements qui n'ont pas eu lieu.
 
 ⚠️ **La limite est dans l'appariement, et elle est purement chronologique.** Un
 rollback est rattaché au dernier déploiement réussi qui le précède, sans que son
@@ -469,16 +396,13 @@ issue ni son environnement n'entrent en ligne de compte. Les deux
 
 Une seule annulation a donc réellement eu lieu, là où le collecteur en compte
 deux. Un appariement exact — rollback abouti, et même environnement — ramènerait
-le taux d'échec de **60 % à 53,33 %** (8 échecs sur 15) ; au 2026-09-23, de
-66,67 % à 55,56 %.
+le taux d'échec de **60 % à 53,33 %** (8 échecs sur 15).
 
-**Ce comptage est assumé, pas corrigé**, et le choix se justifie dans un seul
-sens. Un collecteur pessimiste surévalue le taux d'échec ; l'erreur inverse
-produirait un chiffre flatteur que personne n'aurait les moyens de contredire.
-Entre les deux, on garde celui qui ne se vante pas — à la condition stricte
-d'écrire ce qu'il rate, ce que fait ce paragraphe. Le corriger reste possible et
-demanderait deux choses : lire l'`environment:name` du job de rollback, et ne
-retenir que les rollbacks en `success`.
+**Ce comptage est assumé, pas corrigé.** Un collecteur pessimiste surévalue le
+taux d'échec ; l'erreur inverse produirait un chiffre flatteur que personne
+n'aurait les moyens de contredire. Le corriger demanderait deux choses : lire
+l'`environment:name` du job de rollback, et ne retenir que les rollbacks en
+`success`.
 
 ### 9.4 Comment il est testé
 
@@ -488,20 +412,17 @@ est lent, et on finit par ne plus le croire.
 
 Deux jeux, et la distinction est délibérée :
 
-- `scripts/tests/fixtures/` — **réel**, enregistré verbatim depuis l'API : les
-  44 pipelines et les jobs des 7 pipelines ayant déclenché un déploiement ;
+- `scripts/tests/fixtures/` — **réel**, enregistré verbatim depuis l'API : 44
+  pipelines et les jobs des 7 pipelines ayant déclenché un déploiement. Il date
+  d'avant le premier déploiement réussi : rejoué, il rend `0,0` déploiement par
+  jour et 100 % d'échec, ce qui est correct pour la fenêtre qu'il décrit.
 - `scripts/tests/fixtures/dora-scenario-fabrique/` — **fabriqué**, et nommé pour
-  qu'on ne s'y trompe pas. Il contient ce que le jeu réel n'offre pas — des
-  déploiements réussis — sans quoi les formules du délai et du MTTR ne seraient
-  empruntées par aucun test. On ne vérifierait alors qu'une chose : la capacité
-  du collecteur à dire « je n'ai rien ».
+  qu'on ne s'y trompe pas. Il contient des déploiements réussis, sans quoi les
+  formules du délai et du MTTR ne seraient empruntées par aucun test.
 
-⚠️ **Les fixtures réelles datent d'avant le 2026-09-22** : rejouées, elles
-rendent encore `0,0` déploiement par jour et 100 % d'échec, ce qui est correct
-pour la fenêtre qu'elles décrivent. Elles n'ont pas été réenregistrées, et le
-jeu fabriqué reste donc nécessaire. Le jour où on les rafraîchira, la sortie de
-référence des tests changera avec elles — c'est le prix d'une fixture verbatim,
-et il est préférable à celui d'un test qui appelle le réseau.
+Réenregistrer les fixtures réelles changerait la sortie de référence des tests
+avec elles : c'est le prix d'une fixture verbatim, préférable à celui d'un test
+qui appelle le réseau.
 
 ### 9.5 Rejouer
 
@@ -514,56 +435,42 @@ python3 scripts/ci/collect_dora.py --fixtures scripts/tests/fixtures --days 0
 
 # Injection dans Elasticsearch, pour le tableau de bord
 kubectl -n logging port-forward svc/elasticsearch 9200:9200 &
-python3 scripts/ci/collect_dora.py --project 84606666 --days 0 \
+python3 scripts/ci/collect_dora.py --project 84606666 --days 30 \
   --elasticsearch http://127.0.0.1:9200 --es-index microcrm-dora
 ```
 
-**Un job de CI exécute désormais ce collecteur** : `dora-metrics`
-(`.gitlab/ci/deploy.yml`), sur les pipelines de `develop`, de `main` et de tag.
-Il publie le résultat en artefact, `reports/dora.json`, conservé 30 jours.
-C'était l'action A3.3 du plan (`docs/plan-optimisation-release.md`).
+**Le job `dora-metrics`** (`.gitlab/ci/deploy.yml`) exécute ce collecteur sur
+les pipelines de `develop`, de `main` et de tag, et publie le résultat en
+artefact, `reports/dora.json`, conservé 30 jours.
 
-⚠️ **Deux limites, pour ne pas lui prêter plus qu'il ne fait.** Il n'alimente
-**pas** Elasticsearch : l'instance vit dans le cluster, sans adresse joignable
-depuis un conteneur de job, donc le tableau de bord Kibana reste rempli à la
-main par la troisième commande ci-dessus. Et le job, écrit le 2026-10-02, n'a
-encore tourné dans aucun pipeline : seul le script a été exécuté, en local.
+⚠️ **Il n'alimente pas Elasticsearch** : l'instance vit dans le cluster, sans
+adresse joignable depuis un conteneur de job. Le tableau de bord Kibana est donc
+rempli à la main par la troisième commande ci-dessus, après un déploiement.
 
 ## 10. Les traces : OpenTelemetry et Elastic APM
 
-Depuis le 2026-10-01 (commit `143adb7`), le dépôt sait tracer chaque requête
-traitée par le back : un agent OpenTelemetry dans la JVM, APM Server dans la
-stack ELK, et l'application APM de Kibana pour lire le tout. Aucune ligne du
-code Java n'a changé.
+Le back est tracé requête par requête : un agent OpenTelemetry dans la JVM, APM
+Server dans la stack ELK, et l'application APM de Kibana pour lire le tout.
+Aucune ligne du code Java n'est modifiée. Les pods de staging (`back:5296658a`)
+et de production (`back:1.0.1`) émettent des traces depuis le 2026-10-05.
 
-**État au 2026-10-05 : la chaîne est en service dans le cluster.** Jusqu'au
-2026-10-02, elle n'était éprouvée que depuis le poste : les pods `back`
-exécutaient des images du 2026-09-23, antérieures à l'agent. Le 2026-10-05,
-staging a reçu `back:5296658a` et la production `back:1.0.1`, avec la ConfigMap
-qui active l'agent ; des traces arrivent des deux environnements. Le §10.4 dit
-ce qui a été observé à chaque étape ; tout le reste décrit ce que le code fait.
+### 10.1 Ce que ça mesure, et ce que ça ne mesure pas
 
-### 10.1 Ce que ça comble, et ce que ça ne comble pas
-
-Ce document écrivait jusqu'ici qu'il n'existait « aucune donnée de latence » de
-l'API. C'est devenu faux, mais **en partie seulement**, et la frontière mérite
-d'être tracée précisément :
-
-| Ce qu'on veut savoir                               | Sans les traces                | Avec les traces                                            |
-| -------------------------------------------------- | ------------------------------ | ---------------------------------------------------------- |
-| Latence de l'API, par point d'entrée               | rien                           | **mesurée** : p50, p95, p99 par transaction                |
-| Débit de l'API (requêtes par minute)               | rien                           | **mesuré**, calculé par APM Server depuis les traces       |
-| Taux d'échec, par point d'entrée                   | à déduire de `log.level`       | **mesuré** : `event.outcome` de chaque transaction         |
-| Où passe le temps d'une requête (contrôleur, JDBC) | rien                           | **mesuré** : la cascade des spans                          |
-| Les logs écrits par une requête donnée             | recherche à la main, par heure | **reliés** par `trace.id`, en staging                      |
-| Latence du front                                   | journal d'accès de Caddy (§5)  | inchangé — c'est toujours la seule mesure du front         |
-| CPU et mémoire des pods                            | rien                           | **toujours rien** : pas de `metrics-server`                |
-| Métriques de la JVM (tas, GC, threads)             | rien                           | **toujours rien** : `OTEL_METRICS_EXPORTER=none`, délibéré |
-| Ce que vit le navigateur de l'utilisateur          | rien                           | **toujours rien** : le front n'est pas instrumenté         |
+| Ce qu'on veut savoir                               | Sans les traces                | Avec les traces                                      |
+| -------------------------------------------------- | ------------------------------ | ---------------------------------------------------- |
+| Latence de l'API, par point d'entrée               | rien                           | **mesurée** : p50, p95, p99 par transaction          |
+| Débit de l'API (requêtes par minute)               | rien                           | **mesuré**, calculé par APM Server depuis les traces |
+| Taux d'échec, par point d'entrée                   | à déduire de `log.level`       | **mesuré** : `event.outcome` de chaque transaction   |
+| Où passe le temps d'une requête (contrôleur, JDBC) | rien                           | **mesuré** : la cascade des spans                    |
+| Les logs écrits par une requête donnée             | recherche à la main, par heure | **reliés** par `trace.id`, en staging                |
+| Latence du front                                   | journal d'accès de Caddy (§5)  | inchangé — c'est la seule mesure du front            |
+| CPU et mémoire des pods                            | rien                           | **rien** : pas de `metrics-server`                   |
+| Métriques de la JVM (tas, GC, threads)             | rien                           | **rien** : `OTEL_METRICS_EXPORTER=none`, délibéré    |
+| Ce que vit le navigateur de l'utilisateur          | rien                           | **rien** : le front n'est pas instrumenté            |
 
 Autrement dit : les traces mesurent **ce que l'API fait de ses requêtes**, pas
-**ce que ses pods consomment**. Les `resources` des Deployments
-restent des estimations (§12).
+**ce que ses pods consomment**. Les `resources` des Deployments restent des
+estimations (§12).
 
 ### 10.2 La chaîne, maillon par maillon
 
@@ -634,9 +541,8 @@ _Source versionnée : `docs/schemas/traces-apm.mmd`, reprise dans
 5. **Elasticsearch** range le tout dans les data streams standard d'APM —
    `traces-apm-default` pour les transactions et les spans, `metrics-apm.*` pour
    les agrégats. Leurs templates ne viennent ni d'APM Server ni de Kibana : c'est
-   le plugin `apm-data` d'Elasticsearch qui les installe, et ils portent une
-   rétention — relevée : 10 jours pour les traces, 90 jours pour les agrégats à
-   la minute.
+   le plugin `apm-data` d'Elasticsearch qui les installe, avec une rétention de
+   10 jours pour les traces et de 90 jours pour les agrégats à la minute.
 6. **Kibana** lit ces data streams dans son application APM, sans aucun réglage.
 7. **La corrélation avec les logs** ne passe pas par APM Server. L'agent écrit
    l'identifiant de la trace dans le MDC Logback, l'encodeur ECS le recopie dans
@@ -685,15 +591,14 @@ des histogrammes HTTP, toutes les 60 secondes, dans un data stream de plus sur
 un PVC de 5 Gio, pour des séries qu'aucun écran n'exploite. Réversible sans
 reconstruire l'image : passer la clé à `otlp`.
 
-**Les logs ne sont pas exportés en OTLP, et ce n'est pas négociable.** Ils
-arrivent déjà par Filebeat. Les exporter aussi les indexerait deux fois, dans
-deux data streams différents, et chaque ligne apparaîtrait en double sous sa
-trace.
+**Les logs ne sont pas exportés en OTLP.** Ils arrivent déjà par Filebeat. Les
+exporter aussi les indexerait deux fois, dans deux data streams différents, et
+chaque ligne apparaîtrait en double sous sa trace.
 
 **Le nom du service est aligné sur celui des logs.** `OTEL_SERVICE_NAME` vaut
 `microcrm`, comme le `service.name` des logs ECS (`spring.application.name`).
 L'onglet « Logs » d'un service dans Kibana APM filtre sur ce champ : avec deux
-noms différents, il resterait vide. On a aligné les traces sur les logs plutôt
+noms différents, il resterait vide. Les traces sont alignées sur les logs plutôt
 que l'inverse, pour ne pas changer le JSON déjà indexé.
 
 **L'environnement est une étiquette, et sa valeur de base est volontairement
@@ -715,94 +620,57 @@ le même Elasticsearch.
 **Aucune authentification, et le périmètre est tenu par le réseau.** Un jeton
 sur APM Server ne protégerait qu'une porte d'une maison sans serrure —
 Elasticsearch lui-même n'en a pas (§12). Le Service est en `ClusterIP`, sans
-Ingress, et une `NetworkPolicy` posée par Terraform
+Ingress, et une `NetworkPolicy` décrite dans Terraform
 (`terraform/environments/logging/main.tf`) n'ouvre le port 8200 qu'aux
 namespaces `microcrm-staging` et `microcrm-production`. C'est la **seule**
 policy du namespace `logging`, et elle ne sélectionne que les pods d'APM
 Server.
 
 **Le dimensionnement est mesuré, pas arrondi.** 50m / 64Mi en requests, 500m /
-256Mi en limits. La mémoire d'APM Server a été relevée sur ce cluster : environ
+256Mi en limits. La mémoire d'APM Server relevée sur ce cluster : environ
 21 Mio au repos, 54 Mio au pic d'une rafale de 1 000 requêtes OTLP en 4,3
-secondes. Le quota du namespace n'a pas été relevé pour lui : au pic d'un
-double rollout Kibana + APM Server, observé le 2026-09-29, il affichait
-`limits.memory 5888Mi/6Gi`. **La marge restante est donc mince** — 256 Mio — et
-le prochain composant ajouté à `logging` devra relever le quota.
+secondes.
 
-### 10.4 Ce qui arrive réellement — relevés du 2026-10-02 et du 2026-10-05
+**La file de l'agent est bornée, et elle jette en silence.** L'agent garde
+2 048 spans en attente par défaut ; pleine, elle perd les suivants sans erreur
+côté application. C'est la raison du `RollingUpdate` d'APM Server : pas de
+coupure de la réception pendant un redémarrage.
 
-**Dans le cluster, le 2026-10-05 : les traces arrivent.** Après le déploiement
-de `5296658a` en staging (06:52 UTC), puis de `08a216b0` en production (12:07
-UTC, promue `1.0.1` à 14:10), des requêtes ont été envoyées aux deux API :
+### 10.4 Mesures
+
+**Dans le cluster, le 2026-10-05**, après le déploiement de `5296658a` en
+staging et de `1.0.1` en production, sur des requêtes envoyées aux deux API :
 
 | Ce qui a été regardé                       | Ce qui a été trouvé                                                                                            |
 | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
 | Images du back                             | staging `back:5296658a`, production `back:1.0.1` (même digest que `back:08a216b0`), agent compris              |
 | ConfigMap `microcrm-config`                | 11 clés dans chaque namespace, dont `JAVA_TOOL_OPTIONS` et `OTEL_RESOURCE_ATTRIBUTES=deployment.environment=…` |
-| `traces-apm*`, matin                       | **534** documents `service.environment=staging` en 15 minutes                                                  |
+| `traces-apm*`, staging                     | **534** documents `service.environment=staging` en 15 minutes                                                  |
 | `traces-apm*`, après la mise en production | **187** documents `production` et **180** `staging` en 10 minutes                                              |
 | Logs portant un `trace.id`                 | présents dans les logs du back                                                                                 |
-| Pod `back` de production                   | `Running`, 0 redémarrage à 14 h 50 UTC ; `/actuator/health` à `UP`                                             |
-| `NetworkPolicy` d'APM Server               | toujours **absente** (`terraform-apply-logging` non rejoué)                                                    |
+| Pod `back` de production                   | `Running`, 0 redémarrage ; `/actuator/health` à `UP`                                                           |
+| `NetworkPolicy` d'APM Server               | **absente** du cluster : `terraform-apply-logging` n'a pas été rejoué depuis son ajout                         |
 
-⚠️ **Ce que ce relevé ne dit pas.** Le trafic est provoqué, pas celui
-d'utilisateurs : il prouve que la chaîne fonctionne de bout en bout dans le
-cluster, il ne fournit pas une latence de référence en service, qui n'a pas été
-relevée. Les chiffres de latence ci-dessous restent ceux de l'essai local du
-2026-10-02. La consommation mémoire du pod avec l'agent n'est pas mesurée
-davantage (pas de `metrics-server`) ; il n'a simplement pas été tué.
+Le trafic est provoqué, pas celui d'utilisateurs : la mesure prouve que la
+chaîne fonctionne de bout en bout dans le cluster, elle ne fournit pas une
+latence de référence en service.
 
-**Dans le cluster, le 2026-10-02 : rien encore.** C'était alors le constat le
-plus important de cette section, et il contredisait ce qu'on croirait en lisant
-les manifestes.
+**Sur un conteneur local, le 2026-10-02.** La seule mesure de latence de l'API
+disponible vient d'un essai sur le poste : l'image du back avec l'agent, lancée
+dans un conteneur Docker avec les huit clés de la ConfigMap, APM Server atteint
+par `kubectl port-forward`, environnement étiqueté `verification-poste`. 303
+requêtes HTTP en 18 secondes :
 
-| Ce qui a été regardé                            | Ce qui a été trouvé                                                                            |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| APM Server                                      | `1/1 Running`, version 8.19.7, répond sur `GET /`                                              |
-| Data streams APM dans Elasticsearch             | créés le 2026-09-29 : `traces-apm-default` (rétention 10 j), trois `metrics-apm.*.1m` (90 j)   |
-| Documents dans `traces-apm*`                    | **0**                                                                                          |
-| Image du back en staging                        | `back:bf272532`, construite le 2026-09-23 — `/app` ne contient que `microcrm.jar`, pas l'agent |
-| Image du back en production                     | `back:9f4168b3`, construite le 2026-09-23 — même constat                                       |
-| ConfigMap `microcrm-config` des deux namespaces | 3 clés ; ni `JAVA_TOOL_OPTIONS`, ni aucune clé `OTEL_*`                                        |
-| Logs portant un `trace.id`                      | **0** sur 92 145 documents `microcrm-logs-*`                                                   |
-| `NetworkPolicy` d'APM Server dans `logging`     | **absente** : `kubectl -n logging get networkpolicy` ne renvoie rien                           |
-| `kubectl top pods`                              | `Metrics API not available` — pas de `metrics-server`                                          |
+| Ce qui a été relevé                        | Valeur                                                                                    |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| Services vus par Kibana APM                | **1** : `microcrm`, agent `opentelemetry/java` 2.31.1, environnement `verification-poste` |
+| Documents dans `traces-apm-default`        | **1 536** : 325 transactions et 1 211 spans                                               |
+| Dont transactions HTTP                     | 303 ; les 22 autres sont les requêtes JDBC et les appels de repository du démarrage       |
+| Spans                                      | 904 internes à l'application, 307 de base de données (`hsqldb`)                           |
+| Agrégats calculés par APM Server           | présents dans quatre data streams `metrics-apm.*.1m`, moins de deux minutes après         |
+| Échecs d'export dans le journal de l'agent | 0                                                                                         |
 
-L'explication tenait en une ligne : le commit des traces était sur `develop`,
-et rien n'avait été déployé depuis le 2026-09-23. Les trois exécutions
-suivantes de `develop` avaient échoué pour **trois raisons différentes**,
-relevées job par job dans l'API GitLab :
-
-| Pipeline              | Ce qui a échoué                                                                                             |
-| --------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `#2892321711` (29/09) | Tous les jobs en `stuck_pending_no_matching_runners` : aucun runner disponible                              |
-| `#2901472002` (01/10) | `trivy-fs` et `terraform-plan` ; la cause de l'échec de `terraform-plan` n'a pas été recherchée             |
-| `#2902337581` (01/10) | `package-back` : cinq CVE HIGH de Jackson dans l'image, corrigées sur la branche `fix/jackson-databind-cve` |
-
-Seul le troisième tenait à Jackson. Son correctif (Jackson 2.21.7) a été
-fusionné le 2026-10-03 ; le pipeline suivant de `develop` (`#2909284076`) a été
-vert, et c'est lui qui a produit la première image du back avec l'agent au
-registry. Le `terraform apply` de `logging`, lui, n'a toujours pas été rejoué
-depuis l'ajout de la `NetworkPolicy`.
-
-**La chaîne elle-même, éprouvée depuis le poste.** Pour ne pas en rester à une
-lecture de manifestes, l'image `microcrm-back:otel` — construite le 2026-09-29
-depuis le `Dockerfile` qui embarque l'agent — a été lancée dans un conteneur
-Docker local, avec les huit clés de la ConfigMap. Deux seules différences :
-l'adresse d'APM Server, atteint par `kubectl port-forward`, et l'environnement,
-étiqueté `verification-poste` pour que ces traces ne passent pas pour celles de
-staging. 303 requêtes HTTP lui ont été envoyées en 18 secondes.
-
-| Ce qui a été relevé (2026-10-02, 19:30 UTC) | Valeur                                                                                    |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Services vus par Kibana APM                 | **1** : `microcrm`, agent `opentelemetry/java` 2.31.1, environnement `verification-poste` |
-| Documents dans `traces-apm-default`         | **1 536** : 325 transactions et 1 211 spans                                               |
-| Dont transactions HTTP                      | 303 ; les 22 autres sont les requêtes JDBC et les appels de repository du démarrage       |
-| Spans                                       | 904 internes à l'application, 307 de base de données (`hsqldb`)                           |
-| Agrégats calculés par APM Server            | présents dans quatre data streams `metrics-apm.*.1m`, moins de deux minutes après         |
-| Échecs d'export dans le journal de l'agent  | 0                                                                                         |
-
-La latence, par transaction — ce qui n'existait nulle part avant :
+La latence, par transaction :
 
 | Transaction              | Requêtes | p50     | p95     | p99      | Statuts            |
 | ------------------------ | -------- | ------- | ------- | -------- | ------------------ |
@@ -816,37 +684,31 @@ La latence, par transaction — ce qui n'existait nulle part avant :
 `GET /organizations` (100 requêtes chacun).
 
 **La corrélation, constatée des deux côtés.** Les lignes JSON écrites par le
-conteneur pendant une requête portent `"trace.id"` et `"span.id"` — trois
-lignes seulement, l'application ne journalisant rien par requête. Le `trace.id`
-de l'une d'elles (`7bf2a72e…`) se retrouve dans `traces-apm-default`, sur la
-transaction `GET /actuator/health` qui l'a produite. Ce qui n'est **pas**
-constaté : l'onglet « Logs » de Kibana, puisque les logs d'un conteneur local
-ne passent pas par Filebeat.
+conteneur pendant une requête portent `"trace.id"` et `"span.id"`, et le
+`trace.id` de l'une d'elles se retrouve dans `traces-apm-default`, sur la
+transaction qui l'a produite.
 
 **Le surcoût de l'agent, mesuré une fois.** Même image, même série de requêtes,
 avec et sans `JAVA_TOOL_OPTIONS` : démarrage de Spring Boot en 3,39 s contre
 2,45 s, et 408 Mio contre 292 Mio de mémoire après la série (`docker stats`).
 Une seule mesure, sur un conteneur sans limite mémoire : c'est un ordre de
-grandeur, pas un dimensionnement. Il est tout de même nettement au-dessus des
-« quelques dizaines de Mio » qu'estimait jusque-là le commentaire de
-`k8s/base/back-deployment.yaml` : ce commentaire a été corrigé le 2026-10-02
-pour citer la mesure. Les valeurs de `resources`, elles, n'ont pas été
-modifiées — une mesure unique, sans limite mémoire, ne suffit pas à les
-recaler — et l'écart reste à confronter à la limite de 768 Mio du pod.
+grandeur, pas un dimensionnement. Le commentaire de
+`k8s/base/back-deployment.yaml` cite cette mesure ; les valeurs de `resources`
+ne sont pas recalées sur elle, et l'écart reste à confronter à la limite de
+768 Mio du pod.
 
 ![Kibana APM, liste des services le 2 octobre 2026 : un seul service, microcrm, environnement verification-poste, latence moyenne 4,6 ms, débit 0,2 transaction par minute sur 24 heures, taux d'échec 0 %.](docs/captures/kibana-apm-services-2026-10-02.png)
 
 ![Kibana APM, transactions du service microcrm le 2 octobre 2026 : courbes de latence, de débit et de taux d'échec, puis la table des transactions par route, GET /{repository} en tête.](docs/captures/kibana-apm-transactions-microcrm-2026-10-02.png)
 
-⚠️ **Trois réserves sur ces chiffres.** Ce sont les latences d'un conteneur
-local, sur un poste chargé, avec une base de démonstration presque vide : elles
-prouvent que la mesure existe, pas ce que vaut l'API de staging. La seconde
-capture, prise quelques minutes après le relevé, agrège aussi les requêtes d'un
-autre essai local (environnement `demo-alerting`) : ses chiffres diffèrent donc
-du tableau. Et ces traces d'essai restent dans Elasticsearch jusqu'à leur
-expiration, dix jours plus tard ; elles se reconnaissent à leur environnement.
+⚠️ **Réserves sur ces chiffres.** Ce sont les latences d'un conteneur local, sur
+un poste chargé, avec une base de démonstration presque vide : elles prouvent
+que la mesure existe, pas ce que vaut l'API de staging. La seconde capture
+agrège aussi les requêtes d'un autre essai local (environnement
+`demo-alerting`) : ses chiffres diffèrent donc du tableau. Les traces d'essai se
+reconnaissent à leur environnement et expirent après dix jours.
 
-### 10.5 Les pièges rencontrés
+### 10.5 Les pièges
 
 Ils sont dans les commentaires du code. Ils sont repris ici parce qu'aucun ne
 produit de message d'erreur utile.
@@ -865,10 +727,10 @@ par minute.
 est absent, la JVM refuse de démarrer (`Error opening zip file or JAR manifest
 missing`) et le pod boucle en `CrashLoopBackOff`. Or `kubectl rollout undo` —
 donc `rollback.sh`, et l'annulation automatique de `deploy.sh` — ramène l'image
-précédente mais laisse la ConfigMap. Revenir à une image construite **avant**
-le commit `143adb7` avec `JAVA_TOOL_OPTIONS` en place, c'est un pod neuf qui ne
-démarre jamais. L'ancien reste en service grâce à `maxUnavailable: 0`, mais le
-rollback n'aboutit pas. Dans ce cas précis : retirer d'abord la clé.
+précédente mais laisse la ConfigMap. Revenir à une image qui n'embarque pas
+l'agent avec `JAVA_TOOL_OPTIONS` en place, c'est un pod neuf qui ne démarre
+jamais. L'ancien reste en service grâce à `maxUnavailable: 0`, mais le rollback
+n'aboutit pas. Dans ce cas précis : retirer d'abord la clé.
 
 **Les noms de champs décident de tout.** Par défaut l'agent écrit `trace_id` et
 `span_id` dans le MDC, que Kibana ne relie à rien : ECS attend `trace.id` et
@@ -898,21 +760,16 @@ plus dans la cascade.
 `Picked up JAVA_TOOL_OPTIONS: …` sur la sortie d'erreur au démarrage. Filebeat
 l'indexe telle quelle.
 
-**La file de l'agent est bornée, et elle jette en silence.** L'agent garde
-2 048 spans en attente par défaut ; pleine, elle perd les suivants sans erreur
-côté application. C'est la raison du `RollingUpdate` d'APM Server : pas de
-coupure de la réception pendant un redémarrage.
-
-**Deux faux positifs Trivy, écrits comme tels** (commit `6d600d1`,
-`.trivyignore.yaml`). `DS-0031` signale tout `ENV` dont le nom contient `KEY` :
-les deux variables de renommage ci-dessus en font partie, et « key » y désigne
-une clé de MDC. `KSV-0109` cherche le mot « secret » dans les valeurs d'une
-ConfigMap : il le trouve dans un commentaire d'`apm-server.yml`. Les deux
-exceptions sont limitées à leur fichier et expirent le 2026-12-31. Et un point
-qui n'est pas un faux positif : Trivy voit le jar de l'agent comme **un seul
-paquet**, ses dépendances embarquées lui sont invisibles. Un « 0 vulnérabilité »
-sur ce jar n'est pas un certificat ; c'est le SBOM publié avec l'agent qu'il
-faut scanner à chaque montée de version.
+**Deux faux positifs Trivy, écrits comme tels** (`.trivyignore.yaml`).
+`DS-0031` signale tout `ENV` dont le nom contient `KEY` : les deux variables de
+renommage ci-dessus en font partie, et « key » y désigne une clé de MDC.
+`KSV-0109` cherche le mot « secret » dans les valeurs d'une ConfigMap : il le
+trouve dans un commentaire d'`apm-server.yml`. Les deux exceptions sont limitées
+à leur fichier et expirent le 2026-12-31. Et un point qui n'est pas un faux
+positif : Trivy voit le jar de l'agent comme **un seul paquet**, ses
+dépendances embarquées lui sont invisibles. Un « 0 vulnérabilité » sur ce jar
+n'est pas un certificat ; c'est le SBOM publié avec l'agent qu'il faut scanner à
+chaque montée de version.
 
 ### 10.6 Rejouer, et vérifier
 
@@ -965,22 +822,22 @@ Elastic partagent leur version, et chaque overlay pose son environnement.
   `microcrm-staging`. Les traces de production arrivent dans Kibana ; leur
   onglet « Logs » reste vide.
 - **Aucune authentification sur APM Server**, et la `NetworkPolicy` qui borne
-  son accès n'existe toujours pas dans le cluster (§10.4) ; une fois créée, le
+  son accès n'est pas appliquée dans le cluster (§10.4) ; une fois créée, le
   CNI par défaut de minikube ne l'appliquerait de toute façon pas. Sur ce
   cluster, n'importe quel pod peut y écrire des traces.
-- **Aucun échantillonnage n'est réglé** : l'agent garde son comportement par
-  défaut et trace toutes les requêtes, sondes du kubelet comprises. Sans
-  conséquence à ce débit ; à régler avant toute charge réelle.
-- **La chaîne est en service depuis le 2026-10-05, sans recul** (§10.4) : seul
-  du trafic provoqué l'a traversée, et aucune latence en service n'a été
-  relevée.
+- **Aucun échantillonnage n'est réglé** : l'agent trace toutes les requêtes,
+  sondes du kubelet comprises. Sans conséquence à ce débit ; à régler avant
+  toute charge réelle.
+- **Pas de latence en service** : seul du trafic provoqué a traversé la chaîne
+  dans le cluster. Les chiffres de latence disponibles sont ceux du conteneur
+  local (§10.4).
 - **Les noms de transaction sont ceux des routes de Spring Data REST**, pas
   ceux des ressources : `/persons` et `/organizations` sont confondus sous
   `GET /{repository}`. Les séparer demande de filtrer sur `url.path`.
 - **Le surcoût de l'agent n'est mesuré qu'une fois, hors cluster** (§10.4) :
   environ une seconde de démarrage et une centaine de Mio. Sous la limite de
   768 Mio et d'1 CPU du pod, rien n'est mesuré : le budget du `startupProbe`
-  (150 s) a été conservé par raisonnement, et `k8s/base/back-deployment.yaml`
+  (150 s) est conservé par raisonnement, et `k8s/base/back-deployment.yaml`
   dit lui-même que la mesure reste à faire.
 - **Une seule JVM, donc pas de trace « distribuée ».** Les traces décrivent ce
   qui se passe dans le back. Il n'y a ni second service ni base externe à
@@ -991,8 +848,7 @@ Elastic partagent leur version, et chaque overlay pose son environnement.
 
 ## 11. L'alerting
 
-Jusqu'au 2026-10-02, cette stack se regardait : rien ne prévenait. Huit règles
-d'alerte couvrent désormais trois familles — disponibilité, performance,
+Huit règles d'alerte couvrent trois familles — disponibilité, performance,
 sécurité. Elles sont versionnées dans `k8s/elk/alerting/`, installées par
 `scripts/monitoring/install_alerting.py`, et chacune a été déclenchée puis
 rétablie sur le cluster. Le détail règle par règle est dans
@@ -1001,10 +857,10 @@ seuils, les preuves et les limites.
 
 ### 11.1 Le mécanisme, et pourquoi celui-là
 
-**Des règles Kibana natives, de type `.es-query`, écrites en ES|QL.** Vérifié
-sur cette stack (8.19.7, licence `basic`, sécurité désactivée) : elles
-s'exécutent sans clé d'API ni utilisateur. ElastAlert n'a donc pas été déployé —
-un composant de moins à faire tourner et à mettre à jour.
+**Des règles Kibana natives, de type `.es-query`, écrites en ES|QL.** Sur cette
+stack (8.19.7, licence `basic`, sécurité désactivée), elles s'exécutent sans clé
+d'API ni utilisateur. ElastAlert n'est donc pas nécessaire — un composant de
+moins à faire tourner et à mettre à jour.
 
 **Le livrable est un dossier de fichiers, pas une liste dans Kibana.** Une règle
 créée à la souris vit dans l'index `.kibana` d'un pod et disparaît avec lui — et
@@ -1015,18 +871,18 @@ Kibana. C'est cet identifiant choisi qui rend l'installation idempotente :
 première exécution « 8 règles créées », seconde « 8 règles mises à jour »,
 toujours huit au total.
 
-Trois réglages ont été nécessaires, et chacun est un piège si on l'ignore.
+Trois réglages sont nécessaires, et chacun est un piège si on l'ignore.
 
 **1. La clé de chiffrement de Kibana.** Sans
 `xpack.encryptedSavedObjects.encryptionKey`, Kibana tire une clé au hasard à
-chaque démarrage. Constaté avant correction : `GET /api/alerting/_health`
-renvoyait `"has_permanent_encryption_key": false`, et
-`GET /api/actions/connectors` répondait **500**. Cette clé est un secret et le
-dépôt est public : elle n'est écrite dans aucun fichier. Elle vit dans le Secret
-`kibana-encryption-key` du namespace `logging`, créé hors dépôt avec une valeur
-aléatoire, et `k8s/elk/kibana-deployment.yaml` la lit par `secretKeyRef` —
-`optional: true`, pour qu'un `kubectl apply -k` sur un cluster neuf donne tout
-de même un Kibana qui démarre.
+chaque démarrage : `GET /api/alerting/_health` renvoie
+`"has_permanent_encryption_key": false`, et `GET /api/actions/connectors`
+répond **500**. Cette clé est un secret et le dépôt est public : elle n'est
+écrite dans aucun fichier. Elle vit dans le Secret `kibana-encryption-key` du
+namespace `logging`, créé hors dépôt avec une valeur aléatoire
+(`install_alerting.py --secret`), et `k8s/elk/kibana-deployment.yaml` la lit par
+`secretKeyRef` — `optional: true`, pour qu'un `kubectl apply -k` sur un cluster
+neuf donne tout de même un Kibana qui démarre.
 
 **2. Les connecteurs que la licence autorise.** Relu sur l'instance par
 `GET /api/actions/connector_types` :
@@ -1072,9 +928,9 @@ fichier. Les motifs surveillés par `secu-front-chemins-sensibles` sont `.env`,
 `.git`, `.aws`, `..`, `%2e%2e`, `etc/passwd`, `id_rsa`, `wp-`, `phpmyadmin`,
 `.php`, `cgi-bin` et `actuator`.
 
-**Ce que les données permettent, et ce qu'elles interdisent.** Les règles ont
-été écrites à partir de ce qui est réellement collecté, pas de ce qu'on
-aimerait surveiller :
+**Ce que les données permettent, et ce qu'elles interdisent.** Les règles sont
+écrites à partir de ce qui est réellement collecté, pas de ce qu'on aimerait
+surveiller :
 
 - **Filebeat ne collecte que `microcrm-staging`** (§4). Aucune des cinq règles
   fondées sur les logs ne voit la production.
@@ -1088,10 +944,9 @@ aimerait surveiller :
   404, et une ligne `WARN` portant `error.type` pour un 500.
 - **L'application n'a pas d'authentification** : ni 401 ni 403 ne peuvent se
   produire. La règle de sécurité côté API compte donc les 4xx en général.
-- **Les back déployés n'envoient pas de traces** (§10.4). Les trois règles
-  fondées sur les traces sont installées et prouvées, mais elles ne
-  surveilleront staging et production qu'après le déploiement d'une image
-  instrumentée.
+- **Les trois règles fondées sur les traces** regroupent par
+  `service.environment` : elles portent sur staging **et** production, dont les
+  back émettent des traces.
 
 ### 11.3 Les preuves de déclenchement — 2026-10-02
 
@@ -1127,21 +982,21 @@ exécution réussie, aucune alerte active.
 ⚠️ **Quatre réserves, pour ne pas sur-lire ce tableau.**
 
 - **Les trois règles fondées sur les traces sont prouvées hors cluster**, sur un
-  conteneur `microcrm-back:otel` lancé sur le poste (environnement
-  `demo-alerting`), supprimé depuis. Aucun pod du cluster n'émet de trace.
+  conteneur lancé sur le poste (environnement `demo-alerting`). Elles n'ont pas
+  été re-déclenchées sur les pods déployés.
 - **`dispo-back-redemarrages` affiche 3 et non 2** : `minikube start` avait
   lui-même démarré le back douze minutes plus tôt.
-- **Le front n'a pas pu être ralenti par un client lent** — le `port-forward`
-  absorbe la lenteur. Il a fallu lui retirer du CPU ; sa limite a été remise à
+- **Le front ne peut pas être ralenti par un client lent** — le `port-forward`
+  absorbe la lenteur. Il faut lui retirer du CPU ; sa limite a été remise à
   200 m ensuite.
 - **Ces déclenchements sont provoqués, pas subis.** Ils prouvent que chaque
   règle sonne et se rétablit ; ils ne disent rien de sa tenue sur plusieurs
   jours, faux positifs compris.
 
-**Un défaut applicatif trouvé au passage.** `GET /persons/abc` renvoie **500**
-(`ConversionFailedException`) au lieu de 400, en staging. Ce n'est pas un défaut
-de l'alerting : c'est un défaut de l'application, que la règle
-`dispo-back-echecs-requetes` a rendu visible. Il n'est pas corrigé.
+**Un défaut applicatif rendu visible.** `GET /persons/abc` renvoie **500**
+(`ConversionFailedException`) au lieu de 400. Ce n'est pas un défaut de
+l'alerting : c'est un défaut de l'application, que la règle
+`dispo-back-echecs-requetes` signale. Il n'est pas corrigé.
 
 ### 11.4 Rejouer
 
@@ -1184,17 +1039,16 @@ Pour modifier une règle : éditer son fichier, relancer
   les règles ne s'évaluent plus et aucune alerte ne le dit. Un tableau de bord
   vide se lit alors comme « tout va bien ».
 - **La production n'est couverte qu'à moitié.** Les cinq règles sur logs ne
-  voient que staging. Les trois règles sur traces, qui regroupent par
-  `service.environment`, portent depuis le 2026-10-05 sur les traces réelles de
-  staging **et** de production — mais n'ont sonné que sur un conteneur local
-  (§11.3) : elles n'ont pas été re-déclenchées sur les pods déployés.
+  voient que staging. Les trois règles sur traces portent sur staging et
+  production, mais n'ont sonné que sur un conteneur local (§11.3).
 - **L'indisponibilité du cluster lui-même n'est détectée par rien.** Kibana vit
-  dans ce cluster : quand minikube s'arrête — quatre fois du 2 au 5 octobre,
-  après des redémarrages de Docker Desktop —, l'alerting s'arrête avec lui. Ces
-  arrêts n'ont été découverts qu'à l'échec d'un déploiement. Une sonde externe
-  au cluster est la seule réponse.
-- **Un back arrêté sans redémarrer n'est détecté par rien.** À zéro replica, il
-  n'écrit rien : le back n'a pas de battement de cœur dans ses logs.
+  dans ce cluster : quand minikube s'arrête (après un redémarrage de Docker
+  Desktop, par exemple), l'alerting s'arrête avec lui, et l'arrêt ne se
+  découvre qu'à l'échec suivant d'un déploiement. Une sonde externe au cluster
+  est la seule réponse.
+- **Un back arrêté sans redémarrer n'est détecté par aucune règle sur logs.** À
+  zéro replica, il n'écrit rien : le back n'a pas de battement de cœur dans ses
+  logs.
 - **Aucune métrique d'infrastructure** : ni CPU, ni mémoire, ni disque, ni état
   des pods. Un `CrashLoopBackOff` n'est vu que par ses effets, et le remplissage
   du PVC d'Elasticsearch n'est pas surveillé.
@@ -1212,14 +1066,12 @@ Pour modifier une règle : éditer son fichier, relancer
   les fichiers ; rien n'est perdu, précisément parce qu'elles ne vivent pas dans
   l'instance.
 
-**Ce qui n'a pas été vérifié.** La création réelle du Secret par
-`install_alerting.py --secret` : le Secret du cluster a été créé à la main avant
-que le script n'existe, et seuls la branche « existe déjà », la syntaxe en
-`--dry-run=client` et le chemin complet contre le faux `kubectl` des tests ont
-été éprouvés. Le démarrage de Kibana **sans** le Secret, sur un cluster neuf,
-n'a pas été rejoué. Et aucune règle fondée sur les traces n'a été déclenchée sur
-un pod du cluster : depuis le 2026-10-05, elles en reçoivent les traces, mais
-aucun essai n'y a été refait.
+**Ce qui n'est pas vérifié.** La création réelle du Secret par
+`install_alerting.py --secret` : seuls la branche « existe déjà », la syntaxe en
+`--dry-run=client` et le chemin complet contre le faux `kubectl` des tests sont
+éprouvés. Le démarrage de Kibana **sans** le Secret, sur un cluster neuf, n'a
+pas été rejoué. Et aucune règle fondée sur les traces n'a été déclenchée sur un
+pod du cluster.
 
 ## 12. Ce qui n'est pas fait
 
@@ -1252,24 +1104,22 @@ Deployments restent des estimations. Les traces (§10) apportent la latence et
 le débit de l'API, pas la consommation des pods ; et les métriques de la JVM
 que l'agent pourrait envoyer sont coupées (`OTEL_METRICS_EXPORTER=none`).
 
-**Les traces sont en service depuis le 2026-10-05, sans recul.** Seul du trafic
-provoqué les a traversées ; aucune latence en service n'a été relevée (§10.4).
-Leurs autres limites sont au §10.7.
+**Les traces n'ont pas de recul.** Seul du trafic provoqué les a traversées
+dans le cluster ; aucune latence en service n'est relevée (§10.4). Leurs autres
+limites sont au §10.7.
 
 **L'alerting ne notifie personne hors de Kibana, et ne se surveille pas
-lui-même.** Ses dix limites sont au §11.5.
+lui-même.** Ses limites sont au §11.5.
 
 **La production n'est observée que par ses traces.** Filebeat ne collecte que
 `microcrm-staging` : les tableaux de bord et les cinq règles fondés sur les
-logs ne voient pas `microcrm-production`. Ses traces, elles, arrivent depuis le
-2026-10-05.
+logs ne voient pas `microcrm-production`.
 
 **Presque rien n'est automatisé.** Aucun job de CI ne déploie ni ne teste cette
-stack, ni n'installe ses règles d'alerte. Le seul qui la concerne de loin,
-`dora-metrics` — en CI depuis le 2026-10-03 —, calcule les indicateurs sans les
-y injecter (§9.5) ; les
-rapports de sécurité publiés par `trivy-fs` et `package-*` ne sont pas non plus
-envoyés à `microcrm-security` par un job.
+stack, ni n'installe ses règles d'alerte. `dora-metrics` calcule les indicateurs
+sans les injecter dans Elasticsearch (§9.5) ; les rapports de sécurité publiés
+par `trivy-fs` et `package-*` ne sont pas envoyés à `microcrm-security` par un
+job.
 
 ## 13. Rejouer
 
@@ -1321,6 +1171,6 @@ d'installer et dit quoi lancer. Les tableaux de bord `dora` et `securite`
 restent vides tant que leurs index ne sont pas alimentés (§9.5, et
 `collect_security.py` dans `SCRIPTS.md`).
 
-⚠️ Le back doit tourner avec le profil `container` pour produire du JSON. Une
-image construite avant ce lot journalise en texte : les documents arrivent quand
-même, mais sans champ exploitable.
+⚠️ Le back doit tourner avec le profil `container` (clé
+`SPRING_PROFILES_ACTIVE` de la ConfigMap, §3) pour produire du JSON. Sans lui,
+les documents arrivent quand même, mais sans champ exploitable.

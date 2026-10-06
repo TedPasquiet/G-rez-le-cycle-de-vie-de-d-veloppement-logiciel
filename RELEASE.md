@@ -2,7 +2,7 @@
 
 Ce document explique comment le projet est livré, déployé, et comment revenir en
 arrière si ça se passe mal. Tout ça est mis en place dans le pipeline
-(`.gitlab-ci.yml`) et les scripts du dossier `scripts/`.
+(`.gitlab-ci.yml` et `.gitlab/ci/`) et les scripts du dossier `scripts/`.
 
 > Pour le détail de chaque script, voir [SCRIPTS.md](SCRIPTS.md).
 
@@ -113,14 +113,12 @@ Les règles de refus ci-dessus sont couvertes par `scripts/tests/run_tests.sh`
 (bloc `ci/promote_image.sh`), y compris l'assertion qui échoue si une promotion
 se met à construire.
 
-⚠️ **La cinquième ligne n'a pas toujours été vraie.** Jusqu'au 2026-10-02, le
-scan Trivy était une commande placée _après_ le push dans `package-*`. Le job
-rougissait, mais l'image était déjà au registry sous le tag du SHA — et la
-promotion ne demande que l'existence de ce tag. Constaté ce jour-là :
-`back:5bf1d6a2` y figurait avec cinq CVE hautes de Jackson, job rouge. Un tag
-posé sur ce commit aurait promu une image que la porte venait de refuser. Le
-scan a été déplacé dans `build_and_push.sh`, entre le build et le push, et un
-test vérifie l'ordre.
+**Pourquoi le scan est placé entre le build et le push.** La promotion ne
+demande qu'une chose : que l'image `:SHA` existe au registry. Un scan lancé
+_après_ le push rougirait le job, mais laisserait au registry une image que la
+porte a refusée, et un tag posé sur ce commit la promouvrait. Le scan est donc
+dans `scripts/ci/build_and_push.sh`, avant le `docker push`, et un test de
+`run_tests.sh` vérifie cet ordre.
 
 ---
 
@@ -137,15 +135,14 @@ la **Release GitLab** correspondante (Deploy → Releases) :
   pipeline, et pour chaque image ses deux tags, `:X.Y.Z` et `:SHA`, qui
   désignent le même digest ;
 - il s'authentifie avec le jeton du job : aucun secret à créer. L'outil est
-  `glab`, que le mot-clé `release:` appelle (l'ancien `release-cli` est déprécié
-  depuis GitLab 18.0). Son image est figée dans `.gitlab/ci/variables.yml`
+  `glab`, que le mot-clé `release:` appelle (`release-cli` est déprécié depuis
+  GitLab 18.0). Son image est figée dans `.gitlab/ci/variables.yml`
   (`GLAB_IMAGE`).
 
 La mise en production n'est **pas** une condition : la Release dit « la version
 est publiée », `deploy-production` reste manuel et vient après.
 
-Le job a tourné pour la première fois le 2026-10-05, sur le tag `v1.0.1` : la
-Release `v1.0.1` existe, avec ses deux paires d'images (§7.5).
+La Release `v1.0.1` existe, avec ses deux paires d'images (§7.5).
 
 Deux pièges :
 
@@ -168,6 +165,11 @@ Deux pièges :
 Dans GitLab, ces environnements sont déclarés avec le mot-clé `environment:`, ce
 qui permet de suivre les déploiements par environnement dans l'interface.
 
+Les deux namespaces sont créés par Terraform, avec leur quota, leurs limites et
+leurs NetworkPolicy ([TERRAFORM.md](TERRAFORM.md) §3). Les deux visent le même
+cluster minikube : la production est un namespace, pas une infrastructure
+distincte ([ARCHITECTURE.md](ARCHITECTURE.md) §11).
+
 ---
 
 ## 4. Le déploiement automatique
@@ -188,6 +190,11 @@ bash scripts/deploy/deploy.sh \
   -i "$CI_REGISTRY_IMAGE/back:$DEPLOY_IMAGE_TAG"
 ```
 
+Avant ce script, le job recrée le `Secret` du registry et applique un overlay
+Kustomize éphémère qui porte déjà la bonne image ([K8S.md](K8S.md) §6) : le
+`set image` de `deploy.sh` ne crée donc pas de révision supplémentaire, et la
+révision précédente d'un déploiement sain est toujours une vraie image.
+
 ---
 
 ## 5. Le retour en arrière (rollback)
@@ -197,8 +204,8 @@ Il y a deux niveaux :
 1. **Automatique** : le script `deploy.sh` revient tout seul en arrière si le
    déploiement ne se passe pas bien. Rien à faire.
 2. **Manuel** : avec le script [`scripts/deploy/rollback.sh`](scripts/deploy/rollback.sh)
-   (job `rollback-production`), quand on repère un bug **après** un déploiement qui
-   avait pourtant réussi :
+   (job `rollback-production`, manuel sur `main` et sur les tags), quand on
+   repère un bug **après** un déploiement qui avait pourtant réussi :
 
 ```bash
 # Revenir à la version d'avant
@@ -208,14 +215,25 @@ bash scripts/deploy/rollback.sh -n "$PROD_NAMESPACE" -d back
 bash scripts/deploy/rollback.sh -n "$PROD_NAMESPACE" -d back --to-revision 7
 ```
 
-Comme chaque version correspond à une image fixe (taguée par SHA), on sait
-toujours exactement vers quoi on revient.
+Comme chaque version correspond à une image fixe (taguée par SHA ou par
+numéro de version), on sait toujours exactement vers quoi on revient.
 
-Ces deux mécanismes ne sont pas seulement documentés : ils sont **testés à
-chaque commit** par le job `test-scripts`, avec un faux `kubectl` qui simule un
-déploiement qui rate (voir [SCRIPTS.md](SCRIPTS.md#les-tests)). On vérifie que
-le `rollout undo` est bien déclenché, qu'il ne l'est pas quand tout va bien, et
-qu'on est prévenu si le rollback lui-même échoue.
+Ces deux mécanismes sont **testés à chaque commit** par le job `test-scripts`,
+avec un faux `kubectl` qui simule un déploiement qui rate (voir
+[SCRIPTS.md](SCRIPTS.md#les-tests)). On vérifie que le `rollout undo` est bien
+déclenché, qu'il ne l'est pas quand tout va bien, et qu'on est prévenu si le
+rollback lui-même échoue.
+
+**Preuve sur le cluster** : `rollback-production` a été joué en production le
+2026-09-23 (job réussi à 13:34:44 UTC), suivi d'un redéploiement réussi à
+13:42:13 ([MONITORING.md](MONITORING.md) §9).
+
+⚠️ **Limite : un rollback ramène l'image, pas la ConfigMap.** `kubectl rollout
+undo` revient au ReplicaSet précédent et laisse la ConfigMap en place. Revenir à
+une image qui ne connaît pas une clé de configuration récente (par exemple
+`JAVA_TOOL_OPTIONS`, qui charge l'agent OpenTelemetry) donne un pod qui ne
+démarre pas ; l'ancien reste en service grâce à `maxUnavailable: 0`. Dans ce
+cas, retirer d'abord la clé ([MONITORING.md](MONITORING.md) §10).
 
 ---
 
@@ -230,10 +248,14 @@ qu'on est prévenu si le rollback lui-même échoue.
 | `SONAR_HOST_URL`, `SONAR_TOKEN` | Variable / Masked | Pour Sonar et le Quality Gate.     |
 | `CI_REGISTRY*`                  | Automatiques      | Fournies par GitLab, rien à faire. |
 
+Une variable de namespace vide fait échouer le job de déploiement (garde-fou
+`exige_namespace` de `.deploy_template`) : sans lui, `kubectl -n ""` viserait
+`default` sans rien signaler.
+
 L'accès au cluster ne passe **pas** par une variable : c'est l'agent GitLab pour
 Kubernetes (`.gitlab/agents/microcrm/`) qui fournit le kubeconfig aux jobs, à
-l'exécution. Une variable `KUBE_CONFIG` a existé ; elle n'est plus lue (le
-pourquoi est dans `.deploy_template`, `.gitlab/ci/templates.yml`).
+l'exécution. Aucune variable `KUBE_CONFIG` n'est lue (le pourquoi est dans
+`.deploy_template`, `.gitlab/ci/templates.yml`).
 
 Les jobs `release` et `dora-metrics` n'ont besoin d'aucune variable : le premier
 utilise le jeton du job, le second lit l'API publique du projet.
@@ -266,6 +288,13 @@ en découle, et c'est l'ordre des étapes qui la fait respecter.
 
 2. **Le pipeline de `develop` est vert jusqu'à `package`.** Un `develop` rouge
    donnera un `main` rouge.
+3. **Le cluster répond.** Le runner et minikube tournent sur le même poste :
+   un cluster arrêté fait échouer `deploy-production` sans message clair.
+
+   ```bash
+   minikube status                  # host, kubelet et apiserver : Running
+   kubectl get --raw /readyz        # doit répondre « ok »
+   ```
 
 ### 7.2 La séquence
 
@@ -275,9 +304,9 @@ gh pr create --base main --head develop --title "release: X.Y.Z" --body "..."
 gh pr merge --merge          # un commit de fusion : c'est LUI qui sera taggué
 
 # 2. Attendre que le pipeline de main ait construit et poussé les deux images.
-#    ⚠️ Il ne passera jamais « success » : il s'arrête sur `deploy-production`,
-#    manuel et bloquant, et s'affiche « blocked ». Ce qu'il faut voir en vert,
-#    ce sont `package-back`, `package-front` et l'étape `perf`.
+#    ⚠️ Attention : il ne passera jamais « success ». Il s'arrête sur
+#    `deploy-production`, manuel et bloquant, et s'affiche « blocked ». Ce qu'il
+#    faut voir en vert, ce sont `package-back`, `package-front` et l'étape `perf`.
 git checkout main && git pull origin main
 SHA=$(git rev-parse --short=8 HEAD)
 API=https://gitlab.com/api/v4/projects/pasquietted%2FG-rez-le-cycle-de-vie-de-d-veloppement-logiciel
@@ -326,52 +355,42 @@ commit** :
 
 ```bash
 git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z   # retire le tag mal placé
-# ⚠️ le miroir GitHub -> GitLab ne supprime PAS les tags : le retirer aussi côté
-# GitLab (Code > Tags), sans quoi le miroir refusera de pousser un tag qui existe déjà.
+# ⚠️ Attention : le miroir GitHub -> GitLab ne supprime PAS les tags. Le retirer
+# aussi côté GitLab (Code > Tags), sans quoi le miroir refusera de pousser un tag
+# qui existe déjà.
 ```
 
 Un numéro déjà **promu** (une image `:X.Y.Z` existe) ne se réutilise pas : on
 passe au correctif suivant. Deux images différentes sous le même numéro, c'est
 exactement ce que ce document cherche à rendre impossible.
 
-### 7.4 Le précédent : `v1.0.0` n'a jamais abouti
+### 7.4 Le tag `v1.0.0` ne désigne aucune version livrée
 
 Le tag `v1.0.0` existe (commit `5d459fb`), mais **aucune image `1.0.0` n'est au
-registry et aucune Release n'a été créée**. Son pipeline de tag (22 septembre) a
-échoué sur `test-front`, avant la promotion : `Can not find the binary
-/opt/google/chrome/chrome`. Le runner du projet tourne sur Apple Silicon, et
-l'image Cypress, alors désignée par son tag, y résolvait vers sa variante arm64 —
-qui n'embarque pas Chrome. La directive `platform: linux/amd64` présente dans ce
-commit ne mordait pas. Le correctif (image désignée par son digest amd64) est
-arrivé une heure et demie plus tard, dans un commit postérieur au tag.
+registry et aucune Release ne lui correspond** : son pipeline de tag s'est
+arrêté sur `test-front`, avant la promotion. Un tag ne se déplace pas : il
+reste comme trace, et la règle du §7.3 s'applique — on passe au numéro
+suivant. **La première version livrée est `1.0.1`** (§7.5).
 
-Un tag ne se déplace pas : `v1.0.0` reste où il est, comme trace. **La première
-version réellement livrable est la suivante**, d'où le passage des fichiers de
-version à `1.0.1` — qui a abouti, §7.5.
+### 7.5 Preuve d'exécution — release 1.0.1, 2026-10-05
 
-### 7.5 Compte rendu d'exécution — release 1.0.1, 2026-10-05
+Séquence du §7.2 jouée telle quelle. Runner auto-hébergé sur le poste,
+cluster minikube. Horaires en UTC, relevés dans l'API du projet GitLab.
 
-**Contexte.** Le lot du 2 octobre (correctif Jackson, scan avant le push, jobs
-`release` et `dora-metrics`, règles d'alerte, fichiers de version en `1.0.1`) a
-été fusionné dans `develop` le 3 octobre par les PR #31 à #35. Runner
-auto-hébergé sur le poste (`gitlab-runner run`, `concurrent = 1`), cluster
-minikube sur Docker Desktop (8 Go, dont 6 réservés à minikube). Horaires en UTC,
-relevés dans l'API publique du projet GitLab ; les journaux de jobs, eux, ne
-sont pas lisibles sans jeton.
+| Date       | Étape de §7.2                      | Pipeline, commit                    | Résultat                                                                            |
+| ---------- | ---------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------- |
+| 2026-10-05 | Prérequis : `develop` vert         | `#2909284076`, `5296658a`           | vert sur tous ses jobs automatiques ; `deploy-staging` : succès (54 s)              |
+| 2026-10-05 | 1. `develop` → `main`              | PR #36, commit de fusion `08a216b0` | `#2912362926` vert, dont `quality-gate` et le pipeline enfant `perf`                |
+| 2026-10-05 | 2. Images du SHA au registry       | `#2912362926`                       | `package-back` et `package-front` verts ; Trivy : 0 HIGH, 0 CRITICAL                |
+| 2026-10-05 | 3. Tag annoté `v1.0.1`             | `#2913490784`, `08a216b0`           | `version-consistency` vert (7 s) ; aucun `package-*` dans le pipeline               |
+| 2026-10-05 | 4. Promotion                       | `promote-back`, `promote-front`     | succès (44 s et 32 s)                                                               |
+| 2026-10-05 | 4. Release                         | `release`                           | Release GitLab `v1.0.1` créée à 12 h 44 (24 s)                                      |
+| 2026-10-05 | 5. `deploy-production` du tag      | `#2913490784`                       | succès à 14 h 10 (45 s), après deux échecs dus à un cluster arrêté                  |
+| 2026-10-05 | 6. Vérification en production      | cluster                             | `back:1.0.1` (1 replica), `front:1.0.1` (2), `/actuator/health` `UP`                |
+| 2026-10-05 | 6. Vérification de l'observabilité | Kibana                              | traces `service.environment=production` reçues ([MONITORING.md](MONITORING.md) §10) |
 
-| Étape de §7.2                 | Pipeline, commit                    | Résultat                                                                                                                                    |
-| ----------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prérequis : `develop` vert    | `#2909284076`, `5296658a`           | vert sur tous ses jobs automatiques (3 octobre, `terraform-plan` repassé le 5) ; `deploy-staging` lancé à la main le 5 : succès en 54 s     |
-| 1. `develop` → `main`         | PR #36, commit de fusion `08a216b0` | pipeline `#2912362926` vert sur tous ses jobs automatiques, dont `quality-gate` (qui ne tourne que sur `main`) et le pipeline enfant `perf` |
-| (production sur le SHA)       | `#2912362926`, `deploy-production`  | échec à 7 h 57 (38 s), succès à 12 h 07 (49 s)                                                                                              |
-| 3. Tag annoté `v1.0.1`        | `#2913490784`, `08a216b0`           | `version-consistency` vert (7 s), puis tests, qualité, sécurité, `build-*` ; aucun `package-*`                                              |
-| 4. Promotion                  | `promote-back`, `promote-front`     | 44 s et 32 s                                                                                                                                |
-| 4. Release                    | `release`                           | 24 s : Release GitLab `v1.0.1` créée à 12 h 44 — **première exécution réelle du job**                                                       |
-| 5. `deploy-production` du tag | `#2913490784`                       | échecs à 13 h 55 (39 s) et 14 h 00 (48 s), **succès à 14 h 10** (45 s)                                                                      |
-| 6. Vérification               | cluster, API GitLab                 | voir ci-dessous                                                                                                                             |
-
-**La promotion n'a rien reconstruit, et les empreintes le prouvent.** Lues dans
-le registry après la promotion :
+**La promotion n'a rien reconstruit : les digests sont identiques.** Relevés
+dans le registry après la promotion :
 
 | Image            | Digest                                                                    |
 | ---------------- | ------------------------------------------------------------------------- |
@@ -381,62 +400,23 @@ le registry après la promotion :
 | `front:08a216b0` | `sha256:74474e9b81ebc2c8241bf04d2095b0729de5e31b62418b8419edc0dbe5e0e99e` |
 
 L'image en production est donc celle que `package-back` et `package-front` ont
-construite et scannée dans `#2912362926` : leurs rapports Trivy, relus dans les
-artefacts, portent 0 constat HIGH ou CRITICAL. La Release relie le numéro de
-version au commit, au pipeline et aux deux paires d'images ; sa description a
-été écrite par `release_notes.sh`, pas à la main.
+construite et scannée dans `#2912362926`. La Release relie le numéro de version
+au commit, au pipeline et aux deux paires d'images ; sa description est écrite
+par `release_notes.sh`.
 
-**Ce que la vérification a renvoyé** : en production, `back:1.0.1` (1 replica)
-et `front:1.0.1` (2 replicas) ; `/actuator/health` à `UP` ; `GET /persons` en
-`200` ; la ConfigMap porte les clés OpenTelemetry, et l'index `traces-apm*`
-reçoit des traces `service.environment=production` (`MONITORING.md` §10).
-Staging tourne `back:5296658a` et `front:5296658a`.
-
-#### Quatre incidents, tous de la plateforme
-
-Aucun incident n'est venu de l'application ni d'un contrôle de la chaîne. Tous
-ont la même origine : Docker Desktop, qui porte le runner et minikube, a
-décroché ou redémarré à plusieurs reprises du 2 au 5 octobre, laissant minikube
-à moitié arrêté.
-
-1. **Runner figé, 3 octobre.** Après un redémarrage de Docker, le runner ne
-   prenait plus de jobs : `spotbugs-back` d'une branche de travail est resté
-   bloqué 36 minutes avant de finir en `runner_interrupted`. Avec
-   `concurrent = 1`, tout attendait derrière lui ; le pipeline de `develop`,
-   créé à 14 h 00, n'a démarré qu'à 14 h 58. Relancé à la main.
-2. **`terraform-plan` en échec, 3 octobre**, deux fois (environ 75 s chacune) :
-   le cluster était figé. Relancé le 5 après redémarrage de minikube, le job
-   passe en 22 s.
-3. **`deploy-production` en échec, 5 octobre 7 h 57.** Cluster arrêté après un
-   redémarrage de Docker ; l'agent GitLab journalisait
-   `dial tcp 10.96.0.1:443: i/o timeout`. Rien n'a été écrit dans le namespace
-   de production. Après `minikube start`, le même job passe à 12 h 07.
-4. **`deploy-production` du tag en échec, 13 h 55 et 14 h 00.** Le conteneur
-   minikube avait été arrêté puis redémarré à 13 h 07 **sans `minikube start`** :
-   Docker le montrait en marche, mais kubelet et l'API Kubernetes étaient
-   `Stopped`. Relancé, le job passe à 14 h 10.
-
-**Leur coût sur les indicateurs.** Les trois `deploy-production` en échec
-comptent dans le taux d'échec des changements DORA (60 % sur 30 jours, 9 échecs
-sur 15 tentatives), au même titre qu'un changement défectueux : GitLab les
-classe en `script_failure`, et le collecteur n'a aucun moyen de les distinguer
-(`MONITORING.md` §9). C'est une limite du poste de développement comme
-environnement, pas du code livré.
-
-**Ce que l'exercice a révélé dans la procédure.** La séquence de §7.2 a été
-suivie telle quelle et n'a pas eu à être corrigée. Ce qui lui manque est en
-amont : rien ne vérifie que le cluster répond avant de lancer un déploiement.
-Une étape `kubectl get --raw /readyz` en tête des jobs de déploiement (ou
-`minikube status` sur le poste) aurait transformé trois échecs opaques en un
-diagnostic immédiat. Les autres recommandations — runner à `concurrent` > 1,
-alerte sur l'indisponibilité du cluster, cluster dédié — sont dans
-`docs/rapport-performance.md` §7.3.
+Les échecs de déploiement dus au cluster arrêté comptent dans le taux d'échec
+DORA, que GitLab classe en `script_failure` comme un changement défectueux
+([MONITORING.md](MONITORING.md) §9). Les observations de cette release et leurs
+suites sont dans `docs/rapport-performance.md` §7.3.
 
 ---
 
 ## 8. Ce qu'on pourrait ajouter plus tard
 
 - Des petits tests automatiques après le déploiement (vérifier que l'appli répond).
+- Un contrôle de disponibilité du cluster (`kubectl get --raw /readyz`) en tête
+  des jobs de déploiement, pour qu'un cluster arrêté donne un diagnostic
+  immédiat au lieu d'un échec opaque (aujourd'hui : vérification manuelle, §7.1).
 - Un déploiement progressif (blue/green ou canary) pour limiter les risques.
 - La génération automatique du changelog à partir des messages de commit, pour
   enrichir la description de la Release (aujourd'hui : les images et le commit).
@@ -457,7 +437,7 @@ de démonstration.
 
 Autrement dit, **une procédure de sauvegarde n'aurait rien à copier**. Écrire un
 `CronJob` de `pg_dump` sur cette application ne serait pas une sécurité, ce
-serait un décor — et c'est le genre de décor qu'un jury repère.
+serait un décor.
 
 C'est aussi ce qui impose au back de rester à **1 replica** : deux pods
 tiendraient deux bases distinctes, et une requête sur deux ne verrait pas ce que
@@ -465,8 +445,7 @@ l'autre a écrit, sans qu'aucune erreur ne soit levée (K8S.md §8.1).
 
 ### 9.2 Ce qu'il faudrait pour qu'il y ait quelque chose à sauvegarder
 
-La bascule vers une base persistante est un chantier délimité, et il vaut mieux
-le chiffrer que le laisser en intention vague :
+La bascule vers une base persistante est un chantier délimité :
 
 | Étape                            | Effort | Ce qui change                                                                                                                                             |
 | -------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -477,6 +456,9 @@ le chiffrer que le laisser en intention vague :
 | Lever le plafond de replicas     | S      | le back peut enfin monter en charge                                                                                                                       |
 | Recalculer les quotas            | S      | un pod de plus à financer dans `terraform/environments/*/terraform.tfvars`                                                                                |
 
+La première étape est en partie préparée : la suite de tests du back tourne déjà
+contre PostgreSQL 16 en CI ([DATABASE.md](DATABASE.md)).
+
 **Le point le moins évident est le quatrième.** Tant que la base est jetable,
 `hibernate.ddl-auto` peut la recréer à chaque démarrage. Dès qu'elle persiste,
 cette commodité devient un danger : c'est le moment où un outil de migration
@@ -484,8 +466,8 @@ cesse d'être un luxe.
 
 ### 9.3 La procédure qui s'appliquerait alors
 
-Elle n'est pas mise en œuvre — la base ne persiste pas — mais elle doit être
-écrite, sans quoi la bascule du §9.2 s'accompagnerait d'improvisation :
+Elle n'est pas mise en œuvre — la base ne persiste pas — mais elle est écrite,
+pour que la bascule du §9.2 ne s'accompagne pas d'improvisation :
 
 ```shell
 # Sauvegarde : un CronJob quotidien dans le namespace de l'application
@@ -506,9 +488,8 @@ croyance.
 
 ### 9.4 La vraie garantie : reconstruire l'environnement depuis le dépôt
 
-C'est ici que se joue l'intérêt de tout le travail d'infrastructure. Les
-données de MicroCRM sont jetables, mais **l'environnement, lui, se reconstruit
-intégralement à partir du seul dépôt** — et cela, c'est vérifiable.
+Les données de MicroCRM sont jetables, mais **l'environnement, lui, se
+reconstruit intégralement à partir du seul dépôt**, et cela se vérifie (§9.5).
 
 La procédure, dans l'ordre imposé par la frontière des responsabilités
 ([TERRAFORM.md](TERRAFORM.md) §3) :
@@ -518,13 +499,34 @@ La procédure, dans l'ordre imposé par la frontière des responsabilités
 kubectl delete namespace "$NAMESPACE"
 
 # 1. Le poste et le cluster (Ansible)
-cd ansible && ansible-playbook site.yml
+cd ansible && ansible-playbook site.yml && cd ..
 
 # 2. Le namespace, son quota, ses limites, ses policies (Terraform)
-cd terraform/environments/staging && terraform apply
+#    Coordonnées de l'état partagé : TERRAFORM.md §10.
+scripts/ci/terraform_check.sh --plan
+scripts/ci/terraform_check.sh --apply -e staging
 
-# 3. L'application (Kustomize)
-kubectl apply -k k8s/overlays/staging -n "$NAMESPACE"
+# 3. L'application (Kustomize), par un overlay éphémère qui pose l'image réelle :
+#    les manifestes du dépôt portent microcrm/back:PLACEHOLDER (K8S.md §4),
+#    un `kubectl apply -k k8s/overlays/staging` seul déploierait une image
+#    inexistante.
+IMAGE=registry.gitlab.com/pasquietted/g-rez-le-cycle-de-vie-de-d-veloppement-logiciel
+TAG=<sha court ou X.Y.Z, présent au registry>
+mkdir -p .k8s-deploy-overlay && cat > .k8s-deploy-overlay/kustomization.yaml <<EOF
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../k8s/overlays/staging
+images:
+  - name: microcrm/back
+    newName: $IMAGE/back
+    newTag: $TAG
+  - name: microcrm/front
+    newName: $IMAGE/front
+    newTag: $TAG
+EOF
+kubectl kustomize .k8s-deploy-overlay | grep -c PLACEHOLDER   # doit afficher 0
+kubectl apply -k .k8s-deploy-overlay -n "$NAMESPACE"
 kubectl -n "$NAMESPACE" rollout status deployment/back  --timeout=300s
 kubectl -n "$NAMESPACE" rollout status deployment/front --timeout=300s
 
@@ -533,122 +535,46 @@ kubectl -n "$NAMESPACE" port-forward svc/back 18081:8080 &
 curl -s http://127.0.0.1:18081/persons | head -c 200
 ```
 
-✅ **Cette procédure a été exécutée de bout en bout le 2026-09-22**, à partir
-d'une destruction réelle. Le compte rendu est en §9.5. Ce qui était jusque-là
-une conviction raisonnable est devenu une mesure.
+Deux conditions :
 
-Deux points de vigilance étaient connus avant de la jouer, et tous deux se sont
-vérifiés :
-
-- **Le namespace doit être absent**, sinon `terraform apply` s'arrête sur
-  `already exists` et demande un `terraform import` préalable (TERRAFORM.md
-  §10.1). Après un `kubectl delete namespace`, il l'est.
-- **Les images doivent être disponibles pour le cluster.** En local elles y sont
-  chargées par `minikube image load` (K8S.md §14.1) ; depuis la CI elles
+- **Le namespace doit être absent**, ou déjà suivi par l'état Terraform. Sinon
+  `terraform apply` s'arrête sur `already exists` et demande un
+  `terraform import` préalable (TERRAFORM.md §10.1). Après un
+  `kubectl delete namespace`, il l'est.
+- **Les images doivent être disponibles pour le cluster.** Depuis la CI elles
   viennent du registry, et le `Secret` qui l'ouvre est recréé par le job de
-  déploiement.
+  déploiement (K8S.md §6) ; à la main, il faut recréer ce `Secret` ou charger
+  les images par `minikube image load` (K8S.md §14.1). Le plus simple reste de
+  relancer le job `deploy-staging`, qui enchaîne les étapes 3 et 4.
 
----
+### 9.5 Preuve d'exécution — reconstruction de staging, 2026-09-22
 
-### 9.5 Compte rendu d'exécution — 2026-09-22
-
-**Contexte.** minikube v1.38.1, Kubernetes v1.35.1, nœud unique. Namespace
+minikube v1.38.1, Kubernetes v1.35.1, nœud unique. Namespace
 `microcrm-staging` détruit par `kubectl delete namespace`, puis reconstruit
 depuis le seul dépôt.
 
-| Étape                       | Commande                              | Résultat                                                 |
-| --------------------------- | ------------------------------------- | -------------------------------------------------------- |
-| 0. Destruction              | `kubectl delete namespace`            | namespace supprimé, `NotFound` confirmé                  |
-| 1. Poste et cluster         | `ansible-playbook site.yml`           | `ok=23 changed=0 failed=0`                               |
-| 2. Namespace et gouvernance | `terraform apply plan.cache`          | **6 ressources créées**, 0 modifiée, 0 détruite          |
-| 3. Application              | `kubectl apply -k` (overlay éphémère) | 6 objets créés, rollout des deux Deployments en **11 s** |
-| 4. Vérification             | `curl /persons`                       | API répond, données de démonstration présentes           |
+| Date       | Étape                       | Commande                              | Résultat                                                                                |
+| ---------- | --------------------------- | ------------------------------------- | --------------------------------------------------------------------------------------- |
+| 2026-09-22 | 0. Destruction              | `kubectl delete namespace`            | namespace supprimé, `NotFound` confirmé                                                 |
+| 2026-09-22 | 1. Poste et cluster         | `ansible-playbook site.yml`           | `ok=23 changed=0 failed=0`                                                              |
+| 2026-09-22 | 2. Namespace et gouvernance | `terraform apply plan.cache`          | **6 ressources créées**, 0 modifiée, 0 détruite                                         |
+| 2026-09-22 | 3. Application              | `kubectl apply -k` (overlay éphémère) | 6 objets créés, rollout des deux Deployments en **11 s** ; garde-fou `PLACEHOLDER` muet |
+| 2026-09-22 | 4. Vérification             | `curl /persons`, `/actuator/health`   | `John Doe` servi (données de démonstration) ; `{"status":"UP"}`                         |
+| 2026-09-22 | Quota après déploiement     | `kubectl describe resourcequota`      | `pods 2/10`, `requests.memory 544Mi/1536Mi`, `limits.memory 832Mi/2Gi`                  |
+| 2026-09-22 | État Terraform              | `terraform init -migrate-state`       | état migré vers le backend `http` ; `terraform plan` : `No changes`                     |
 
 **Ce que Terraform a recréé** : le namespace, `microcrm-staging-quota`,
 `microcrm-staging-limits` et les trois NetworkPolicy (`default-deny-ingress`,
 `allow-ingress-nginx-to-back`, `allow-ingress-nginx-to-front`). Le namespace
-porte à nouveau ses labels `app.kubernetes.io/managed-by=terraform`,
-`part-of=microcrm`, `environment=staging`, donc il rentre dans le recensement
-décrit en [TERRAFORM.md](TERRAFORM.md) §3.
+porte les labels `app.kubernetes.io/managed-by=terraform`, `part-of=microcrm`,
+`environment=staging`, donc il entre dans le recensement décrit en
+[TERRAFORM.md](TERRAFORM.md) §3.
 
-**Ce que la vérification a renvoyé** : `/persons` sert une personne
-(`John Doe`), recréée par Hibernate au démarrage puisque la base vit en mémoire
-— c'est exactement le comportement décrit en §9.1. `/actuator/health` répond
-`{"status":"UP","groups":["liveness","readiness"]}`.
-
-**Consommation du quota après déploiement** : `pods 2/10`,
-`requests.cpu 210m/1`, `requests.memory 544Mi/1536Mi`, `limits.cpu 1200m/3`,
-`limits.memory 832Mi/2Gi`. Le dimensionnement de `terraform.tfvars` laisse donc
-de la marge sur tous les axes.
-
-#### Trois écarts constatés, et ils valent d'être écrits
-
-**1. Le namespace n'était pas sous gouvernance Terraform avant l'exercice.**
-Relevé avant la destruction : aucun `ResourceQuota`, aucun `LimitRange`, aucune
-`NetworkPolicy`, et pour seul label `kubernetes.io/metadata.name`. Le namespace
-avait été créé à la main lors des campagnes de `K8S.md` §14. **C'est donc la
-première fois que Terraform le gouverne réellement** — l'exercice n'a pas
-restauré un état antérieur, il a corrigé un écart qui durait depuis 42 jours.
-
-**2. L'étape 3 de la procédure, telle qu'elle est écrite, est incomplète.**
-`kubectl apply -k k8s/overlays/staging` applique les manifestes du dépôt, qui
-portent délibérément `microcrm/back:PLACEHOLDER` (K8S.md §4). Appliqué tel quel,
-il déploierait une image inexistante. L'exécution a donc repris l'**overlay
-éphémère** du pipeline (K8S.md §6), avec `CI_REGISTRY_IMAGE=microcrm` et
-`CI_COMMIT_SHORT_SHA=t2-r2`, images déjà chargées par `minikube image load`. Le
-garde-fou anti-`PLACEHOLDER` du gabarit de déploiement a été exécuté et n'a rien
-signalé.
-
-**3. L'état Terraform a été substitué.** L'état de staging vit normalement sur
-GitLab (backend `http`, `versions.tf`), indisponible ce jour-là pour cause de
-quota. Un `backend "local"` a été posé en surcharge le temps de la manipulation,
-puis retiré. **Ce que cet exercice prouve est donc la reconstruction de
-l'environnement à partir du dépôt, pas le chemin de l'état partagé.** Ce dernier
-a été éprouvé juste après, par la migration décrite ci-dessous — mais depuis un
-poste, pas depuis un job.
-
-#### La conséquence, et comment elle a été réglée le même jour
-
-Les six ressources existaient dans le cluster mais n'étaient suivies que par
-l'état **local** produit pendant l'exercice. L'état partagé hébergé par GitLab,
-lui, les ignorait : un `terraform plan` lancé depuis la CI aurait annoncé « 6 à
-créer », et un `apply` aurait échoué sur `already exists` — le cas décrit en
-[TERRAFORM.md](TERRAFORM.md) §10.1.
-
-La réconciliation a été faite dans la foulée, par migration de l'état local vers
-le backend `http` :
-
-```shell
-cd terraform/environments/staging
-export TF_HTTP_ADDRESS="$CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/staging"
-export TF_HTTP_LOCK_ADDRESS="$TF_HTTP_ADDRESS/lock"
-export TF_HTTP_UNLOCK_ADDRESS="$TF_HTTP_ADDRESS/lock"
-export TF_HTTP_USERNAME="<compte GitLab>"   # le jeton, de portée api, n'est jamais écrit
-terraform init -migrate-state               # répondre « yes »
-```
-
-Terraform a acquis le verrou, constaté que l'état distant était **vide** — ce qui
-confirme au passage que l'`apply` n'avait jamais été joué sur cet environnement —
-puis copié les six ressources.
-
-**Vérification** : `terraform plan` rafraîchit désormais les six ressources
-**depuis l'état partagé** et répond `No changes. Your infrastructure matches the
-configuration.` L'état local a été retiré du répertoire ; le backend enregistré
-dans `.terraform/` est bien `http`.
-
-Deux choses en découlent :
-
-- La CI et le poste visent enfin le même état. Le prochain
-  `terraform-apply-staging` tournera contre un état conforme et n'aura rien à
-  faire.
-- **Le chemin de l'état partagé, annoncé plus haut comme non éprouvé, l'est
-  désormais en lecture et en écriture** : verrou pris et relâché, état écrit,
-  état relu. Il reste à le jouer depuis un job de CI, avec `$CI_JOB_TOKEN` au
-  lieu d'un jeton personnel.
-
-**Ce qui reste hors de portée de cet exercice** : la restauration de _données_.
-Elle n'a pas d'objet tant que la base vit en mémoire — le raisonnement est en
-§9.1, et il ne change pas.
+**Ce que la preuve couvre** : la reconstruction de l'environnement à partir du
+dépôt. L'`apply` a été joué depuis un poste avec un état local, puis cet état a
+été migré vers l'état partagé GitLab ([TERRAFORM.md](TERRAFORM.md) §4.4).
+**Ce qu'elle ne couvre pas** : la restauration de _données_, sans objet tant
+que la base vit en mémoire (§9.1).
 
 ---
 
@@ -659,8 +585,8 @@ sauvegarde (§9). Il doit pouvoir être lu, puis suivi, par toutes les parties
 prenantes — y compris les collaborateurs en situation de handicap (PSH) : ceux
 qui lisent avec un lecteur d'écran ou une plage braille, avec une loupe
 d'écran, sans distinguer les couleurs, ou pour qui une phrase longue est un
-obstacle. Cette section dit ce qui a été vérifié, comment, et ce qui ne l'a pas
-été.
+obstacle. Cette section dit ce qui est vérifié, comment, et ce qui ne l'est
+pas.
 
 ### 10.1 Le référentiel
 
@@ -670,7 +596,7 @@ niveaux A et AA. Il est écrit pour des pages web ; n'en sont retenus ici que le
 critères qui ont un sens pour un document : images, couleurs, tableaux, liens,
 éléments obligatoires (langue, titre), structure et présentation.
 
-### 10.2 Ce qui a été vérifié, et comment
+### 10.2 Ce qui est vérifié, et comment
 
 Deux outils versionnés, rejouables sans rien installer d'autre que Python,
 Node et Chrome :
@@ -690,16 +616,19 @@ de `docs/` qui partent en PDF. Résultats du 2026-10-02 :
 | ---------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | Titres hiérarchisés, sans niveau sauté               | RGAA 9.1 · WCAG 1.3.1      | script, sur chaque titre                                                            | 186 titres, aucun saut, un seul titre de niveau 1 par document                                 |
 | Texte alternatif sur chaque image                    | RGAA 1.1, 1.2 · WCAG 1.1.1 | script                                                                              | 3 images, toutes décrites                                                                      |
-| Ligne d'en-tête sur chaque tableau                   | RGAA 5.6, 5.7 · WCAG 1.3.1 | script                                                                              | 100 tableaux ; **1 défaut corrigé** (une colonne sans nom)                                     |
+| Ligne d'en-tête sur chaque tableau                   | RGAA 5.6, 5.7 · WCAG 1.3.1 | script                                                                              | 100 tableaux, tous avec une ligne d'en-tête nommée                                             |
 | Liens au libellé explicite                           | RGAA 6.1 · WCAG 2.4.4      | script : aucun « ici », « cliquez ici », « lien »                                   | 12 liens, aucun libellé creux                                                                  |
 | Schéma accompagné d'un texte                         | RGAA 1.6 · WCAG 1.1.1      | script (un texte à proximité), puis relecture                                       | 20 schémas, tous commentés — voir la réserve au §10.4                                          |
-| Information jamais portée par un seul pictogramme    | RGAA 3.1 · WCAG 1.3.3      | script (cellule, ligne ou libellé réduit à un symbole), puis relecture des ⚠️ et ✅ | **2 défauts corrigés** dans un schéma (« ✋ » pour « manuel », « ✗ » pour « échec »)           |
+| Information jamais portée par un seul pictogramme    | RGAA 3.1 · WCAG 1.3.3      | script (cellule, ligne ou libellé réduit à un symbole), puis relecture des ⚠️ et ✅ | aucun pictogramme seul : chaque symbole est suivi d'un mot                                     |
 | Contraste du texte                                   | RGAA 3.2 · WCAG 1.4.3      | calcul du rapport de contraste, feuille de style et couleurs des schémas            | de 6,7:1 à 15,7:1 — le niveau AA demande 4,5:1                                                 |
 | Langue déclarée                                      | RGAA 8.3 · WCAG 3.1.1      | `build_pdf.sh` : `<html lang="fr">`, puis `/Lang (fr)` cherché dans le PDF          | présente dans les PDF produits par le script                                                   |
-| Titre de document                                    | RGAA 8.5 · WCAG 2.4.2      | `build_pdf.sh` : `<title>` tiré du titre de niveau 1                                | présent ; les PDF produits jusqu'ici portaient un nom de fichier                               |
+| Titre de document                                    | RGAA 8.5 · WCAG 2.4.2      | `build_pdf.sh` : `<title>` tiré du titre de niveau 1                                | présent dans les PDF produits par le script                                                    |
 | PDF balisé : structure, en-têtes de tableau, signets | WCAG 1.3.1, 2.4.5          | `build_pdf.sh` cherche `/StructTreeRoot`, `/MarkInfo`, `/Outlines` et échoue sinon  | présents ; titres en `H1`-`H3`, cellules d'en-tête en `TH` avec leur portée, images avec `Alt` |
 | Texte lisible : 11 points au moins, aligné à gauche  | bonne pratique, hors RGAA  | feuille de style du script                                                          | 11 pt partout, tableaux et code compris ; aucun texte justifié                                 |
 | Tableaux et code qui ne débordent pas de la page     | bonne pratique, hors RGAA  | relecture des pages d'un PDF produit                                                | vérifié sur trois documents de test                                                            |
+
+Les nombres de titres, de tableaux, de liens et de schémas changent avec les
+documents ; le script, rejoué, donne les valeurs du jour.
 
 ### 10.3 Les formats mis à disposition
 
@@ -713,12 +642,12 @@ de `docs/` qui partent en PDF. Résultats du 2026-10-02 :
 - **Le HTML intermédiaire**, que l'option `-w` conserve : il s'agrandit et se
   reformate dans un navigateur, ce qu'un PDF fait mal.
 
-### 10.4 Ce qui n'a pas été vérifié, et ce qui reste hors de portée
+### 10.4 Ce qui n'est pas vérifié, et ce qui reste hors de portée
 
 - **Aucun essai avec un lecteur d'écran réel** (VoiceOver, NVDA, JAWS), ni par
   une personne concernée. Les contrôles ci-dessus portent sur la structure,
   pas sur l'expérience de lecture.
-- **Aucun validateur PDF/UA** (PAC, veraPDF) n'a été passé sur les PDF. Leur
+- **Aucun validateur PDF/UA** (PAC, veraPDF) n'est passé sur les PDF. Leur
   balisage est constaté, leur conformité à la norme ne l'est pas.
 - **Les schémas sont commentés, pas tous décrits.** Le texte voisin explique ce
   qu'il faut en retenir ; il n'énumère pas toujours chaque boîte. Un seul
@@ -733,16 +662,13 @@ de `docs/` qui partent en PDF. Résultats du 2026-10-02 :
   fusion), SHA (l'empreinte d'un commit), SemVer (versionnage sémantique),
   HSQLDB (la base embarquée). Un glossaire commun est tenu dans
   `docs/documentation-ci-cd-complete.md` §8.2.
-- **10 phrases de plus de 60 mots** sont signalées par le script dans
-  les six documents. Elles n'ont pas été réécrites.
+- **Les phrases de plus de 60 mots** sont signalées par le script, sans faire
+  échouer le contrôle. Elles ne sont pas toutes réécrites.
 - **Les interfaces de GitLab et de Kibana** ne sont pas sous notre contrôle.
   Lancer un job manuel se fait dans l'interface de GitLab, dont l'accessibilité
-  dépend de son éditeur et n'a pas été évaluée ici. Ce qui dépend de nous : le
+  dépend de son éditeur et n'est pas évaluée ici. Ce qui dépend de nous : le
   retour en arrière (§5) et la reconstruction (§9.4) se jouent entièrement au
   clavier, dans un terminal.
-- **Les PDF déjà présents dans `docs/`** ont été produits avant ce script. Ils
-  sont balisés et déclarent leur langue, mais n'ont ni signets ni vrai titre.
-  Ils sont à régénérer.
 
 ### 10.5 Demander une adaptation
 

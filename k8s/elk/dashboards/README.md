@@ -1,34 +1,64 @@
 # Tableaux de bord Kibana — objets sauvegardés
 
-`MONITORING.md` listait à l'origine l'absence de tableau de bord versionné comme
-le principal reste du lot ELK. Ce répertoire le comble : **cinq tableaux de
-bord**, un fichier chacun — supervision, DORA, sécurité, disponibilité, suivi
-des alertes. Le premier, `microcrm.ndjson`, est décrit en tête ; les quatre
-autres, ajoutés ou refondus le 2026-10-02, à partir de la section « Les cinq
-fichiers, d'un coup d'œil ».
+**Cinq tableaux de bord**, un fichier NDJSON chacun : supervision, DORA,
+sécurité, disponibilité, suivi des alertes. Le raisonnement d'ensemble est dans
+`MONITORING.md` §8.
 
 **Le livrable n'est pas un écran dans Kibana, c'est un fichier NDJSON.** Un
 tableau de bord construit à la souris vit dans l'index `.kibana` d'un pod ; il
 disparaît avec le PVC, avec le namespace, avec le `minikube delete`. Le fichier
 versionné ici est la seule forme du tableau de bord qui survive à son instance.
 
-## Importer `microcrm.ndjson`
+## Les cinq fichiers, d'un coup d'œil
+
+| Fichier                | Tableau de bord           | Objets | Données lues                                           |
+| ---------------------- | ------------------------- | ------ | ------------------------------------------------------ |
+| `microcrm.ndjson`      | `microcrm-dashboard`      | 8      | `microcrm-logs*`                                       |
+| `dora.ndjson`          | `dora-dashboard`          | 13     | `microcrm-dora`                                        |
+| `securite.ndjson`      | `securite-dashboard`      | 22     | `microcrm-security`, `microcrm-logs*`, `microcrm-dora` |
+| `disponibilite.ndjson` | `disponibilite-dashboard` | 18     | `microcrm-logs*`, `traces-apm*`, `microcrm-dora`       |
+| `alertes.ndjson`       | `alertes-dashboard`       | 8      | `microcrm-alerts`                                      |
+
+Chaque fichier embarque les vues de données dont il dépend — y compris celles
+d'un autre fichier quand il y puise ses annotations. L'ordre d'import n'a donc
+pas d'importance.
+
+Les descriptions sont portées par les objets eux-mêmes : elles s'affichent sous
+l'icône ⓘ de chaque panneau, donc devant celui qui lit le tableau de bord et non
+seulement devant celui qui lit ce fichier. La fenêtre de temps par défaut est
+**restaurée à l'ouverture** (`timeRestore`), pour que le tableau de bord montre
+des données dès l'import plutôt qu'un écran vide sur une plage de 15 minutes.
+
+## Importer
 
 ```shell
 kubectl -n logging port-forward svc/kibana 5601:5601
-
-curl -s -X POST 'http://127.0.0.1:5601/api/saved_objects/_import?overwrite=true' \
-  -H 'kbn-xsrf: true' --form file=@k8s/elk/dashboards/microcrm.ndjson
+for f in microcrm dora securite disponibilite alertes; do
+  curl -s -X POST 'http://127.0.0.1:5601/api/saved_objects/_import?overwrite=true' \
+    -H 'kbn-xsrf: true' --form file=@k8s/elk/dashboards/$f.ndjson
+done
 ```
 
-La réponse doit porter `"success":true` et `"successCount":8`. Un `successCount`
-inférieur signale un objet rejeté, pas un import partiel acceptable.
+Chaque réponse doit porter `"success":true` et le `successCount` du tableau
+ci-dessus. Un `successCount` inférieur signale un objet rejeté, pas un import
+partiel acceptable.
+
+**Preuve : import à froid sur Kibana 8.19.7** (objets supprimés de l'instance au
+préalable, pour que le test ne soit pas un simple écrasement) :
+
+| Date       | Fichier                | Réponse de l'import                   |
+| ---------- | ---------------------- | ------------------------------------- |
+| 2026-08-16 | `microcrm.ndjson`      | `"success": true, "successCount": 8`  |
+| 2026-10-02 | `securite.ndjson`      | `"success": true, "successCount": 22` |
+| 2026-10-02 | `disponibilite.ndjson` | `"success": true, "successCount": 18` |
+| 2026-10-02 | `dora.ndjson`          | `"success": true, "successCount": 13` |
+| 2026-10-02 | `alertes.ndjson`       | `"success": true, "successCount": 8`  |
 
 ## Réexporter après modification
 
-Modifier le tableau de bord dans Kibana ne modifie pas ce dépôt. Toute retouche
+Modifier un tableau de bord dans Kibana ne modifie pas ce dépôt. Toute retouche
 faite à la souris doit être réexportée, sinon elle est perdue au prochain
-`minikube delete` — c'est exactement le problème que ce répertoire résout.
+`minikube delete`.
 
 ```shell
 curl -s -X POST 'http://127.0.0.1:5601/api/saved_objects/_export' \
@@ -38,12 +68,22 @@ curl -s -X POST 'http://127.0.0.1:5601/api/saved_objects/_export' \
   -o k8s/elk/dashboards/microcrm.ndjson
 ```
 
-⚠️ `includeReferencesDeep` n'est pas une option de confort. Sans lui, l'export
-ne contient que le tableau de bord : la vue de données `microcrm-logs*` reste
-derrière, et la réimportation produit des panneaux vides derrière un message
-d'erreur qui ne nomme pas la cause.
+Pour un autre fichier, remplacer l'identifiant du tableau de bord et le nom du
+fichier (colonnes du premier tableau).
 
-## Contenu de `microcrm.ndjson` — 8 objets
+⚠️ `includeReferencesDeep` n'est pas une option de confort. Sans lui, l'export
+ne contient que le tableau de bord : la vue de données reste derrière, et la
+réimportation produit des panneaux vides derrière un message d'erreur qui ne
+nomme pas la cause.
+
+⚠️ **Ne pas retoucher un objet à la main dans le NDJSON.** Un objet sans
+`typeMigrationVersion` fait échouer l'import sur
+`Cannot read properties of undefined (reading 'layers')` : Kibana rejoue toute
+la chaîne de migration 7.x → 8.x. Les objets versionnés ici sont créés dans
+l'interface ou par l'API, contrôlés à l'écran, puis **exportés par Kibana** —
+c'est ce qui garantit que chacun porte les champs de migration attendus.
+
+## `microcrm.ndjson` — la supervision
 
 | Objet                    | Type            | Rôle                                    |
 | ------------------------ | --------------- | --------------------------------------- |
@@ -56,48 +96,7 @@ d'erreur qui ne nomme pas la cause.
 | `microcrm-derniers-logs` | `search`        | flux brut des événements récents        |
 | `microcrm-dashboard`     | `dashboard`     | assemblage, fenêtre `now-24h` restaurée |
 
-## Ce que chaque écran ne dit pas
-
-Les descriptions sont portées par les objets eux-mêmes — elles s'affichent sous
-l'icône ⓘ de chaque panneau, donc devant celui qui lit le tableau de bord et non
-seulement devant celui qui lit ce fichier. Les limites qui changent une
-conclusion :
-
-**La latence est celle du front, jamais celle de l'API.** `caddy.duration` est
-le temps de service du serveur web qui sert l'application Angular. Le journal
-d'accès de Caddy ne voit passer que les fichiers statiques : les appels au back
-partent du navigateur vers le service du back et ne traversent jamais le front.
-Un p99 à 2 ms ne dit donc rien de la santé de l'API — il dit que Caddy sert vite
-des fichiers. Mesurer la latence applicative demande d'instrumenter le back :
-c'est écrit depuis le 2026-10-01 (agent OpenTelemetry, `MONITORING.md` §10) et
-en service depuis le 2026-10-05 : les pods de staging et de production émettent
-des traces. Jusque-là, les panneaux APM du tableau `disponibilite` ne montraient
-que des conteneurs d'essai lancés sur le poste.
-
-**L'écran des erreurs HTTP est vide par construction.** Le front sert une SPA
-avec `try_files … /index.html` : tout chemin inconnu renvoie 200 avec la page,
-et c'est Angular qui décide ensuite qu'il n'y a rien à cette adresse. Un 404 ne
-peut donc pas apparaître dans les logs de Caddy. Le zéro affiché est le
-comportement attendu du routage, pas une preuve d'absence d'erreur — d'où le
-titre du panneau, qui le dit plutôt que de laisser conclure. Les erreurs
-observables sont celles du back, panneau voisin.
-
-**Le volume compte des lignes de log, pas des requêtes.** Une requête peut
-n'en produire aucune, un démarrage en produit cinquante.
-
-**Les erreurs du back ne couvrent que les lignes encodées en ECS.** La bannière
-ASCII de Spring Boot et les quelques lignes émises avant l'initialisation de
-Logback n'ont pas de champ `log.level` : elles sont invisibles à ce panneau. Sur
-355 documents, 54 portent un `log.level`.
-
-**Le front n'a pas de `log.level`, et son `message` reste le JSON brut.** Son
-journal est décodé sous le préfixe `caddy` (`MONITORING.md` §4), précisément
-pour ne pas entrer en collision avec l'espace ECS : ses champs exploitables sont
-donc `caddy.status`, `caddy.duration`, `caddy.request.uri`, jamais `log.level`.
-La colonne `message` de la table affiche la ligne d'origine, non réécrite — un
-tiret dans la colonne `log.level` signale une ligne du front, pas une anomalie.
-
-## Deux pièges de construction, réglés ici
+### Deux choix de construction
 
 **`caddy.duration` est en secondes.** Affiché tel quel, le p50 vaut `0.00043` —
 un axe illisible. La conversion n'est pas faite dans les visualisations mais
@@ -105,77 +104,59 @@ un axe illisible. La conversion n'est pas faite dans les visualisations mais
 déclaré `inputFormat: seconds` / `outputFormat: asMilliseconds`. Tout panneau
 qui touche ce champ hérite de l'unité, y compris ceux qui n'existent pas encore.
 C'est aussi pourquoi la vue de données doit impérativement faire partie de
-l'export : sans elle, l'unité est perdue en même temps que le reste.
+l'export.
 
 **`log.level` est une clé plate qui cohabite avec un objet `log` imbriqué.**
 Le `_source` d'un document du back contient à la fois `"log.level": "INFO"` et
 `"log": {"file": {"path": …}}`. Elasticsearch les fusionne au mapping et Kibana
-les résout par l'API `fields`, donc filtrage et affichage fonctionnent — vérifié
-plutôt que supposé : `log.level: *` renvoie 54 documents dans Kibana, soit
-exactement les 52 `INFO` + 2 `WARN` comptés par une agrégation `terms` sur
-Elasticsearch. Le pipeline d'ingestion évoqué en `MONITORING.md` §12 reste
-souhaitable pour la propreté, mais il n'est pas nécessaire à ces écrans.
+les résout par l'API `fields`, donc filtrage et affichage fonctionnent. Vérifié :
+`log.level: *` renvoie dans Kibana exactement le nombre de documents qu'une
+agrégation `terms` compte sur Elasticsearch (54 = 52 `INFO` + 2 `WARN`). Le
+pipeline d'ingestion évoqué en `MONITORING.md` §12 reste souhaitable pour la
+propreté, mais il n'est pas nécessaire à ces écrans.
 
-## Limites de l'ensemble
+### Ce que ces écrans ne disent pas
 
-La fenêtre par défaut est `now-24h` et elle est **restaurée à l'ouverture**
-(`timeRestore`), pour que le tableau de bord montre des données dès l'import
-plutôt qu'un écran vide sur une plage de 15 minutes.
+**La latence est celle du front, jamais celle de l'API.** `caddy.duration` est
+le temps de service du serveur web qui sert l'application Angular. Les appels
+au back partent du navigateur vers l'hôte de l'API et ne traversent jamais le
+front. Un p99 à 2 ms dit que Caddy sert vite des fichiers, rien de plus. La
+latence de l'API vient des traces (`MONITORING.md` §10), lues par le tableau
+`disponibilite`.
 
-**Ces écrans se regardent ; ce ne sont pas eux qui préviennent.** Cette phrase
-se terminait jusqu'au 2026-10-02 par « aucune alerte ». Huit règles d'alerte
-existent désormais, à côté de ce répertoire (`../alerting/`), et elles lisent
-les mêmes index que ces tableaux de bord. Ce qu'elles écrivent se consulte dans
-`alertes.ndjson`, décrit plus bas — et se **consulte** seulement : aucune
-notification ne sort de Kibana (`MONITORING.md` §11.5).
+**L'écran des erreurs HTTP est vide par construction.** Le front sert une SPA
+avec `try_files … /index.html` : tout chemin inconnu renvoie 200 avec la page,
+et c'est Angular qui décide ensuite qu'il n'y a rien à cette adresse. Un 404 ne
+peut donc pas apparaître dans les logs de Caddy. Le zéro affiché est le
+comportement attendu du routage, pas une preuve d'absence d'erreur — d'où le
+titre du panneau, qui le dit. Les erreurs observables sont celles du back,
+panneau voisin.
 
-Aucune rétention non plus — sans ILM, l'historique s'arrête là où le PVC se
+**Le volume compte des lignes de log, pas des requêtes.** Une requête peut
+n'en produire aucune, un démarrage en produit cinquante.
+
+**Les erreurs du back ne couvrent que les lignes encodées en ECS.** La bannière
+ASCII de Spring Boot et les quelques lignes émises avant l'initialisation de
+Logback n'ont pas de champ `log.level` : elles sont invisibles à ce panneau.
+
+**Le front n'a pas de `log.level`, et son `message` reste le JSON brut.** Son
+journal est décodé sous le préfixe `caddy` (`MONITORING.md` §4) pour ne pas
+entrer en collision avec l'espace ECS : ses champs exploitables sont
+`caddy.status`, `caddy.duration`, `caddy.request.uri`, jamais `log.level`. Un
+tiret dans la colonne `log.level` de la table signale une ligne du front, pas
+une anomalie.
+
+**Ces écrans se regardent ; ce ne sont pas eux qui préviennent.** Les huit
+règles d'alerte (`../alerting/`) lisent les mêmes index ; ce qu'elles écrivent se
+consulte dans `alertes.ndjson`. Aucune notification ne sort de Kibana
+(`MONITORING.md` §11.5), et sans ILM l'historique s'arrête là où le PVC se
 remplit.
 
-## Les cinq fichiers, d'un coup d'œil
-
-| Fichier                | Tableau de bord           | Objets | Données lues                                           |
-| ---------------------- | ------------------------- | ------ | ------------------------------------------------------ |
-| `microcrm.ndjson`      | `microcrm-dashboard`      | 8      | `microcrm-logs*`                                       |
-| `dora.ndjson`          | `dora-dashboard`          | 13     | `microcrm-dora`                                        |
-| `securite.ndjson`      | `securite-dashboard`      | 22     | `microcrm-security`, `microcrm-logs*`, `microcrm-dora` |
-| `disponibilite.ndjson` | `disponibilite-dashboard` | 18     | `microcrm-logs*`, `traces-apm*`, `microcrm-dora`       |
-| `alertes.ndjson`       | `alertes-dashboard`       | 8      | `microcrm-alerts`                                      |
-
-Les cinq s'importent de la même façon, et chacun embarque les vues de données
-dont il dépend — y compris celles d'un autre fichier quand il y puise ses
-annotations. L'ordre d'import n'a donc pas d'importance.
-
-```shell
-kubectl -n logging port-forward svc/kibana 5601:5601
-for f in microcrm dora securite disponibilite alertes; do
-  curl -s -X POST 'http://127.0.0.1:5601/api/saved_objects/_import?overwrite=true' \
-    -H 'kbn-xsrf: true' --form file=@k8s/elk/dashboards/$f.ndjson
-done
-```
-
-Vérifié le 2026-10-02 sur Kibana 8.19.7, **à froid** : les 49 objets de
-`dora`, `securite` et `disponibilite` ont d'abord été supprimés de l'instance
-(il ne restait que `microcrm-dashboard`), puis les trois fichiers réimportés.
-
-| Fichier                | Réponse de l'import                                  |
-| ---------------------- | ---------------------------------------------------- |
-| `securite.ndjson`      | `"success": true, "successCount": 22`, aucune erreur |
-| `disponibilite.ndjson` | `"success": true, "successCount": 18`, aucune erreur |
-| `dora.ndjson`          | `"success": true, "successCount": 13`, aucune erreur |
-
-`alertes.ndjson` a été contrôlé séparément, le même jour et de la même façon —
-objets supprimés, puis réimport : `"success": true, "successCount": 8`.
-
-Pour réexporter l'un d'eux après retouche, la commande de la section
-« Réexporter après modification » vaut pour tous : remplacer l'identifiant du
-tableau de bord et le nom du fichier.
-
-### Les annotations
+## Les annotations
 
 Trois graphiques portent des **annotations Lens par requête** : des marqueurs
-verticaux calculés à l'affichage, pas dessinés à la main. Elles lisent toutes
-l'index `microcrm-dora` (les jobs de déploiement et de rollback relevés par
+verticaux calculés à l'affichage, pas dessinés à la main. Elles lisent l'index
+`microcrm-dora` (les jobs de déploiement et de rollback relevés par
 `collect_dora.py`), sauf la dernière qui lit les logs :
 
 | Marqueur           | Requête                                                                | Où                                                          |
@@ -190,14 +171,14 @@ sondes sans marqueur est une collecte arrêtée, pas une mise en production.
 
 ⚠️ **Une annotation n'apparaît que si l'index `microcrm-dora` est à jour.**
 Aucun job ne l'alimente dans le cluster : il faut rejouer `collect_dora.py` avec
-`--elasticsearch` après un déploiement, sinon le marqueur manque — et son
-absence ne veut pas dire « pas de déploiement ».
+`--elasticsearch` après un déploiement (`MONITORING.md` §9.5), sinon le marqueur
+manque — et son absence ne veut pas dire « pas de déploiement ».
 
-⚠️ Piège rencontré en les construisant : les champs affichés dans l'infobulle
-d'une annotation (`extraFields`) doivent être **agrégeables**. `job` est un
-champ `text` dans `microcrm-dora` (mapping dynamique) : le citer tel quel fait
-échouer tout le panneau sur `Tooltip fields job not found in data view`. C'est
-`job.keyword` qu'il faut nommer.
+⚠️ Les champs affichés dans l'infobulle d'une annotation (`extraFields`) doivent
+être **agrégeables**. `job` est un champ `text` dans `microcrm-dora` (mapping
+dynamique) : le citer tel quel fait échouer tout le panneau sur
+`Tooltip fields job not found in data view`. C'est `job.keyword` qu'il faut
+nommer.
 
 ## `securite.ndjson`
 
@@ -235,8 +216,8 @@ python3 scripts/ci/collect_security.py \
 | Réponses HTTP 4xx du front                 | `caddy.status >= 400` dans le temps, par code                            |
 | Erreurs applicatives du back               | lignes `log.level` WARN et ERROR dans le temps, **annoté**               |
 
-Confronté à Elasticsearch le 2026-10-02 (agrégations équivalentes, fenêtre de
-90 jours) — chaque valeur est celle que le panneau affiche :
+**Confrontation à Elasticsearch, 2026-10-02** (agrégations équivalentes, fenêtre
+de 90 jours) — chaque valeur est celle que le panneau affiche :
 
 | Panneau                             | Kibana                                | Elasticsearch                                  |
 | ----------------------------------- | ------------------------------------- | ---------------------------------------------- |
@@ -251,28 +232,29 @@ Confronté à Elasticsearch le 2026-10-02 (agrégations équivalentes, fenêtre 
 | Réponses 401 / 403, réponses >= 400 | `0`, « No results found »             | 0 et 0 document                                |
 | WARN / ERROR                        | WARN seul                             | 52 WARN, 0 ERROR                               |
 
-Les cinq constats HIGH sont cinq CVE de `jackson-core` / `jackson-databind`
-2.21.4 dans l'image `back:5bf1d6a2`. Le correctif est sur la branche
-(`fix/jackson-databind-cve`, Jackson 2.21.7) mais **aucune image n'a encore été
-construite depuis** : le tableau de bord montre l'image publiée, pas le code.
+Les cinq constats HIGH de ce relevé sont cinq CVE de `jackson-core` /
+`jackson-databind` 2.21.4 dans l'image `back:5bf1d6a2`. Les images construites
+depuis forcent Jackson 2.21.7 (`back/build.gradle`) et leurs rapports Trivy ne
+portent aucun constat HIGH ou CRITICAL ; l'index n'ayant pas été réalimenté, le
+tableau de bord montre toujours le relevé du 2026-10-02.
 
 ### Ce que cet écran ne dit pas
 
-**L'historique a été rejoué, il n'a pas été vécu.** Aucun scan n'avait jamais
-été collecté avant le 2026-10-02. Pour qu'une courbe existe, huit commits
-(du 2026-08-01 au 2026-10-02) ont été exportés par `git archive` et scannés
-avec Trivy 0.69.3, ainsi que les images du registry portant leur tag quand elles
-existent (`50a07951`, `34df46de`, `234ab50a`, `5bf1d6a2`). Chaque scan est daté
-du commit, mais jugé avec la base de vulnérabilités **du 2026-10-02**. La courbe
+**L'historique est rejoué, pas vécu.** Huit commits (du 2026-08-01 au
+2026-10-02) ont été exportés par `git archive` et scannés avec Trivy 0.69.3,
+ainsi que les images du registry portant leur tag quand elles existent
+(`50a07951`, `34df46de`, `234ab50a`, `5bf1d6a2`). Chaque scan est daté du
+commit, mais jugé avec la base de vulnérabilités **du 2026-10-02**. La courbe
 dit donc « ce que ces versions contiennent de vulnérable au regard de ce qu'on
-sait aujourd'hui », pas « ce que le pipeline voyait ce jour-là ». Les exceptions
-appliquées à chaque point sont celles du `.trivyignore.yaml` **de ce commit**.
+sait à cette date », pas « ce que le pipeline voyait ce jour-là ». Les
+exceptions appliquées à chaque point sont celles du `.trivyignore.yaml` **de ce
+commit**.
 
-**Les rapports rejoués sont plus larges que ceux de la CI.** Ils ont été
-produits sans filtre de sévérité et sans `--ignorefile`, pour que MEDIUM, LOW et
-constats exceptés apparaissent. Les rapports que publient les jobs `trivy-fs` et
+**Les rapports rejoués sont plus larges que ceux de la CI.** Ils sont produits
+sans filtre de sévérité et sans `--ignorefile`, pour que MEDIUM, LOW et constats
+exceptés apparaissent. Les rapports que publient les jobs `trivy-fs` et
 `package-*` sont filtrés sur HIGH / CRITICAL, exclusions appliquées : collectés
-tels quels, ils donneront `0` en MEDIUM et LOW (non demandés, pas absents) et
+tels quels, ils donneraient `0` en MEDIUM et LOW (non demandés, pas absents) et
 `0` constat excepté (Trivy les retire avant d'écrire). Le tableau de bord ne
 sait pas distinguer ces deux régimes ; le document `scan` non plus.
 
@@ -281,18 +263,17 @@ document vaut zéro : c'est pourquoi la première tuile compte les scans. `3`
 signifie que les trois sources ont un dernier scan, et qu'un `0` voisin est
 mesuré. Lens ne propose pas mieux : l'option qui affiche `N/A` sur une somme
 vide (`emptyAsNull`) affiche aussi `N/A` sur une somme **nulle**, donc sur
-« aucun constat CRITICAL » — vérifié, c'est le premier rendu obtenu.
+« aucun constat CRITICAL ».
 
 **Les panneaux HTTP n'observent pas le back.** `caddy.status` est le journal
 d'accès du front, qui répond 200 à tout (SPA). Le back, seul à pouvoir répondre
 401 ou 403, ne journalise pas ses accès. Les deux panneaux sont vides par
 construction, et leur titre le dit. Ce qui les remplirait : un journal d'accès
-côté back, ou `http.response.status_code` dans `traces-apm*` une fois les images
-instrumentées déployées.
+côté back, ou `http.response.status_code` dans `traces-apm*`.
 
-**Aucun rapport Dependency-Check réel n'a été collecté.** Le collecteur sait le
-lire (testé sur une fixture fabriquée), mais le rapport JSON n'existait pas sur
-le poste : la source `dependency-check:back` est absente du tableau de bord.
+**Aucun rapport Dependency-Check réel n'est collecté.** Le collecteur sait le
+lire (testé sur une fixture fabriquée), mais aucun rapport réel ne lui a été
+passé : la source `dependency-check:back` est absente du tableau de bord.
 
 ## `disponibilite.ndjson`
 
@@ -317,9 +298,9 @@ créée pour lui) sous l'angle « le service répond-il ».
 | Débit de l'API vu par APM              | transactions par `service.environment`                                |
 | Latence de l'API vue par APM           | p50 / p95 de `transaction.duration.us`, `transaction.type: request`   |
 
-Confronté à Elasticsearch le 2026-10-02 vers 21 h 45, fenêtre de 15 jours. Les
-logs et les traces arrivent en continu : les compteurs bougent entre la requête
-et la capture, les rapports non.
+**Confrontation à Elasticsearch, 2026-10-02**, fenêtre de 15 jours. Les logs
+arrivent en continu : les compteurs bougent entre la requête et la capture, les
+rapports non.
 
 | Panneau                       | Kibana                  | Elasticsearch                                      |
 | ----------------------------- | ----------------------- | -------------------------------------------------- |
@@ -329,22 +310,23 @@ et la capture, les rapports non.
 | Présence par environnement    | `microcrm-staging` seul | `terms` sur `kubernetes.namespace` : une seule clé |
 | Réponses par code             | `200` seul              | `terms` sur `caddy.status` : 200 seul              |
 | Taux de réussite APM          | `99.92%` puis `99.94%`  | 1 572 succès sur 1 573 = 99,94 %                   |
-| Débit APM                     | deux environnements     | `demo-alerting` 1 248, `verification-poste` 325    |
 
 ### Ce que cet écran ne dit pas
 
 **Il n'y a pas de mesure de disponibilité, il y a une présence de logs.** Aucune
 sonde externe, aucune métrique Kubernetes dans Elasticsearch (pas de Metricbeat,
 pas de kube-state-metrics). Le signal le plus dense est la sonde du kubelet sur
-le front, journalisée par Caddy. Sur les 360 heures de la fenêtre, 189 portent
-au moins une sonde — soit **52,5 %**. ⚠️ Ce chiffre n'est **pas** un taux de
-disponibilité : le cluster est un minikube de poste, éteint la nuit, et un trou
-dans la courbe ne distingue pas « front arrêté » de « collecte arrêtée ».
+le front, journalisée par Caddy. Sur les 360 heures de la fenêtre du relevé, 189
+portent au moins une sonde — soit **52,5 %**. ⚠️ Ce chiffre n'est **pas** un
+taux de disponibilité : le cluster est un minikube de poste, éteint la nuit, et
+un trou dans la courbe ne distingue pas « front arrêté » de « collecte
+arrêtée ».
 
-**La production n'est pas observée.** Filebeat ne collecte qu'un namespace
-(`MICROCRM_NAMESPACE`, voir `filebeat-config.yaml`) : les 68 000 événements de
-la fenêtre viennent tous de `microcrm-staging`. Le panneau « par environnement »
-existe pour que cette absence se voie.
+**Les logs de production ne sont pas observés.** Filebeat ne collecte qu'un
+namespace (`MICROCRM_NAMESPACE`, voir `filebeat-config.yaml`) : tous les
+événements de log viennent de `microcrm-staging`. Le panneau « par
+environnement » existe pour que cette absence se voie. Les panneaux APM, eux,
+reçoivent les traces de staging et de production.
 
 **Le taux de réussite du front vaut 100 % par construction.** Le front sert une
 SPA et répond 200 à tout chemin, et 94 % de ses requêtes sont des sondes. Ce
@@ -355,16 +337,12 @@ compteur `restartCount` des pods. Ce qui est compté, c'est la ligne
 `Started MicroCRMApplication` du back : un pod qui démarre, quelle qu'en soit la
 cause — déploiement, relance du cluster, crash. Le front n'a pas d'équivalent.
 
-**Jusqu'au 2026-10-05, les panneaux APM ne décrivaient pas l'application
-déployée.** Les pods de staging (`back:bf272532`) et de production
-(`back:9f4168b3`) tournaient sur des images antérieures à l'instrumentation
-OpenTelemetry, et les transactions de `traces-apm*` portaient
-`service.environment: verification-poste` ou `demo-alerting` : des back lancés
-pour vérifier la chaîne de traces et démontrer les alertes. Depuis le
-déploiement de `back:5296658a` en staging et de `back:1.0.1` en production, le
-2026-10-05, des transactions `staging` et `production` s'y ajoutent, sans
-retouche des panneaux. Elles ne viennent encore que de requêtes provoquées ; les
-transactions d'essai restent visibles jusqu'à leur expiration.
+**Les panneaux APM mêlent trafic réel et essais.** Les transactions portent
+`service.environment` : `staging` et `production` pour les pods déployés,
+`verification-poste` et `demo-alerting` pour des back lancés sur le poste
+(vérification de la chaîne, démonstration des alertes), jusqu'à leur expiration
+après dix jours. Le débit se lit donc par environnement. Les transactions des
+pods déployés ne viennent que de requêtes provoquées.
 
 ## `alertes.ndjson`
 
@@ -382,7 +360,7 @@ règle d'alerte écrit un document par **changement d'état** — `declenchee`, 
 | Changements d'état par règle                | déclenchements et rétablissements, par `regle_id`                      |
 | Journal des alertes                         | table : une ligne par changement d'état, avec valeur et seuil          |
 
-Relevé le 2026-10-02, sur une heure, après les essais de déclenchement
+**Relevé du 2026-10-02**, sur une heure, après les essais de déclenchement
 (capture `docs/captures/kibana-alertes-suivi-declenchements-2026-10-02.png`) :
 8 déclenchements — 4 de disponibilité, 2 de performance, 2 de sécurité — et un
 journal de 16 lignes.
@@ -396,26 +374,58 @@ lorsqu'aucun seuil n'est franchi.
 
 **Les seize lignes du 2026-10-02 sont des essais.** Chaque règle a été
 déclenchée volontairement pour prouver qu'elle sonne ; ce ne sont pas des
-incidents. Trois d'entre elles — celles qui lisent `traces-apm*` — l'ont été sur
-un conteneur lancé sur le poste, pas sur un pod du cluster.
+incidents. Les trois qui lisent `traces-apm*` l'ont été sur un conteneur lancé
+sur le poste, pas sur un pod du cluster.
 
-**La production n'y figurera pas** tant que Filebeat ne collecte que
-`microcrm-staging` et qu'aucun back déployé n'émet de trace.
+**Les logs de production n'y figurent pas** : les cinq règles fondées sur les
+logs ne voient que `microcrm-staging`. Seules les trois règles sur traces
+couvrent la production.
 
 ## `dora.ndjson`
 
-13 objets, index `microcrm-dora`, alimenté par `scripts/ci/collect_dora.py`.
+13 objets, index `microcrm-dora`, alimenté par `scripts/ci/collect_dora.py`
+(`MONITORING.md` §9). Titre : « MicroCRM — métriques DORA (quatre indicateurs,
+fenêtre de 30 jours) ».
 
-### ⚠️ Ce que ces écrans affichent, et qu'il faut lire avant de conclure
+### Construction
 
-**La chaîne déploie depuis le 2026-09-22**, après sept échecs et deux mois de
-quota épuisé. Les quatre indicateurs ont donc une valeur, et celle du taux
-d'échec n'est pas flatteuse — ce qui est le sujet : ces chiffres disent ce que
-le projet a fait, pas ce qu'on voudrait montrer.
+- **Les quatre tuiles lisent la dernière collecte** (`last_value` de `valeur`,
+  trié par `@timestamp`), et non `max(valeur)`, qui mélangerait les collectes de
+  jours différents.
+- **Aucun texte ne cite de chiffre.** Les panneaux de texte expliquent comment
+  lire ; les valeurs viennent toutes de l'index, et ne peuvent donc pas périmer.
+- **Période par défaut : 30 jours**, la fenêtre du collecteur, pour que les
+  tuiles et les compteurs en dessous parlent de la même chose. Sur 90 jours, les
+  compteurs remonteraient au-delà de la fenêtre sur laquelle le taux d'échec est
+  calculé.
+- **La recherche sauvegardée** « Déploiements et rollbacks, un job par ligne »
+  inclut les rollbacks, et **la chronologie est annotée** par eux.
 
-Réinjecté le 2026-10-05 à 14 h 39 UTC (`collect_dora.py --days 30
---elasticsearch …`, 67 pipelines, 21 documents indexés), après la release
-1.0.1, et relu dans Kibana sur 30 jours :
+### Zéro mesuré et absence de donnée
+
+Deux indicateurs peuvent ne pas avoir de valeur : le délai de mise en
+production et le temps de rétablissement, quand rien n'a été mis en production
+ou rétabli sur la fenêtre. Une métrique vide s'affiche `0` par défaut, et un
+délai de zéro heure se lirait comme la performance parfaite.
+
+Les tuiles respectent la distinction. Vérifié sur la donnée réelle : en
+affichant août 2026, où l'index porte `valeur: null` pour ces deux indicateurs,
+elles rendent **`N/A`**, tandis que la fréquence rend `0.0000` et le taux
+d'échec `100.00 %` (capture
+`docs/captures/kibana-dora-non-mesurable-affiche-na-aout-2026-10-02.png`).
+
+⚠️ Cela tient à un détail de construction : la colonne `last_value` est écrite
+**sans** le filtre `valeur: *` que l'éditeur Lens ajoute de lui-même. Avec ce
+filtre, une collecte à `null` serait ignorée et la tuile afficherait la valeur
+d'une collecte plus ancienne. Recréer ces tuiles à la souris réintroduit le
+filtre : à vérifier après toute retouche.
+
+### Les valeurs affichées
+
+Injectées le 2026-10-05 à 14 h 39 UTC (`collect_dora.py --days 30
+--elasticsearch …`, 67 pipelines, 21 documents), après la release 1.0.1, et
+relues dans Kibana sur 30 jours (capture
+`docs/captures/kibana-dora-quatre-indicateurs-2026-10-05.png`) :
 
 | Indicateur                   | Tuile     | Ce que ça veut dire                                                                                    |
 | ---------------------------- | --------- | ------------------------------------------------------------------------------------------------------ |
@@ -424,85 +434,20 @@ Réinjecté le 2026-10-05 à 14 h 39 UTC (`collect_dora.py --days 30
 | Temps de rétablissement      | `2.21 h`  | médiane sur 4 observations                                                                             |
 | Taux d'échec des changements | `60.00 %` | 9 échecs sur 15 tentatives, dont 2 comptés comme annulés et 3 tombés sur un cluster arrêté             |
 
-Lu dans Kibana le même jour (capture
-`docs/captures/kibana-dora-quatre-indicateurs-2026-10-05.png`) : tuiles
-« Tentatives » à `15` et « Déploiements réussis » à `8`, 7 échecs tous en
-`script_failure`, chronologie sur les 22 et 23 septembre et le 5 octobre — ce
-que rend aussi la dernière collecte dans l'index. Les valeurs précédentes
-(2026-10-02, 57 pipelines) étaient 0,1667 / 1,38 / 2,14 / 66,67.
+Tuiles « Tentatives » à `15` et « Déploiements réussis » à `8`, 7 échecs tous en
+`script_failure`, chronologie sur les 22 et 23 septembre et le 5 octobre.
 
 ⚠️ **Le motif `script_failure` ne distingue pas un cluster arrêté d'un
 changement défectueux.** Les trois échecs du 2026-10-05 sont des déploiements
-tombés sur un minikube arrêté par un redémarrage de Docker Desktop. Le panneau
-des motifs les range avec les autres, et le taux d'échec les compte — ce que
-fait la définition DORA, et ce que ce tableau ne permet pas de corriger. Le
-texte d'aide en tête du tableau, écrit le 2026-10-02, parle encore de
-« deux journées ».
+tombés sur un minikube arrêté. Le panneau des motifs les range avec les autres,
+et le taux d'échec les compte — ce que fait la définition DORA, et ce que ce
+tableau ne permet pas de corriger.
 
 ⚠️ **Le comptage des rollbacks est volontairement pessimiste.** Un déploiement
 réussi puis annulé compte comme un échec, et le rattachement du rollback au
-déploiement est purement chronologique : le rollback du 2026-09-23 à 13:01:30 a
-échoué sur un timeout, n'a donc rien annulé, et compte quand même comme une
-annulation. C'est assumé et non corrigé ; le détail est dans `MONITORING.md`.
+déploiement est purement chronologique : un rollback en échec compte quand même
+comme une annulation. C'est assumé et non corrigé (`MONITORING.md` §9.3).
 
-### Ce qui a changé le 2026-10-02
-
-Le tableau de bord avait été construit le 2026-08-16, quand rien n'avait jamais
-été déployé, et il le disait partout : dans son titre (« aucun déploiement
-réussi »), dans le texte d'en-tête (« sept déploiements, sept échecs »), dans
-les sous-titres des tuiles, et surtout dans deux panneaux de texte qui
-écrivaient « Non mesurable » en dur. Après le 2026-09-22, ces deux panneaux
-affirmaient donc le contraire de l'index qu'ils étaient censés résumer. Et
-l'index lui-même n'avait pas été réalimenté depuis le 2026-08-16.
-
-- **Titre** : « MicroCRM — métriques DORA (quatre indicateurs, fenêtre de
-  30 jours) ». La recherche sauvegardée s'intitule « Déploiements et rollbacks,
-  un job par ligne » et inclut désormais les rollbacks.
-- **Les quatre tuiles lisent la dernière collecte** (`last_value` de `valeur`,
-  trié par `@timestamp`) au lieu de `max(valeur)`, qui aurait mélangé les
-  collectes de jours différents. Les textes ne citent plus aucun chiffre : ils
-  ne peuvent plus périmer.
-- **Période par défaut : 30 jours**, la fenêtre du collecteur, pour que les
-  tuiles et les compteurs en dessous parlent de la même chose. Sur 90 jours, les
-  compteurs remontent à 16 tentatives quand le taux d'échec en annonce 9.
-- **La chronologie est annotée** par les rollbacks.
-
-### Zéro mesuré et absence de donnée, sans panneau de texte
-
-Les deux indicateurs qui peuvent ne pas avoir de valeur étaient rendus en texte,
-parce qu'une métrique vide s'affiche `0` et qu'un délai de mise en production de
-zéro heure se lit comme la performance parfaite. Le texte réglait ce cas et en
-créait un pire : il ne suivait pas la donnée.
-
-Ce sont maintenant des tuiles, et la distinction tient toujours — vérifié sur
-la donnée réelle plutôt que supposé. En affichant le mois d'août 2026, où
-l'index porte `valeur: null` pour ces deux indicateurs, les tuiles rendent
-**`N/A`**, tandis que la fréquence rend `0.0000` et le taux d'échec `100.00 %`
-(capture `docs/captures/kibana-dora-non-mesurable-affiche-na-aout-2026-10-02.png`).
-
-⚠️ Cela ne tient qu'à un détail de construction : la colonne `last_value` est
-écrite **sans** le filtre `valeur: *` que l'éditeur Lens ajoute de lui-même.
-Avec ce filtre, une collecte à `null` serait ignorée et la tuile afficherait la
-valeur d'une collecte plus ancienne. Recréer ces tuiles à la souris réintroduit
-le filtre : c'est à vérifier après toute retouche.
-
-### Régénérer après modification
-
-Modifier dans Kibana, puis exporter. **Ne pas retoucher un objet à la main dans
-le NDJSON** : un objet sans `typeMigrationVersion` fait échouer l'import sur
-`Cannot read properties of undefined (reading 'layers')`.
-
-```shell
-curl -s -X POST 'http://127.0.0.1:5601/api/saved_objects/_export' \
-  -H 'kbn-xsrf: true' -H 'Content-Type: application/json' \
-  -d '{"objects":[{"type":"dashboard","id":"dora-dashboard"}],"includeReferencesDeep":true}' \
-  > k8s/elk/dashboards/dora.ndjson
-```
-
-`alertes.ndjson` est lui aussi un export de Kibana. Les trois autres fichiers
-du 2026-10-02 — `dora`, `securite`, `disponibilite` — n'ont pas été dessinés à
-la souris : leurs
-objets ont été décrits par un script, importés par l'API, contrôlés à l'écran,
-puis **exportés par Kibana** — ce sont ces exports qui sont versionnés, pas la
-sortie du script. C'est ce qui garantit que chaque objet porte les champs de
-migration que Kibana attend.
+⚠️ **Le texte d'aide en tête du tableau parle de « deux journées »** de
+déploiements ; elles sont trois depuis le 2026-10-05. C'est le seul texte du
+tableau qui décrive la donnée, et il est à reprendre à la prochaine retouche.

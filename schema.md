@@ -56,7 +56,7 @@ flowchart LR
 ## Table de normalisation — cycle → GitLab CI
 
 Dix étapes, 39 jobs (dont trois dans un pipeline enfant). La colonne « bloquant » dit ce qui arrête réellement le
-pipeline aujourd'hui, pas ce qui devrait l'arrêter.
+pipeline, pas ce qui devrait l'arrêter.
 
 | Étape du cycle           | Stage         | Outils                                          | Bloquant                                                  |
 | ------------------------ | ------------- | ----------------------------------------------- | --------------------------------------------------------- |
@@ -92,13 +92,13 @@ pas des oublis.
 | Tests E2E (Cypress/Playwright)             | **non implémenté** — aucun stage `integration`                                                                                                    |
 | `deploy-staging` automatique sur `develop` | en `when: manual` ; le passage en `on_success` est une ligne                                                                                      |
 | Métriques Prometheus / Grafana             | **non implémenté** — la supervision est faite par les logs (ELK), huit règles d'alerte Kibana et les indicateurs DORA ; ni CPU ni mémoire mesurés |
-| Traces de l'API en service                 | **en service depuis le 2026-10-05** en staging et en production — sans recul, aucune latence en service relevée                                   |
+| Traces de l'API en service                 | **en service** en staging et en production, sur du trafic provoqué — aucune latence en service relevée                                            |
 | Notification des alertes applicatives      | **non implémenté** — les alertes restent dans Kibana (connecteurs webhook sous licence payante)                                                   |
 | Signature des images                       | **non implémenté** — les images sont taguées par SHA, pas signées                                                                                 |
 | Déploiement progressif (canary)            | **non implémenté** — `RollingUpdate` avec `maxUnavailable: 0`                                                                                     |
 
-Deux choix méritent d'être signalés plutôt que subis. **Snyk** figurait dans la
-cible initiale : il est remplacé par Trivy et OWASP Dependency-Check, qui
-couvrent le même besoin sans compte tiers. **Docker Compose** était prévu comme
-cible de déploiement : il est remplacé par Kubernetes ([RELEASE.md](RELEASE.md)),
-et ne sert plus qu'à démarrer la pile en local.
+Deux choix méritent d'être signalés. **Trivy et OWASP Dependency-Check plutôt
+que Snyk** : ils couvrent le même besoin sans compte tiers. **Kubernetes plutôt
+que Docker Compose** comme cible de déploiement, parce qu'il conserve
+l'historique des révisions et fait du rollback une commande
+([RELEASE.md](RELEASE.md)) ; Docker Compose sert à démarrer la pile en local.
