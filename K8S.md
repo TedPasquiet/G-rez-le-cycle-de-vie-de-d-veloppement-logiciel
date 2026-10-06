@@ -1,61 +1,35 @@
 # Déploiement Kubernetes
 
 Description de l'infrastructure de déploiement de MicroCRM : les manifestes du
-dossier `k8s/`, la façon dont la CI les applique, et ce que cette première
-version ne fait pas encore.
+dossier `k8s/`, la façon dont la CI les applique, les preuves de leur
+fonctionnement sur un cluster réel, et leurs limites.
 
-**État : les manifestes ont été appliqués sur un vrai cluster.** Le
-2026-08-10, l'overlay `staging` a été déployé sur minikube v1.38.1
-(Kubernetes v1.35.1, driver `docker`) dans le namespace `microcrm-staging` :
-les deux Deployments ont atteint `rollout status` en `0`, les sondes ont été
-observées sous kubelet, l'Ingress a routé ses deux hôtes depuis l'extérieur du
-cluster, et le rollback automatique de `deploy.sh` a été déclenché sur un échec
-réel. Le détail des commandes, des sorties et des mesures est au **§14**, avec
-la liste de ce qui reste non vérifié.
-
-Cette campagne a mis au jour un défaut réel dans la séquence de déploiement —
-`kubectl apply -k` reposait l'image _placeholder_ à **chaque** application, pas
-seulement sur un cluster vierge.
-
-**Un audit de contre-vérification a ensuite rejoué toute la campagne** (2026-08-10).
-Les conclusions du §14 sont confirmées, à trois réserves près, toutes documentées
-à leur place :
-
-- la conséquence la plus lourde du défaut n'avait pas été vue — **le job
-  `rollback-production` ne pouvait pas fonctionner**, parce que la « révision
-  précédente » d'un déploiement sain était toujours le placeholder (§14.6) ;
-- la suppression d'un pod `back` provoque **16 s d'indisponibilité totale de
-  l'API**, ce que le §14.7 ne disait pas (§14.7) ;
-- l'affirmation du §6 selon laquelle un Deployment laissé sur le placeholder
-  serait « à un `rollout restart` de l'indisponibilité » est **fausse** :
-  l'ancien ReplicaSet le rattrape (§6).
-
-**Ce défaut est corrigé.** Les jobs de déploiement composent désormais un overlay
-Kustomize éphémère qui pose l'image réelle **avant** l'`apply` : l'état désiré
-envoyé au cluster ne contient plus de placeholder, un déploiement n'insère plus
-qu'une seule révision, et `rollback-production` ramène bien la version précédente
-réellement déployée. Le mécanisme est décrit au **§6**, et vérifié sur cluster au
-**§14.10** — deux déploiements successifs, zéro révision `PLACEHOLDER`, rollback
-sans `--to-revision` en `0`, disponibilité mesurée à 99,75 % sur 1 615 requêtes.
+**État.** Les manifestes sont appliqués par les jobs `deploy-staging` et
+`deploy-production` sur un cluster minikube (Kubernetes v1.35.1), dans les
+namespaces `microcrm-staging` et `microcrm-production`, avec des images tirées
+du registry GitLab. La production tourne `back:1.0.1` et `front:1.0.1` depuis
+le 2026-10-05. Le rollout, les sondes, l'Ingress, le retour arrière automatique
+et le job `rollback-production` sont vérifiés sur cluster ; les preuves sont
+rassemblées au **§14**.
 
 ## 1. Le problème que ça résout
 
-Avant ce lot, `scripts/deploy/deploy.sh` savait mettre à jour un déploiement,
-mais rien ne savait le **créer**. Le script commence par :
+`scripts/deploy/deploy.sh` sait mettre à jour un déploiement, mais pas le
+**créer**. Le script commence par :
 
 ```bash
 kubectl -n "$namespace" get deployment "$deployment" >/dev/null 2>&1 \
   || die "Deployment '$deployment' introuvable dans le namespace '$namespace'"
 ```
 
-Sur un cluster vierge, ce test échoue toujours. Le pipeline s'arrêtait donc à la
-première mise en production, et la seule façon d'avancer aurait été de créer les
-ressources à la main — c'est-à-dire d'avoir un environnement dont personne ne
-peut dire comment il a été construit, ni le reconstruire à l'identique.
+Sur un cluster vierge, ce test échoue toujours. Sans manifestes, il faudrait
+créer les ressources à la main, c'est-à-dire avoir un environnement dont
+personne ne peut dire comment il a été construit, ni le reconstruire à
+l'identique.
 
-C'est exactement ce que l'**infrastructure as code** évite : l'état voulu du
-cluster est décrit dans des fichiers versionnés, relus en revue, et appliqués par
-la CI. Un environnement perdu se recrée avec une commande.
+C'est ce que l'**infrastructure as code** évite : l'état voulu du cluster est
+décrit dans des fichiers versionnés, relus en revue, et appliqués par la CI. Un
+environnement perdu se recrée avec une commande.
 
 ## 2. Kustomize plutôt que Helm
 
@@ -73,21 +47,25 @@ mais pas de la même façon.
 
 Le choix se joue sur deux points.
 
-D'abord, **Kustomize est déjà là**. `alpine/kubectl:1.34.2`, l'image déjà figée
-dans le pipeline pour le stage `deploy`, sait faire `kubectl apply -k` sans rien
+D'abord, **Kustomize est déjà là**. `alpine/kubectl:1.34.2`, l'image figée dans
+le pipeline pour le stage `deploy`, sait faire `kubectl apply -k` sans rien
 installer. Helm aurait ajouté un outil à épingler, à mettre à jour et à
 surveiller, pour un dépôt qui n'a que deux services.
 
-Ensuite, **Helm résout un problème que je n'ai pas**. Sa force est de
+Ensuite, **Helm résout un problème que ce projet n'a pas**. Sa force est de
 _distribuer_ un composant paramétrable à des gens qui ne le connaissent pas :
 d'où les `values.yaml`, les conditions, les boucles. Ici les manifestes ne
 sortent pas du dépôt et ne servent qu'à une application. Le prix des templates —
 du YAML qu'on ne peut plus relire directement, ni valider sans le rendre —
 n'achèterait rien.
 
-Un troisième argument est plus discret mais compte en revue : avec Kustomize,
-**un overlay est un manifeste Kubernetes normal**. Une différence entre staging
-et production se lit comme du Kubernetes, pas comme une expression de template.
+Un troisième argument compte en revue : avec Kustomize, **un overlay est un
+manifeste Kubernetes normal**. Une différence entre staging et production se lit
+comme du Kubernetes, pas comme une expression de template.
+
+Un chart Helm équivalent existe aussi dans `helm/microcrm/`, parce que le brief
+le demande ; son rendu est contrôlé identique à celui de Kustomize, mais c'est
+Kustomize que la CI applique ([HELM.md](HELM.md)).
 
 ## 3. L'arborescence
 
@@ -95,7 +73,7 @@ et production se lit comme du Kubernetes, pas comme une expression de template.
 k8s/
   base/                     # la forme de l'application, commune à tous
     kustomization.yaml
-    configmap.yaml          # MICROCRM_CORS_ALLOWED_ORIGINS, FRONT_API_BASE_URL
+    configmap.yaml          # CORS, URL de l'API, profil Spring, agent OpenTelemetry
     back-deployment.yaml    # conteneur `back`, port 8080, sondes actuator
     back-service.yaml       # ClusterIP `back`
     front-deployment.yaml   # conteneur `front`, port 80 (Caddy)
@@ -126,27 +104,26 @@ vérifie ce contrat à chaque commit (§9).
 
 Deux valeurs manquent volontairement aux manifestes.
 
-| Valeur absente            | D'où elle vient                               | Pourquoi pas dans le dépôt                           |
-| ------------------------- | --------------------------------------------- | ---------------------------------------------------- |
-| Le **namespace**          | `$STAGING_NAMESPACE` / `$PROD_NAMESPACE`      | déjà externalisées, et `PROD_NAMESPACE` est protégée |
-| Le **chemin du registry** | `$CI_REGISTRY_IMAGE` + `$CI_COMMIT_SHORT_SHA` | dépend du projet GitLab, et le tag dépend du commit  |
+| Valeur absente            | D'où elle vient                                           | Pourquoi pas dans le dépôt                           |
+| ------------------------- | --------------------------------------------------------- | ---------------------------------------------------- |
+| Le **namespace**          | `$STAGING_NAMESPACE` / `$PROD_NAMESPACE`                  | déjà externalisées, et `PROD_NAMESPACE` est protégée |
+| Le **chemin du registry** | `$CI_REGISTRY_IMAGE` + le tag (SHA court, ou version tag) | dépend du projet GitLab, et le tag dépend du commit  |
 
 C'est la suite directe de la démarche de [VARIABILISATION.md](VARIABILISATION.md).
 Écrire `namespace: microcrm-prod` dans `overlays/production/kustomization.yaml`
-aurait remis dans le dépôt une coordonnée d'infrastructure qui venait juste d'en
-sortir — et aurait créé une seconde source de vérité, qui finit toujours par
-diverger de la première.
+remettrait dans le dépôt une coordonnée d'infrastructure, et créerait une
+seconde source de vérité, qui finit toujours par diverger de la première.
 
 La règle est donc : **Kustomize décrit la forme, la CI fournit les coordonnées.**
 
 - Le namespace arrive par la ligne de commande :
-  `kubectl apply -k k8s/overlays/staging -n "$STAGING_NAMESPACE"`.
-- L'image arrive par `deploy.sh`, juste après (§6).
+  `kubectl apply -k … -n "$STAGING_NAMESPACE"`.
+- L'image arrive par l'overlay éphémère composé par le job (§6).
 
-Conséquence à assumer : le namespace doit **exister avant** le premier
-déploiement. Ce n'est pas gênant — sa création est un acte d'administration du
-cluster, généralement soumis à des quotas et à des règles d'accès qui ne
-relèvent pas du dépôt applicatif.
+Le namespace doit donc **exister avant** le premier déploiement. Il est créé
+par Terraform, avec son quota et ses garde-fous ([TERRAFORM.md](TERRAFORM.md)) :
+sa création est un acte d'administration du cluster, qui ne relève pas du dépôt
+applicatif.
 
 ## 5. Sondes de santé et Actuator
 
@@ -185,10 +162,9 @@ management.endpoint.health.probes.enabled=true
 management.endpoint.health.show-details=never
 ```
 
-`show-details=never` mérite un mot : sans lui, `/actuator/health` détaille l'état
-de chaque composant (base de données, espace disque). Comme l'endpoint est
-joignable sans authentification, autant qu'il réponde `UP` ou `DOWN` et rien de
-plus.
+`show-details=never` : sans lui, `/actuator/health` détaille l'état de chaque
+composant (base de données, espace disque). Comme l'endpoint est joignable sans
+authentification, il répond `UP` ou `DOWN` et rien de plus.
 
 Vérifié en exécutant le jar construit :
 
@@ -203,17 +179,15 @@ Vérifié en exécutant le jar construit :
 
 ### Un `startupProbe` plutôt qu'un `initialDelaySeconds` long
 
-C'est le réglage le moins évident. Une JVM Spring Boot met plusieurs dizaines de
-secondes à démarrer, et ce délai dépend de la charge du nœud. Si on ne dit rien,
-la `livenessProbe` commence à interroger un processus qui n'a pas fini de
-démarrer, échoue trois fois, et le kubelet tue le conteneur — qui redémarre, et
-recommence. Un `CrashLoopBackOff` sans aucun bug applicatif.
+Une JVM Spring Boot met plusieurs secondes à démarrer, et ce délai dépend de la
+charge du nœud. Sans précaution, la `livenessProbe` interroge un processus qui
+n'a pas fini de démarrer, échoue trois fois, et le kubelet tue le conteneur —
+qui redémarre, et recommence. Un `CrashLoopBackOff` sans aucun bug applicatif.
 
-Le réflexe est de mettre un `initialDelaySeconds: 90` sur la liveness. Ça marche,
-mais ça coûte cher : ce délai s'applique **une seule fois**, alors que la
-tolérance qu'il achète serait utile au démarrage uniquement. Pire, pour couvrir
-le pire cas de démarrage il faut le surdimensionner, et pendant toute la vie du
-pod on aura choisi de détecter les blocages plus tard qu'on ne le pourrait.
+Un `initialDelaySeconds: 90` sur la liveness éviterait ce piège, mais il coûte
+cher : pour couvrir le pire cas de démarrage il faut le surdimensionner, et
+pendant toute la vie du pod on détecte les blocages plus tard qu'on ne le
+pourrait.
 
 Le `startupProbe` sépare proprement les deux régimes :
 
@@ -225,9 +199,10 @@ Le `startupProbe` sépare proprement les deux régimes :
 
 Tant que le `startupProbe` n'a pas réussi une fois, liveness et readiness sont
 **suspendues** : le démarrage dispose de 150 s sans risque d'être interrompu. Dès
-qu'il réussit, il ne s'exécute plus jamais et les deux autres prennent le relais
-avec des délais courts, donc réactifs. On obtient de la patience au démarrage
-_et_ de la réactivité ensuite, ce qu'un `initialDelaySeconds` ne permet pas.
+qu'il réussit, il ne s'exécute plus et les deux autres prennent le relais avec
+des délais courts, donc réactifs. On obtient de la patience au démarrage _et_ de
+la réactivité ensuite, ce qu'un `initialDelaySeconds` ne permet pas. Le
+comportement observé sous kubelet est au §14.3.
 
 Le front n'a pas ce problème : Caddy démarre en quelques dizaines de
 millisecondes. Son `startupProbe` est calibré à 15 × 2 s. Caddy n'ayant pas
@@ -235,24 +210,27 @@ d'endpoint de santé — son API d'admin écoute sur `localhost:2019` et n'est p
 joignable par le kubelet — les trois sondes interrogent `/`, qui renvoie
 `index.html`.
 
-## 6. Le déploiement : trois étapes, dans cet ordre
+## 6. Le déploiement : quatre étapes, dans cet ordre
 
-Les jobs `deploy-staging` et `deploy-production` enchaînent :
+Les jobs `deploy-staging` et `deploy-production` (`.gitlab/ci/deploy.yml`)
+enchaînent, après le garde-fou `exige_namespace` qui fait échouer le job si le
+namespace n'est pas défini :
 
 ```yaml
 - kubectl create secret docker-registry … | kubectl apply -f - # 1
 - build_deploy_overlay staging # 2
 - kubectl apply -k "$DEPLOY_OVERLAY_DIR" -n "$STAGING_NAMESPACE" # 3
-- bash scripts/deploy/deploy.sh -n … -d "$APP_BACK_NAME" … # 4
+- bash scripts/deploy/deploy.sh -n … -d "$APP_BACK_NAME" … # 4 (back, puis front)
 ```
 
 **1. Le Secret du registry**, que les deux Deployments référencent en
 `imagePullSecrets` (§12). Il vient d'abord parce que sans lui les pods créés à
-l'étape 3 ne pourraient pas tirer leurs images d'un registry privé.
+l'étape 3 ne pourraient pas tirer leurs images.
 
-**2. `build_deploy_overlay`** fabrique un overlay Kustomize éphémère qui compose
-l'overlay d'environnement et pose par-dessus le chemin de registry et le tag du
-commit :
+**2. `build_deploy_overlay`** (`.gitlab/ci/templates.yml`) fabrique un overlay
+Kustomize éphémère qui compose l'overlay d'environnement et pose par-dessus le
+chemin de registry et le tag d'image (`$DEPLOY_IMAGE_TAG` : le SHA court du
+commit, ou le numéro de version sur un tag) :
 
 ```yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -266,99 +244,83 @@ images:
 ```
 
 **3. `kubectl apply -k`** envoie cet overlay. L'état désiré reçu par le cluster
-porte donc **directement la bonne image** : plus aucun placeholder ne quitte le
+porte donc **directement la bonne image** : aucun placeholder ne quitte le
 dépôt.
 
 **4. `deploy.sh`** attend la fin du rollout et **revient automatiquement en
 arrière** s'il n'aboutit pas dans `$DEPLOY_TIMEOUT`. Son `kubectl set image` est
-désormais un **no-op** — l'étape 3 a déjà posé la bonne image — et il ne crée
-donc aucune révision supplémentaire (vérifié, §14.10). On le garde pour l'attente
-de rollout et pour le garde-fou, couverts par les 430 assertions de
+un **no-op** — l'étape 3 a déjà posé la bonne image — et il ne crée donc aucune
+révision supplémentaire (vérifié, §14.10). Il est gardé pour l'attente de
+rollout et pour le garde-fou, couverts par les 430 assertions de
 `scripts/tests/run_tests.sh`.
 
 ### Pourquoi un overlay éphémère, et pas autre chose
 
-Trois voies menaient au même résultat ; c'est la contrainte d'outillage qui a
-tranché.
+Trois voies mènent au même résultat ; c'est la contrainte d'outillage qui
+tranche.
 
-| Voie                             | Pourquoi elle n'a pas été retenue                                                                                                                            |
+| Voie                             | Pourquoi elle n'est pas retenue                                                                                                                              |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `kustomize edit set image`       | `$KUBECTL_IMAGE` (`alpine/kubectl`) ne contient **que** le binaire `kubectl` — pas de `kustomize` autonome. Il faudrait figer une image d'outillage de plus. |
-| `sed` sur le YAML rendu          | Réintroduit une substitution textuelle sur du YAML, c'est-à-dire le mécanisme de template que le choix de Kustomize cherchait à éviter (§2).                 |
+| `sed` sur le YAML rendu          | Réintroduit une substitution textuelle sur du YAML, c'est-à-dire le mécanisme de template que le choix de Kustomize cherche à éviter (§2).                   |
 | **Overlay éphémère + `images:`** | Le Kustomize **embarqué dans `kubectl`** suffit. Aucune image d'outillage supplémentaire, et la substitution reste structurée, pas textuelle.                |
 
-Deux points d'implémentation méritent d'être notés, parce qu'ils ne sont pas
-devinables :
+Deux points d'implémentation ne sont pas devinables :
 
 - **Le répertoire doit être dans le dépôt, désigné par un chemin relatif.**
   Kustomize refuse un chemin absolu dans `resources` (`new root … cannot be
 absolute`), donc un répertoire sous `/tmp` ne convient pas. Il vit en
-  `.k8s-deploy-overlay/` et il est dans `.gitignore`.
+  `.k8s-deploy-overlay/` (`$DEPLOY_OVERLAY_DIR`) et il est dans `.gitignore`.
 - **Le préfixe `microcrm/` est une clé de correspondance.** C'est lui qui relie
   le transformateur `images:` aux manifestes ; s'il changeait d'un côté
   seulement, la substitution ne mordrait plus et le placeholder partirait tel
-  quel. Il est donc nommé (`$K8S_PLACEHOLDER_IMAGE_PREFIX`) et un garde-fou du
-  job échoue si le rendu contient encore `PLACEHOLDER`.
+  quel. Il est donc nommé (`$K8S_PLACEHOLDER_IMAGE_PREFIX`) et un garde-fou de
+  `build_deploy_overlay` échoue si le rendu contient encore `PLACEHOLDER`.
 
 Les manifestes de `k8s/base/` gardent leur placeholder : c'est ce qui permet à
 `lint-k8s` de les valider sans aucune coordonnée de registry, sur des branches
 où les variables protégées ne sont pas disponibles (§4, §8.4).
 
-### Le défaut que ce mécanisme corrige
+### Pourquoi l'image doit être posée avant l'`apply`
 
-> **Historique.** Ce document a longtemps décrit une séquence en deux commandes,
-> `apply -k` puis `deploy.sh`, où l'image arrivait par `kubectl set image`. Cette
-> section affirmait alors que « sur un cluster déjà déployé, `apply` ne change
-> pas l'image posée par le déploiement précédent ». **C'était faux**, et la
-> campagne du §14 l'a prouvé sur cluster.
->
-> **La cause.** `kubectl set image` ne met pas à jour l'annotation
-> `kubectl.kubernetes.io/last-applied-configuration` — celle-ci continuait de
-> porter `PLACEHOLDER`. Or `kubectl apply` réécrit tout champ **présent** dans la
-> configuration désirée ; l'annotation ne sert qu'à détecter les champs
-> _supprimés_. Chaque `apply -k` reposait donc `PLACEHOLDER` sur un déploiement
-> pourtant sain.
->
-> **La conséquence, et c'est la plus grave.** Chaque déploiement insérait **deux**
-> révisions : une à `PLACEHOLDER` posée par `apply`, une à la vraie image posée
-> par `set image`. La « révision précédente » d'un déploiement sain était donc
-> **toujours le placeholder**. Or `rollback-production` appelle `rollback.sh`
-> sans `--to-revision` et sans moyen d'en passer un : **le seul filet de sécurité
-> du pipeline aurait cassé la production au lieu de la réparer.**
->
-> **Ce que la disponibilité ne révélait pas.** `maxUnavailable: 0` masquait
-> entièrement le problème : les anciens pods n'étant retirés qu'une fois les
-> nouveaux `Ready` — ce qui n'arrivait jamais avec le placeholder — le service
-> restait servi. Mesuré à l'époque : 440 requêtes API et 456 requêtes front
-> pendant la fenêtre, **toutes en `200`**. Un défaut peut être invisible en
-> disponibilité et grave en exploitabilité ; c'est le principal enseignement de
-> cet épisode.
+L'alternative naïve — appliquer les manifestes avec leur placeholder, puis
+poser l'image par `kubectl set image` — casse le retour arrière, sans que la
+disponibilité le laisse voir :
 
-Avec l'overlay éphémère, l'état désiré et l'annotation portent la même image
-réelle. Un déploiement insère **une seule** révision, et la révision précédente
-est la version précédente réellement déployée. `rollback-production` redevient
-ce qu'il prétend être. Vérifié de bout en bout au §14.10.
+- `kubectl set image` ne met pas à jour l'annotation
+  `kubectl.kubernetes.io/last-applied-configuration`, qui continue de porter
+  `PLACEHOLDER`.
+- `kubectl apply` réécrit tout champ **présent** dans la configuration désirée ;
+  l'annotation ne sert qu'à détecter les champs _supprimés_. Chaque `apply`
+  repose donc `PLACEHOLDER`, même sur un déploiement sain.
+- Chaque déploiement insère alors **deux** révisions : le placeholder, puis la
+  vraie image. La « révision précédente » d'un déploiement sain est toujours le
+  placeholder, et `rollback-production`, qui appelle `rollback.sh` sans
+  `--to-revision`, viserait une image inexistante.
+- `maxUnavailable: 0` masque entièrement le défaut : les anciens pods ne sont
+  retirés qu'une fois les nouveaux `Ready`, ce qui n'arrive jamais avec le
+  placeholder. Le service reste servi, toutes les requêtes en `200`.
 
-### Ce qui disparaît, et ce qui reste
+Ce scénario a été reproduit sur cluster le 2026-08-10 (deux révisions par
+déploiement, rollback sans argument en échec sur `PLACEHOLDER`). Avec l'overlay
+éphémère, l'état désiré et l'annotation portent la même image réelle : un
+déploiement insère **une seule** révision, et la révision précédente est la
+version précédente réellement déployée (§14.10). Un défaut peut être invisible
+en disponibilité et grave en exploitabilité : c'est l'historique des révisions
+qu'il faut vérifier, pas seulement le service.
 
-La fenêtre d'`ImagePullBackOff` entre les deux commandes **n'existe plus** :
-l'`apply` crée directement des pods avec la bonne image. Le premier déploiement
-sur un cluster vierge se déroule sans aucun pod en erreur (§14.10).
+### Conséquences pour l'ordre des étapes
 
-L'effet de bord de l'ordre des jobs est lui aussi très atténué. Les jobs
-appliquent l'overlay **une fois** puis appellent `deploy.sh` **deux fois, en
-série** : le back d'abord, le front ensuite. Si le back échoue, `deploy.sh` sort
-en `3`, le job s'arrête et la seconde commande n'est jamais exécutée. Auparavant
-le Deployment `front` restait sur `microcrm/front:PLACEHOLDER` ; désormais
-l'étape 3 lui a **déjà posé la bonne image** — vérifié, un seul `apply` suffit à
-mettre les deux Deployments sur l'image du commit. Ce qui manque alors n'est plus
-un état désiré faux, mais seulement l'**observation** de son rollout : personne
-n'attend le front ni ne le ramène en arrière s'il échoue. _(Cette dernière
-conséquence est déduite du mécanisme, elle n'a pas été rejouée en provoquant un
-échec du back.)_
-
-`deploy-staging` n'a plus d'`allow_failure` : un échec du déploiement en staging
-fait échouer le pipeline, comme en production.
+- **Pas de fenêtre d'`ImagePullBackOff`** : l'`apply` crée directement des pods
+  avec la bonne image, y compris sur un cluster vierge.
+- **Un seul `apply` pose l'image des deux Deployments**, puis `deploy.sh` est
+  appelé **deux fois, en série** : le back d'abord, le front ensuite. Si le back
+  échoue, `deploy.sh` sort en `3`, le job s'arrête et la seconde commande n'est
+  pas exécutée. Le Deployment `front` porte déjà la nouvelle image, mais
+  personne n'attend son rollout ni ne le ramène en arrière s'il échoue. _(Déduit
+  du mécanisme, non rejoué en provoquant un échec du back.)_
+- **`deploy-staging` est manuel et bloquant**, comme `deploy-production` : un
+  échec du déploiement en staging fait échouer le pipeline.
 
 ## 7. Ce qui varie entre les environnements
 
@@ -370,11 +332,12 @@ fait échouer le pipeline, comme en production.
 | Hôte de l'API                   | `api.microcrm.staging.example.com` | `api.microcrm.example.com`    |
 | `MICROCRM_CORS_ALLOWED_ORIGINS` | l'hôte du front de staging         | l'hôte du front de production |
 | `FRONT_API_BASE_URL`            | l'hôte d'API de staging            | l'hôte d'API de production    |
+| `OTEL_RESOURCE_ATTRIBUTES`      | `deployment.environment=staging`   | `…=production`                |
 | Ressources du back              | 200 m / 512 Mi → 1 CPU / 768 Mi    | 500 m / 768 Mi → 2 CPU / 1 Gi |
 | Label `instance`                | `microcrm-staging`                 | `microcrm-production`         |
 
 Les noms de domaine utilisent `example.com`, réservé aux exemples par la
-RFC 2606 : ils sont à remplacer par les vrais le jour où un cluster existera.
+RFC 2606 : ils sont à remplacer par les vrais sur un cluster exposé.
 
 ### Pourquoi la base porte des hôtes en `.invalid`
 
@@ -383,17 +346,16 @@ un TLD dont la RFC 2606 garantit qu'il ne résout jamais. C'est délibéré.
 
 Si la base portait les hôtes d'un environnement réel — la production, par
 exemple — le patch de cet environnement n'aurait plus rien à changer : il
-deviendrait un no-op silencieux. Deux conséquences, toutes deux mauvaises :
-modifier la base changerait la production sans qu'aucun overlay ne le laisse
-voir, et supprimer le patch de production ne changerait rien, donc personne ne
-s'apercevrait de sa disparition.
+deviendrait un no-op silencieux. Modifier la base changerait la production sans
+qu'aucun overlay ne le laisse voir, et supprimer le patch de production ne
+changerait rien, donc personne ne s'apercevrait de sa disparition.
 
 Avec un hôte non résolvable dans la base, **chaque overlay est obligé de
 surcharger**, et un patch oublié se signale au lieu de router vers le mauvais
 environnement. `validate_k8s.sh` en fait une assertion : aucun hôte en
 `.invalid` ne doit subsister dans le rendu d'un overlay.
 
-### Pas de `namePrefix`, et c'est un piège évité
+### Pas de `namePrefix`
 
 Le réflexe Kustomize serait d'ajouter `namePrefix: staging-` pour distinguer les
 ressources. **Ça casserait le déploiement** : les Deployments s'appelleraient
@@ -401,9 +363,8 @@ ressources. **Ça casserait le déploiement** : les Deployments s'appelleraient
 `deployment/back`. L'échec serait tardif (au premier déploiement) et le message
 peu parlant (« Deployment 'back' introuvable »).
 
-L'isolation entre environnements est déjà assurée par le namespace, qui les rend
-étanches. Un préfixe n'ajouterait rien. Le job `lint-k8s` monte la garde sur ce
-point précis (§9).
+L'isolation entre environnements est déjà assurée par le namespace. Un préfixe
+n'ajouterait rien. Le job `lint-k8s` monte la garde sur ce point précis (§9).
 
 ### Deux hôtes plutôt qu'un préfixe `/api`
 
@@ -411,17 +372,25 @@ Le front est une application Angular : c'est le **navigateur de l'utilisateur**
 qui appelle l'API, pas le pod front. Le back doit donc être joignable depuis
 l'extérieur du cluster ; le Service ClusterIP ne suffit pas.
 
-Router l'API sur `/api` du même hôte aurait supposé de réécrire le chemin avant
-de le transmettre, Spring Data REST exposant ses collections à la racine
+Router l'API sur `/api` du même hôte supposerait de réécrire le chemin avant de
+le transmettre, Spring Data REST exposant ses collections à la racine
 (`/persons`, `/organizations`). Cette réécriture passe par des annotations propres
-à chaque contrôleur d'Ingress — nginx, Traefik et HAProxy ont chacune la leur —
-ce qui aurait rendu le manifeste non portable. Un hôte dédié évite la réécriture
-et reste du Kubernetes standard.
+à chaque contrôleur d'Ingress — nginx, Traefik et HAProxy ont chacun la leur —
+ce qui rendrait le manifeste non portable. Un hôte dédié évite la réécriture et
+reste du Kubernetes standard.
 
 Corollaire : front et API sont sur des **origines différentes**, donc le CORS
 n'est pas décoratif. `MICROCRM_CORS_ALLOWED_ORIGINS` doit contenir l'hôte du
-front de l'environnement, schéma compris, sinon le navigateur bloquera toutes les
+front de l'environnement, schéma compris, sinon le navigateur bloque toutes les
 requêtes. C'est fait dans chaque overlay.
+
+### Pas d'`ingressClassName` dans la base
+
+La base ne fixe pas de classe d'Ingress : le contrôleur est une propriété du
+cluster cible, donc de l'environnement. Sur minikube, l'addon `ingress` déclare
+sa classe `nginx` par défaut et l'API server la renseigne seule (§14.4). Un
+cluster sans classe par défaut refuserait l'Ingress : le champ irait alors dans
+l'overlay, pas dans la base.
 
 ## 8. Les limites assumées
 
@@ -436,47 +405,44 @@ démarrage par `InitialDataFixture`. Deux conséquences :
 - **Les données disparaissent à chaque redémarrage de pod.** Un rollout, une
   éviction, un `OOMKill` : on repart du jeu de démonstration. C'est acceptable
   pour un projet pédagogique, pas pour un vrai CRM.
-- **Le back ne peut pas monter en replicas.** C'est le piège le plus sérieux du
-  lot : à deux pods, chacun aurait _sa_ base. Une écriture sur l'un serait
-  invisible depuis l'autre, et le Service répartissant les requêtes, une lecture
-  sur deux ne verrait pas ce qui vient d'être écrit. Aucune erreur ne serait
-  levée — juste une application qui « perd » des données au hasard.
+- **Le back ne peut pas monter en replicas.** À deux pods, chacun aurait _sa_
+  base. Une écriture sur l'un serait invisible depuis l'autre, et le Service
+  répartissant les requêtes, une lecture sur deux ne verrait pas ce qui vient
+  d'être écrit. Aucune erreur ne serait levée — juste une application qui
+  « perd » des données au hasard.
+- **La perte du pod back coupe l'API** : 16,1 s d'indisponibilité totale
+  mesurées (§14.7). `maxUnavailable: 0` protège les déploiements, pas la perte
+  d'un pod.
 
 C'est pour cette raison qu'il n'y a **pas de PersistentVolumeClaim** : un volume
 ne servirait à rien tant que la base vit dans le tas de la JVM. La vraie sortie
-est d'externaliser la base (PostgreSQL), ce qui lèverait les deux limites d'un
-coup. En attendant, le plafond à 1 replica est documenté dans
-`back-deployment.yaml` et dans les deux overlays, à l'endroit où quelqu'un serait
-tenté de changer le chiffre.
+est d'externaliser la base (PostgreSQL), ce qui lèverait ces limites d'un coup.
+Le plafond à 1 replica est documenté dans `back-deployment.yaml` et dans les deux
+overlays, à l'endroit où quelqu'un serait tenté de changer le chiffre.
 
 ### 8.2 La configuration du front est chargée par une requête supplémentaire
 
-_Cette section décrivait jusqu'ici une limite bien plus lourde — `FRONT_API_BASE_URL`
-était inerte, et le front déployé appelait `localhost:8080` depuis le poste de
-l'utilisateur. Le lot P1 de [VARIABILISATION.md](VARIABILISATION.md) §5 étant
-traité, la clé est réellement consommée. Voir §13._
-
-Ce qu'il reste est mineur mais réel : l'application émet une requête
-`GET /config.json` **avant** de démarrer. Deux conséquences :
+L'application émet une requête `GET /config.json` **avant** de démarrer (§13).
+Deux conséquences :
 
 - le premier rendu est retardé du temps de cet aller-retour — négligeable, le
   fichier est servi par Caddy depuis sa mémoire, sans accès disque ;
 - si Caddy répond mais que la configuration est illisible, l'application ne
   démarre pas et l'erreur reste dans la console du navigateur. C'est un choix
-  délibéré : un repli silencieux sur `localhost:8080` reproduirait exactement la
-  panne que ce mécanisme supprime, en la rendant invisible. Le détail des cas est
-  dans `front/src/app/config.ts`.
+  délibéré : un repli silencieux sur `localhost:8080` produirait un front qui
+  appelle le poste de l'utilisateur, panne invisible. Le détail des cas est dans
+  `front/src/app/config.ts`.
 
 ### 8.3 Une modification de la ConfigMap ne redémarre pas les pods
 
 `configmap.yaml` est une ressource ordinaire, pas un `configMapGenerator`. Un
-générateur aurait ajouté un suffixe de hachage au nom, ce qui aurait fait changer
-le Deployment à chaque modification de la configuration, donc déclenché un
+générateur ajouterait un suffixe de hachage au nom, ce qui ferait changer le
+Deployment à chaque modification de la configuration, donc déclencherait un
 rollout automatique.
 
-J'ai préféré la ressource simple, plus lisible en revue et plus facile à
-retrouver dans le cluster (`kubectl get configmap microcrm-config`). Le prix est
-qu'après avoir changé une origine CORS il faut relancer les pods à la main :
+La ressource simple est plus lisible en revue et plus facile à retrouver dans
+le cluster (`kubectl get configmap microcrm-config`). Le prix est qu'après avoir
+changé une origine CORS il faut relancer les pods à la main :
 
 ```shell
 kubectl -n "$NAMESPACE" rollout restart deployment/back
@@ -498,10 +464,10 @@ unable to recognize "k8s/overlays/staging": ... connection refused
 ```
 
 Or `lint-k8s` tourne sur les branches de feature, où `KUBE_CONFIG` — protégée —
-n'est pas disponible, et l'exigence était justement qu'il n'ait pas besoin de
-cluster. Une validation de schéma hors ligne demanderait `kubeconform`, à ajouter
-au pipeline comme une image d'outillage figée de plus. C'est le prochain
-raffinement naturel de ce job.
+n'est pas disponible, et il ne doit pas avoir besoin de cluster. Une validation
+de schéma hors ligne demanderait `kubeconform`, à ajouter au pipeline comme une
+image d'outillage figée de plus. C'est le prochain raffinement naturel de ce
+job.
 
 ## 9. Valider en local
 
@@ -521,9 +487,8 @@ scripts/tests/validate_k8s.sh --autotest
 ```
 
 Le job **`lint-k8s`** (stage `lint`, image `$KUBECTL_IMAGE`) exécute
-`scripts/tests/validate_k8s.sh --autotest` à chaque commit, sur les mêmes règles
-que les autres jobs de lint. Le script construit les deux overlays puis assère
-sur le rendu ([SCRIPTS.md](SCRIPTS.md)) :
+`scripts/tests/validate_k8s.sh --autotest` à chaque commit. Le script construit
+les deux overlays puis vérifie le rendu ([SCRIPTS.md](SCRIPTS.md)) :
 
 | Ce qui est vérifié                                        | Ce que ça attrape                                                 |
 | --------------------------------------------------------- | ----------------------------------------------------------------- |
@@ -534,6 +499,7 @@ sur le rendu ([SCRIPTS.md](SCRIPTS.md)) :
 | `runAsNonRoot` / `allowPrivilegeEscalation` par conteneur | une régression du socle de sécurité                               |
 | aucune image en `latest` ni sans tag                      | un déploiement non reproductible                                  |
 | valeurs distinctes entre staging et production            | un patch d'overlay qui ne mord pas                                |
+| `imagePullSecrets` égal à `$REGISTRY_SECRET_NAME`         | un Secret créé sous un autre nom que celui que cherchent les pods |
 
 Les deux premières lignes sont le **contrat avec `deploy.sh`**, qui exécute
 `kubectl set image deployment/back back=…`. Les deux moitiés comptent : renommer
@@ -541,25 +507,24 @@ le Deployment donne « Deployment 'back' introuvable », renommer le conteneur
 donne « unable to find container named "back" ». Les deux échouent tard, au
 déploiement, avec un message qui ne désigne pas la cause.
 
-`--autotest` rejoue ensuite toutes ces assertions sur des rendus volontairement
-abîmés et vérifie qu'elles **échouent** bien — une assertion qui ne se déclenche
-jamais ne prouve rien.
+`--autotest` rejoue ensuite ces assertions sur des rendus volontairement abîmés
+et vérifie qu'elles **échouent** bien — une assertion qui ne se déclenche jamais
+ne prouve rien. Au 2026-10-06 : 174 tests, 0 en échec.
 
 ## 10. Déployer sur un cluster vierge
 
-Prérequis : un cluster, les variables `KUBE_CONFIG`, `STAGING_NAMESPACE` et
-`PROD_NAMESPACE` créées dans GitLab ([VARIABILISATION.md](VARIABILISATION.md) §7),
-et un contrôleur d'Ingress installé.
+Prérequis : un cluster et un contrôleur d'Ingress (installés par Ansible,
+[ANSIBLE.md](ANSIBLE.md)), l'agent GitLab connecté au cluster, et les variables
+`STAGING_NAMESPACE` et `PROD_NAMESPACE` créées dans GitLab
+([VARIABILISATION.md](VARIABILISATION.md) §7).
 
-1. **Créer le namespace** — il n'est pas dans les manifestes (§4).
-
-   Depuis l'introduction de Terraform, ce n'est plus la voie normale : le
-   namespace, son `ResourceQuota`, son `LimitRange` et ses `NetworkPolicy` sont
-   décrits dans `terraform/environments/<env>/` et créés par
-   `terraform apply` ([TERRAFORM.md](TERRAFORM.md) §3 pour le partage des
-   responsabilités, §10 pour la commande). La commande ci-dessous reste exacte
-   et suffit à déployer, mais elle produit un namespace **sans aucun garde-fou
-   de consommation** — c'est un dépannage, pas la procédure :
+1. **Créer le namespace** — il n'est pas dans les manifestes (§4). Le namespace,
+   son `ResourceQuota`, son `LimitRange` et ses `NetworkPolicy` sont décrits
+   dans `terraform/environments/<env>/` et créés par `terraform apply`
+   ([TERRAFORM.md](TERRAFORM.md) §3 pour le partage des responsabilités, §10
+   pour la commande). En dépannage seulement, la commande ci-dessous suffit à
+   déployer, mais elle produit un namespace **sans aucun garde-fou de
+   consommation** :
 
    ```shell
    kubectl create namespace "$STAGING_NAMESPACE"
@@ -611,7 +576,10 @@ et un contrôleur d'Ingress installé.
    ```shell
    kubectl -n "$STAGING_NAMESPACE" get pods,svc,ingress
    kubectl -n "$STAGING_NAMESPACE" rollout status deployment/back
+   kubectl -n "$STAGING_NAMESPACE" rollout history deployment/back
    ```
+
+   L'historique ne doit contenir aucune révision `PLACEHOLDER` (§6).
 
 ## 11. Sécurité des conteneurs
 
@@ -621,18 +589,16 @@ Les deux Deployments appliquent le même socle : `runAsNonRoot`,
 `automountServiceAccountToken: false` — rien dans l'application n'appelle l'API
 Kubernetes, un jeton monté dans le pod ne serait qu'une surface d'attaque.
 
-Trois points ont demandé une vérification plutôt qu'une supposition.
+Trois points reposent sur une vérification plutôt que sur une supposition.
 
 **L'UID du back.** `back/Dockerfile` crée son utilisateur avec `adduser -D -H
 app`, sans UID explicite. Les manifestes doivent pourtant en déclarer un
-numérique : `runAsNonRoot` seul laisse le kubelet vérifier trop tard. La commande
-a été exécutée dans `alpine:3.19`, puis dans `alpine:3.24` à la montée de version,
-pour lever le doute — `adduser` attribue le
-premier UID libre à partir de 1000, donc `app` vaut **1000:1000**. C'est cette
-valeur qui est figée dans `back-deployment.yaml`. Elle reste couplée au
-Dockerfile : y ajouter un utilisateur avant `app` la ferait glisser. Un `USER
-1000` numérique dans le Dockerfile supprimerait ce couplage — amélioration
-possible, non faite ici pour ne pas modifier l'image dans ce lot.
+numérique : `runAsNonRoot` seul laisse le kubelet vérifier trop tard. Exécuté
+dans `alpine:3.24`, `adduser` attribue le premier UID libre à partir de 1000,
+donc `app` vaut **1000:1000**. C'est cette valeur qui est figée dans
+`back-deployment.yaml`. Elle reste couplée au Dockerfile : y ajouter un
+utilisateur avant `app` la ferait glisser. Un `adduser -u 1000` explicite, comme
+dans `front/Dockerfile`, supprimerait ce couplage.
 
 **Le `/tmp` du back.** `readOnlyRootFilesystem: true` empêche la JVM d'écrire, or
 elle en a besoin : `hsperfdata` d'une part, et surtout le répertoire de travail
@@ -640,25 +606,20 @@ que le Tomcat embarqué de Spring Boot crée au démarrage sous `java.io.tmpdir`
 Sans volume, l'application ne démarre pas. Un `emptyDir` est donc monté sur
 `/tmp`.
 
-**Le cas Caddy, qui est le plus surprenant.** L'image officielle tourne en root,
-et on pouvait s'attendre à ce que `runAsNonRoot` l'empêche d'écouter sur le port
-80 — un port privilégié. Le vrai comportement est différent, et pire :
+**La capability de Caddy.** Le binaire `/usr/bin/caddy` porte la _capability de
+fichier_ `cap_net_bind_service=ep`, posée dans `front/Dockerfile` comme le fait
+l'image officielle. Quand cette capability ne figure pas dans l'ensemble
+limitant du conteneur, le noyau refuse l'`exec` lui-même, avant qu'une seule
+ligne de Caddy ne s'exécute :
 
 ```
-$ docker run --rm --user 1000:1000 --cap-drop ALL caddy:2-alpine caddy run ...
+$ docker run --rm --user 1000:1000 --cap-drop ALL <image front> caddy run ...
 exec /usr/bin/caddy: operation not permitted
 ```
 
-Le conteneur ne démarre pas **du tout**. La cause n'est pas le port mais le
-binaire : `/usr/bin/caddy` porte la _capability de fichier_
-`cap_net_bind_service=ep`. Quand cette capability ne figure pas dans l'ensemble
-limitant du conteneur, le noyau refuse l'`exec` lui-même, avant qu'une seule
-ligne de Caddy ne s'exécute. Vérifié : le comportement est identique **en root
-comme en non-root, et sur un port haut comme sur le port 80**.
-
-La conséquence est contre-intuitive et vaut d'être notée : **passer le Caddyfile
-en `:8080` ne résoudrait rien.** La seule solution, à image inchangée, est de
-rendre la capability :
+Le comportement est identique **en root comme en non-root, et sur un port haut
+comme sur le port 80** : passer le Caddyfile en `:8080` ne résoudrait rien. À
+image inchangée, la seule solution est de rendre la capability :
 
 ```yaml
 capabilities:
@@ -666,24 +627,22 @@ capabilities:
   add: [NET_BIND_SERVICE]
 ```
 
-C'est ce que fait `front-deployment.yaml`, et le port 80 est conservé. Testé en
-local : Caddy démarre et sert `index.html` en `200` sous `--user 1000:1000
---cap-drop ALL --cap-add NET_BIND_SERVICE --read-only`. Deux `emptyDir` sont
-montés sur `/config` et `/data`, où Caddy écrit son autosave de configuration et
-son stockage TLS ; sans eux il fonctionne quand même, mais journalise deux
-erreurs à chaque démarrage.
+C'est ce que fait `front-deployment.yaml`, et le port 80 est conservé. Caddy
+démarre et sert `index.html` en `200` sous `--user 1000:1000 --cap-drop ALL
+--cap-add NET_BIND_SERVICE --read-only`. Trois `emptyDir` sont montés sur
+`/config`, `/data` et `/tmp`, où Caddy écrit son autosave de configuration et
+son stockage TLS.
 
-L'alternative — reconstruire une image Caddy sans cette capability de fichier et
-écouter sur un port haut — supprimerait le besoin de `NET_BIND_SERVICE`. Elle
-demande de toucher à `front/Dockerfile` et au `Caddyfile`, ce qui dépasse le
-périmètre de ce lot.
+L'alternative — ne pas poser la capability de fichier dans l'image et écouter
+sur un port haut — supprimerait le besoin de `NET_BIND_SERVICE`. Elle demande de
+modifier ensemble `front/Dockerfile`, le `Caddyfile` (`{$SITE_PORT:80}`), les
+Services et les sondes.
 
 ## 12. L'accès au registry privé
 
-Le registry GitLab du projet est privé. Sans identifiants, Kubernetes ne peut
-tirer aucune des deux images et **tous les pods restent en `ImagePullBackOff`** —
-c'était, avant ce lot, le point le plus susceptible de bloquer un premier
-déploiement réel.
+Les images sont tirées du registry GitLab du projet. Sans identifiants valides,
+Kubernetes ne peut tirer aucune des deux images et **tous les pods restent en
+`ImagePullBackOff`**.
 
 ### Pourquoi le Secret ne peut pas être versionné
 
@@ -730,11 +689,10 @@ data:
 kind: Secret
 ```
 
-**Le mot de passe ne doit jamais atteindre le log.** C'est le point le plus
-sensible, et il est contre-intuitif : la sortie de `-o yaml` contient le mot de
-passe encodé en base64, or **le masquage GitLab travaille sur la valeur
-littérale** et ne reconnaît pas cette forme encodée. Décodée, la sortie ci-dessus
-donne :
+**Le mot de passe ne doit jamais atteindre le log.** La sortie de `-o yaml`
+contient le mot de passe encodé en base64, or **le masquage GitLab travaille sur
+la valeur littérale** et ne reconnaît pas cette forme encodée. Décodée, la
+sortie ci-dessus donne :
 
 ```json
 { "auths": { "registry...": { "username": "u", "password": "p", "auth": "dTpw" } } }
@@ -743,12 +701,13 @@ donne :
 Le flux doit donc aller directement dans le tube, sans jamais transiter par le
 log du job : pas de `tee`, pas de `cat`, et surtout pas de
 `kubectl get secret … -o yaml` ajouté « pour vérifier ». Un commentaire le
-rappelle dans `.gitlab-ci.yml`, à l'endroit exact où la tentation se présente.
+rappelle dans `.gitlab/ci/deploy.yml`, à l'endroit exact où la tentation se
+présente.
 
 ### `imagePullSecrets` dans les pods, pas sur le ServiceAccount
 
-Les deux façons de rattacher le Secret fonctionnent. J'ai retenu la déclaration
-dans le `podSpec` de chaque Deployment.
+Les deux façons de rattacher le Secret fonctionnent. La déclaration dans le
+`podSpec` de chaque Deployment est retenue.
 
 | Approche                                 | Ce qu'elle implique                                                                      |
 | ---------------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -756,18 +715,17 @@ dans le `podSpec` de chaque Deployment.
 | Rattachement au ServiceAccount `default` | impératif (`kubectl patch`), hors Kustomize, s'applique à **tous** les pods du namespace |
 
 L'argument décisif est de propriété : le ServiceAccount `default` est créé par
-Kubernetes dans chaque namespace, il ne nous appartient pas. Le modifier
-étendrait l'accès au registry à des pods que nous n'avons pas déployés, ne
+Kubernetes dans chaque namespace, il n'appartient pas à l'application. Le
+modifier étendrait l'accès au registry à des pods qu'elle n'a pas déployés, ne
 laisserait aucune trace dans le dépôt, et ne serait pas défait en supprimant
-l'application. Une ressource partagée qu'on modifie sans la posséder est
-exactement le genre d'effet de bord qu'on ne retrouve pas six mois plus tard.
+l'application.
 
 ### Le nom, et pourquoi il est vérifié
 
 Le nom vit à deux endroits : `$REGISTRY_SECRET_NAME` dans le pipeline (ce que la
 CI crée) et `imagePullSecrets` dans les deux Deployments (ce que les pods
 cherchent). S'ils divergent, le Secret existe, `kubectl apply` réussit, et les
-pods restent malgré tout en `ImagePullBackOff` — une panne silencieuse de plus.
+pods restent malgré tout en `ImagePullBackOff` — une panne silencieuse.
 
 `scripts/tests/validate_k8s.sh` vérifie donc que chaque Deployment du rendu
 référence bien `$REGISTRY_SECRET_NAME`, et son mode `--autotest` prouve que
@@ -776,15 +734,14 @@ dont on remplace le nom, elle échoue.
 
 ## 13. La configuration d'exécution du front
 
-Ce lot clôt le P1 de [VARIABILISATION.md](VARIABILISATION.md) §5.
+Ce mécanisme répond au P1 de [VARIABILISATION.md](VARIABILISATION.md) §5.
 
 ### Le problème
 
 `front/Dockerfile` lance `ng build` **pendant** la construction de l'image.
-Toute constante du code y est donc figée : `API_BASE_URL = "http://localhost:8080"`
-partait dans le bundle JavaScript. L'image de production appelait la machine de
-l'utilisateur, et la seule échappatoire aurait été de construire une image par
-environnement — c'est-à-dire de ne plus déployer l'artefact qu'on a testé.
+Toute constante du code y est donc figée dans le bundle JavaScript. Une URL
+d'API écrite en dur obligerait à construire une image par environnement —
+c'est-à-dire à ne plus déployer l'artefact qu'on a testé.
 
 ### La solution retenue
 
@@ -803,25 +760,25 @@ configuration. **Une seule image sert donc tous les environnements** ; seule la
 variable du conteneur change, alimentée par la ConfigMap
 (`k8s/base/front-deployment.yaml`) ou par `docker-compose.yml` en local.
 
-Le choix entre les deux mises en œuvre envisagées s'est fait sur le coût :
+Le choix entre les deux mises en œuvre possibles se fait sur le coût :
 
 | Option                                     | Pourquoi pas / pourquoi                                                       |
 | ------------------------------------------ | ----------------------------------------------------------------------------- |
 | Script d'entrée qui écrit un `config.json` | ajoute un point d'entrée, donc un fichier à tester et à maintenir             |
 | **`respond` de Caddy**                     | **aucun code supplémentaire — le serveur qui sert déjà le front s'en charge** |
 
-Un piège a demandé une vérification : les directives d'un Caddyfile sont
-réordonnées selon un ordre standard où `try_files` passe **avant** `handle`.
-Avec un `try_files` global, `/config.json` était réécrit en `/index.html` et le
-front recevait du HTML à la place de sa configuration. D'où les deux blocs
-`handle` mutuellement exclusifs.
+Les directives d'un Caddyfile sont réordonnées selon un ordre standard où
+`try_files` passe **avant** `handle`. Avec un `try_files` global,
+`/config.json` serait réécrit en `/index.html` et le front recevrait du HTML à
+la place de sa configuration. D'où les deux blocs `handle` mutuellement
+exclusifs.
 
 ### Le défaut reste fonctionnel
 
 `front/src/app/config.ts` conserve `http://localhost:8080` comme valeur de repli.
-C'est volontaire, et c'est le motif de `tests/k6/lib/config.js` cité en §3 de
-VARIABILISATION.md : défaut utilisable, surcharge par environnement, erreur
-explicite si la valeur est illisible.
+C'est le motif de `tests/k6/lib/config.js` cité en §3 de VARIABILISATION.md :
+défaut utilisable, surcharge par environnement, erreur explicite si la valeur
+est illisible.
 
 Le repli distingue deux situations, et la distinction est le cœur du dispositif :
 
@@ -832,221 +789,136 @@ Le repli distingue deux situations, et la distinction est le cœur du dispositif
 | `apiBaseUrl` absente, vide ou non absolue | **erreur, l'application ne démarre pas** | défaut de déploiement                 |
 
 Retomber silencieusement sur `localhost:8080` dans les deux derniers cas
-reproduirait précisément la panne que ce lot supprime, en la rendant invisible.
+produirait un front déployé qui appelle le poste de l'utilisateur, sans que
+rien ne le signale.
 
-Le contrôle du type de contenu mérite d'être signalé : le serveur de
-développement Angular renvoie `index.html` en **HTTP 200** pour toute route
-inconnue. Sans vérifier que la réponse s'annonce en `application/json`, on
-tenterait d'analyser du HTML comme du JSON et on lèverait une erreur à tort en
-plein `ng serve`.
+Le serveur de développement Angular renvoie `index.html` en **HTTP 200** pour
+toute route inconnue. Le code vérifie donc que la réponse s'annonce en
+`application/json` ; sans ce contrôle, il tenterait d'analyser du HTML comme du
+JSON et lèverait une erreur à tort en plein `ng serve`.
 
 ### Ce que le port du Caddyfile n'apporte pas
 
-`front/Caddyfile` accepte désormais `{$SITE_PORT:80}`. C'est un réglage de
-souplesse, **pas une amélioration de sécurité** : comme établi au §11, c'est la
-capability de fichier `cap_net_bind_service=ep` portée par le binaire Caddy — et
-non le numéro de port — qui impose de conserver `NET_BIND_SERVICE` dans le
-conteneur. Écouter sur un port haut ne dispenserait de rien.
+`front/Caddyfile` accepte `{$SITE_PORT:80}`. C'est un réglage de souplesse,
+**pas une amélioration de sécurité** : comme établi au §11, c'est la capability
+de fichier portée par le binaire Caddy — et non le numéro de port — qui impose
+de conserver `NET_BIND_SERVICE` dans le conteneur.
 
-## 14. La campagne de déploiement réel (2026-08-10)
+## 14. Déploiement réel : procédure et preuves
 
-Cette section est le compte rendu de la première application des manifestes sur
-un cluster. Elle remplace l'avertissement « jamais appliqué » qui ouvrait ce
-document. Tout ce qui suit a été **observé**, pas déduit ; ce qui n'a pas pu
-l'être est listé au §14.8.
+Deux chemins mènent au cluster. **La CI** (`deploy-staging`,
+`deploy-production`, `rollback-production`) déploie les images du registry
+GitLab par l'agent GitLab ; c'est le chemin normal. **Le poste**, avec
+`kubectl` et `minikube image load`, sert à rejouer et à mesurer ce qu'un job ne
+montre pas (§14.9).
 
 ### 14.1 L'environnement
 
-| Élément    | Valeur                                                  |
-| ---------- | ------------------------------------------------------- |
-| Cluster    | minikube v1.38.1, driver `docker`, nœud unique `Ready`  |
-| Kubernetes | v1.35.1 (client `kubectl` v1.36.2)                      |
-| Namespace  | `microcrm-staging`, créé pour l'occasion                |
-| Overlay    | `k8s/overlays/staging`                                  |
-| Images     | `microcrm/back:t2-bd4987d`, `microcrm/front:t2-bd4987d` |
-| Kustomize  | celui embarqué dans `kubectl` (`kubectl apply -k`)      |
-| Contrôleur | ingress-nginx v1.14.3 (addon `ingress` de minikube)     |
+| Élément    | Valeur                                                                   |
+| ---------- | ------------------------------------------------------------------------ |
+| Cluster    | minikube v1.38.1, driver `docker`, nœud unique                           |
+| Kubernetes | v1.35.1 (client `kubectl` v1.36.2 sur le poste, v1.34.2 dans la CI)      |
+| Namespaces | `microcrm-staging`, `microcrm-production` (Terraform)                    |
+| Contrôleur | ingress-nginx v1.14.3 (addon `ingress` de minikube)                      |
+| Images, CI | registry GitLab, tag SHA court ou numéro de version                      |
+| Images, à  | `minikube image load`, tag explicite et immuable (`t2-<sha court>`), pas |
+| la main    | `latest`, conformément à l'assertion de `validate_k8s.sh`                |
 
-**Livraison des images : `minikube image load`**, et non le registry local. Un
-registry minikube sans authentification n'aurait pas exercé davantage le chemin
-`imagePullSecrets` — le seul point que le déploiement local pouvait apprendre sur
-ce sujet — tout en ajoutant une configuration TLS à régler. Les tags sont
-explicites et immuables (`t2-<sha court>`), jamais `latest`, conformément à
-l'assertion de `validate_k8s.sh` sur les tags mobiles.
+Sur le poste, les images sont livrées par `minikube image load` plutôt que par
+un registry local : un registry minikube sans authentification n'exercerait pas
+davantage le chemin `imagePullSecrets`, que la CI exerce déjà, et ajouterait une
+configuration TLS à régler.
 
-### 14.2 Le rollout
+### 14.2 Les preuves
 
-```
-$ kubectl apply -k k8s/overlays/staging -n microcrm-staging
-configmap/microcrm-config created
-service/back created
-service/front created
-deployment.apps/back created
-deployment.apps/front created
-ingress.networking.k8s.io/microcrm created
+| Date       | Ce qui a été joué                                                             | Résultat                                                                                                                             |
+| ---------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-08-10 | `apply -k` de l'overlay `staging` sur un namespace vierge                     | les six objets créés ; `rollout status` en `0` pour les deux Deployments, back en 10,5 s                                             |
+| 2026-08-10 | Démarrage du back sous kubelet, trois mesures                                 | `startupProbe` en échec 1 à 2 fois puis réussi ; Spring prêt en 6,7 à 9,8 s ; `Ready` 10 à 15 s après le démarrage du conteneur      |
+| 2026-08-10 | Ingress, quatre requêtes par en-tête `Host:`                                  | front `200` HTML, API `200` HAL, `/persons` `200`, hôte inconnu `404`                                                                |
+| 2026-08-10 | CORS en pré-vol (`OPTIONS`)                                                   | origine déclarée : `200` et `Access-Control-Allow-Origin` ; origine non déclarée : `403`                                             |
+| 2026-08-10 | Chaîne ConfigMap → conteneur → Caddy → `/config.json`                         | la même URL d'API aux trois maillons, servie en `application/json` à travers l'Ingress                                               |
+| 2026-08-10 | `deploy.sh` avec une image valide                                             | `0`, rollout en ~11 s                                                                                                                |
+| 2026-08-10 | `deploy.sh` avec une image inexistante                                        | `3`, rollback automatique ; pod en service intact (`RESTARTS 0`), API à `200` pendant toute la fenêtre                               |
+| 2026-08-10 | `rollback.sh -r <révision saine>`                                             | `0`, image rétablie                                                                                                                  |
+| 2026-08-10 | Suppression du pod `back`, API sondée toutes les 150 ms                       | **16,1 s** d'indisponibilité totale de l'API (98 `503` sur 350) ; front non affecté ; données de démonstration rejouées              |
+| 2026-08-10 | Deux déploiements successifs par l'overlay éphémère, namespace vierge         | 2 révisions par Deployment, **0 révision `PLACEHOLDER`**, annotation `last-applied-configuration` sur l'image réelle                 |
+| 2026-08-10 | `rollback.sh` **sans** `--to-revision` (la commande de `rollback-production`) | `0` pour back et front, retour à la version précédente réellement déployée                                                           |
+| 2026-08-10 | Même overlay appliqué deux fois                                               | second `apply` : `unchanged` ; aucune révision créée, aucun pod redémarré                                                            |
+| 2026-08-10 | Disponibilité pendant un déploiement puis un rollback (180 s)                 | **99,75 %** sur **1 615** requêtes ; coupure maximale **≤ 0,20 s** ; latence médiane 13 ms                                           |
+| 2026-09-22 | `deploy-staging` par la CI, images du registry GitLab                         | succès ; Secret du registry et `imagePullSecrets` exercés ([MONITORING.md](MONITORING.md) §9.1)                                      |
+| 2026-09-23 | `deploy-production` par la CI                                                 | succès à 07:26 et 09:28 UTC                                                                                                          |
+| 2026-09-23 | `rollback-production` en production                                           | succès à 13:34 UTC, puis redéploiement à 13:42 ; une première tentative à 13:01 a échoué sur un timeout du tunnel de l'agent GitLab  |
+| 2026-10-05 | `deploy-production` du tag `v1.0.1`                                           | succès à 14:10 UTC : `back:1.0.1` (1 replica), `front:1.0.1` (2 replicas), `/actuator/health` à `UP` ([RELEASE.md](RELEASE.md) §7.5) |
+| 2026-10-06 | `validate_k8s.sh --autotest` et `run_tests.sh`                                | 174 et 430 tests, 0 en échec                                                                                                         |
 
-$ kubectl -n microcrm-staging rollout status deployment/back --timeout=180s
-deployment "back" successfully rolled out          # code 0, 10,5 s
+Le détail de ce que chaque ligne établit, et de ce qu'elle n'établit pas, suit.
 
-$ kubectl -n microcrm-staging rollout status deployment/front --timeout=180s
-deployment "front" successfully rolled out         # code 0
-```
+### 14.3 Les sondes sous kubelet
 
-C'est le critère de validation de la tâche, et il est rempli.
+Le pod `back` ne devient `Ready` qu'après le succès du `startupProbe`, et une ou
+deux tentatives échouent réellement (`connection refused`) en attendant que la
+JVM ouvre son port. C'est le comportement recherché au §5 : sans
+`startupProbe`, ces échecs compteraient comme des échecs de _liveness_.
 
-### 14.3 Les sondes sous kubelet — le `startupProbe` fait bien son travail
-
-Le point que seul un vrai kubelet pouvait trancher. Chronologie du pod `back`,
-reconstituée à partir des évènements et des logs du conteneur :
-
-| Instant (UTC) | Évènement                                                               |
-| ------------- | ----------------------------------------------------------------------- |
-| `09:59:14`    | `Started` — le conteneur démarre                                        |
-| `09:59:18`    | **`Unhealthy` : `Startup probe failed: … connect: connection refused`** |
-| `09:59:21.3`  | `Tomcat started on port 8080`                                           |
-| `09:59:21.7`  | `Started MicroCRMApplication in 7.123 seconds`                          |
-| `09:59:23`    | condition `Ready` du pod passe à `True`                                 |
-
-**Le pod n'est devenu `Ready` qu'après le succès du `startupProbe`**, et une
-tentative a réellement échoué en attendant que la JVM ouvre son port. C'est
-exactement le comportement recherché au §5 : sans `startupProbe`, cette même
-seconde 18 aurait compté comme un échec de _liveness_.
-
-Mesure refaite après suppression du pod (§14.7) : `6,713 s` de démarrage
-applicatif, `Ready` 10 s après le démarrage du conteneur. Les deux mesures
-concordent.
-
-Une troisième mesure, prise à l'audit sur la même machine, donne un résultat
-sensiblement plus lent — utile à connaître, car elle borne la confiance à
-accorder aux deux premières :
-
-| Repère                        | Instant    | Écart au `Started` |
-| ----------------------------- | ---------- | ------------------ |
-| `Started` (conteneur)         | `10:14:54` | —                  |
-| `Startup probe failed` (1)    | `10:14:58` | +4 s               |
-| `Startup probe failed` (2)    | `10:15:03` | +9 s               |
-| `Tomcat started on port 8080` | `10:15:04` | +10 s              |
-| `Started MicroCRMApplication` | `9,838 s`  | +10,6 s            |
-| condition `Ready`             | `10:15:09` | **+15 s**          |
-
-La **forme** est donc stable et c'est elle qui compte : le `startupProbe` échoue
-d'abord, et le pod ne devient `Ready` qu'après son succès. Les **chiffres**, eux,
-varient de 6,7 s à 9,8 s de démarrage applicatif (±45 %) et de 10 s à 15 s
-jusqu'au `Ready`, d'une exécution à l'autre, sur une machine pourtant identique
-et non chargée. Ce sont des sondages, pas des constantes.
-
-Cette variance renforce l'argument du §5 plutôt qu'elle ne l'affaiblit : si le
-délai bouge de moitié sans qu'aucune variable ne change, c'est bien qu'un
-`initialDelaySeconds` fixe serait le mauvais outil. Le nombre de tentatives
-consommées reste stable (2 sur 30) et la marge reste d'un ordre de grandeur.
+Les chiffres varient d'une exécution à l'autre, sur une machine identique et non
+chargée : de 6,7 à 9,8 s de démarrage applicatif (±45 %), de 10 à 15 s jusqu'au
+`Ready`. C'est un argument de plus contre un `initialDelaySeconds` fixe.
 
 **Le budget de 150 s (30 × 5 s) est très surdimensionné pour cette machine :**
-2 tentatives sur 30 sont consommées, soit 10 s sur 150. Ce n'est pas un défaut —
-un nœud chargé ou un poste plus lent mangerait la marge, et un `startupProbe`
-trop court est une panne, pas un avertissement. Le vrai prix à connaître est
-l'autre bout : une JVM réellement bloquée au démarrage occupera un slot pendant
-**150 s** avant d'être abandonnée. Sur un cluster à un replica, c'est 150 s
-pendant lesquelles le rollout n'avance pas. `failureThreshold: 20` (100 s)
-resterait 10 fois au-dessus du besoin mesuré tout en raccourcissant le pire cas ;
-la valeur actuelle est conservée faute de mesure sur une machine lente.
+2 tentatives sur 30 sont consommées. Un nœud chargé mangerait la marge, et un
+`startupProbe` trop court est une panne, pas un avertissement. Le prix est à
+l'autre bout : une JVM bloquée au démarrage occupe un slot **150 s** avant
+d'être abandonnée. Sur un cluster à un replica, le rollout n'avance pas
+pendant ce temps. `failureThreshold: 20` (100 s) resterait 10 fois au-dessus du
+besoin mesuré. La valeur actuelle est conservée faute de mesure sur une machine
+lente, et faute de mesure avec l'agent OpenTelemetry sous la limite du pod
+(§14.8).
 
-### 14.4 L'Ingress — les deux hôtes routent
+### 14.4 L'Ingress et le CORS
 
-**Aucun `ingressClassName` n'a été nécessaire, et la base n'a pas été modifiée.**
 L'addon `ingress` de minikube installe son IngressClass `nginx` avec
 l'annotation `ingressclass.kubernetes.io/is-default-class: "true"` ; l'API
-server a donc renseigné le champ elle-même :
+server renseigne donc le champ de l'Ingress lui-même, sans modification de la
+base (§7).
 
-```
-$ kubectl -n microcrm-staging get ingress microcrm
-NAME       CLASS   HOSTS                                                           ADDRESS        PORTS
-microcrm   nginx   microcrm.staging.example.com,api.microcrm.staging.example.com   192.168.49.2   80
-```
-
-Le commentaire de `k8s/base/ingress.yaml` (« à ajouter dans les overlays le jour
-où il sera connu ») reste juste **en principe** : un cluster sans IngressClass
-par défaut refuserait l'Ingress. Le champ appartient alors à l'overlay, pas à la
-base — le contrôleur est une propriété du cluster cible, donc de
-l'environnement.
-
-**Méthode de test.** Sur macOS avec le driver `docker`, l'IP du nœud
-(`192.168.49.2`) n'est pas routable depuis l'hôte — vérifié, `curl` sur cette
-adresse expire. Plutôt que `minikube tunnel`, qui réclame les privilèges root
-pour se lier au port 80, un `kubectl port-forward` vers le contrôleur suffit et
-ne demande aucun privilège. Les hôtes étant fictifs, ils sont passés en en-tête
-`Host:` — `/etc/hosts` n'aurait rien apporté de plus et demandait `sudo` :
+**Méthode de test.** Sur macOS avec le driver `docker`, l'IP du nœud n'est pas
+routable depuis l'hôte. Plutôt que `minikube tunnel`, qui réclame les privilèges
+root pour se lier au port 80, un `kubectl port-forward` vers le contrôleur
+suffit. Les hôtes étant fictifs, ils sont passés en en-tête `Host:` :
 
 ```shell
 kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 18080:80 &
+curl -H "Host: api.microcrm.staging.example.com" http://127.0.0.1:18080/persons
 ```
 
-| Requête                                               | Résultat observé                                 |
-| ----------------------------------------------------- | ------------------------------------------------ |
-| `Host: microcrm.staging.example.com` → `/`            | `200`, `text/html`, le `<title>MicroCRM</title>` |
-| `Host: api.microcrm.staging.example.com` → `/`        | `200`, `application/hal+json`, index HAL         |
-| `Host: api.microcrm.staging.example.com` → `/persons` | `200`, la fixture `John Doe`                     |
-| `Host: inconnu.example.com` → `/`                     | `404` (default backend)                          |
-
-La dernière ligne compte autant que les autres : elle montre que le routage se
-fait bien **par hôte** et non par défaut sur le premier service venu.
-
-Le CORS a été vérifié dans la foulée, puisque les deux origines diffèrent (§7) :
-
-```
-$ curl -X OPTIONS -H "Host: api.microcrm.staging.example.com" \
-       -H "Origin: https://microcrm.staging.example.com" \
-       -H "Access-Control-Request-Method: GET" …/persons
-HTTP/1.1 200
-Access-Control-Allow-Origin: https://microcrm.staging.example.com
-Access-Control-Allow-Methods: GET,POST,PATCH,DELETE
-
-# origine non déclarée
-$ curl -X OPTIONS -H "Origin: https://evil.example.com" … → 403
-```
-
-`MICROCRM_CORS_ALLOWED_ORIGINS` de la ConfigMap est donc réellement consommée
-par le back, et elle discrimine.
+La réponse `404` pour un hôte inconnu compte autant que les `200` : elle montre
+que le routage se fait **par hôte** et non par défaut sur le premier service
+venu. Le pré-vol CORS (`OPTIONS` avec `Origin:`) montre que
+`MICROCRM_CORS_ALLOWED_ORIGINS` est réellement consommée par le back, et qu'elle
+discrimine.
 
 ### 14.5 La chaîne ConfigMap → conteneur → Caddy → bundle
 
-Les quatre maillons, vérifiés bout à bout :
-
-```
-$ kubectl -n microcrm-staging get cm microcrm-config -o jsonpath='{.data}'
-{"FRONT_API_BASE_URL":"https://api.microcrm.staging.example.com", …}
-
-$ kubectl -n microcrm-staging exec deploy/front -- printenv FRONT_API_BASE_URL
-https://api.microcrm.staging.example.com
-
-$ curl -H "Host: microcrm.staging.example.com" …/config.json
-{"apiBaseUrl":"https://api.microcrm.staging.example.com"}
+```shell
+kubectl -n microcrm-staging get cm microcrm-config -o jsonpath='{.data.FRONT_API_BASE_URL}'
+kubectl -n microcrm-staging exec deploy/front -- printenv FRONT_API_BASE_URL
+curl -H "Host: microcrm.staging.example.com" http://127.0.0.1:18080/config.json
 ```
 
-La substitution `{$FRONT_API_BASE_URL:…}` du Caddyfile est donc bien résolue au
-démarrage du conteneur, et le fichier est servi en `application/json` au travers
-de l'Ingress. C'est la preuve d'exécution qui manquait au §13 : **une seule image
-sert tous les environnements.** L'URL pointe sur `*.staging.example.com` parce
-que l'overlay `staging` le demande — ce n'est pas une anomalie.
+Les trois commandes rendent la même URL : la substitution
+`{$FRONT_API_BASE_URL:…}` du Caddyfile est résolue au démarrage du conteneur, et
+le fichier est servi en `application/json` à travers l'Ingress. C'est la preuve
+d'exécution du §13 : **une seule image sert tous les environnements.**
 
 ### 14.6 `deploy.sh` et `rollback.sh` contre un vrai cluster
 
-Jusqu'ici ces scripts n'avaient été exercés que contre le `kubectl` bouchonné de
-`scripts/tests/stubs/`. Quatre exécutions réelles :
-
-| Scénario                                   | Code | Observé                               |
-| ------------------------------------------ | ---- | ------------------------------------- |
-| `deploy.sh` avec une image valide          | `0`  | rollout complet en ~11 s              |
-| `deploy.sh` avec une image **inexistante** | `3`  | **rollback automatique déclenché**    |
-| `rollback.sh` sans `--to-revision`         | `3`  | voir l'avertissement ci-dessous       |
-| `rollback.sh -r <révision saine>`          | `0`  | image rétablie, pod servant à nouveau |
-
-Le scénario central, celui que les stubs ne pouvaient pas prouver :
+Les scripts sont testés à chaque commit contre le `kubectl` bouchonné de
+`scripts/tests/stubs/` ; le cluster prouve ce que les bouchons ne peuvent pas.
+Le scénario central est un déploiement d'image inexistante :
 
 ```
-[…] INFO  Déploiement de microcrm/back:tag-qui-nexiste-pas sur microcrm-staging/back
-deployment.apps/back image updated
 […] INFO  Attente de la fin du rollout (timeout : 45s)
-Waiting for deployment "back" rollout to finish: 1 old replicas are pending termination...
 error: timed out waiting for the condition
 […] ERROR Le déploiement n'a pas abouti dans le temps prévu
 […] WARN  On revient automatiquement à la version précédente
@@ -1054,184 +926,84 @@ deployment.apps/back rolled back
 >>> CODE DE SORTIE = 3
 ```
 
-L'image saine était rétablie ensuite, et **le pod en service n'a jamais été
-touché** : `RESTARTS 0`, âge inchangé, API à `200` pendant toute la fenêtre. Le
-`maxUnavailable: 0` tient ses promesses — un déploiement raté ne coupe rien.
+Le pod en service n'est jamais touché : `maxUnavailable: 0` retire l'ancien pod
+seulement une fois le nouveau `Ready`. Un déploiement raté ne coupe rien.
 
-> **Défaut constaté — `rollback.sh` sans `--to-revision` juste après un échec.**
-> Le rollback automatique de `deploy.sh` (`kubectl rollout undo`) ne supprime pas
-> la révision fautive : il en crée une **nouvelle** portant l'image saine. La
-> révision « précédente » devient donc l'image cassée. Enchaîner `rollback.sh`
-> sans argument, ce que la procédure de secours invite naturellement à faire,
-> **redéploie l'image défaillante** :
->
-> ```
-> $ bash scripts/deploy/rollback.sh -n microcrm-staging -d back -t 40s
-> […] INFO  Rollback de microcrm-staging/back vers la révision précédente
-> error: timed out waiting for the condition
-> >>> CODE DE SORTIE = 3
-> $ kubectl -n microcrm-staging get deploy back -o jsonpath='{…image}'
-> microcrm/back:tag-qui-nexiste-pas
-> ```
->
-> Le script se comporte correctement — il signale l'échec en `3` et
-> `maxUnavailable: 0` protège encore le pod en service. Mais la procédure de
-> secours mène à un cul-de-sac. **Réflexe à retenir : après un échec de
-> `deploy.sh`, lire `kubectl rollout history` et viser explicitement une révision
-> saine avec `-r`.** Une correction possible serait que `rollback.sh` refuse de
-> cibler une révision dont l'image est identique à celle du dernier rollout raté ;
-> elle n'est pas faite dans ce lot.
+⚠️ **Limite : `rollback.sh` sans `--to-revision` juste après un échec de
+`deploy.sh` redéploie l'image défaillante.** Le rollback automatique
+(`kubectl rollout undo`) ne supprime pas la révision fautive : il en crée une
+**nouvelle** portant l'image saine, et la révision « précédente » devient
+l'image cassée. Le script signale l'échec en `3` et `maxUnavailable: 0` protège
+encore le pod en service, mais la procédure de secours mène à un cul-de-sac.
+**Après un échec de `deploy.sh`, lire `kubectl rollout history` et viser
+explicitement une révision saine avec `-r`.** Une correction possible serait que
+`rollback.sh` refuse de cibler une révision dont l'image est celle du dernier
+rollout raté ; elle n'est pas faite.
 
-`kubectl rollout undo` émet par ailleurs un avertissement sur l'annotation
-`last-applied-configuration` non mise à jour. Il est de la même famille que le
-défaut du §6 et pointe la même cause : `set image` et `apply` ne tiennent pas le
-même registre de l'état désiré.
+⚠️ **Le résumé du Deployment ne révèle pas un rollout bloqué.** Pendant un
+rollout qui n'aboutit pas, `kubectl get deploy` affiche `READY 1/1` : l'ancien
+pod sain est compté. L'état réel se lit en listant les pods
+(`ImagePullBackOff`) ou l'image du Deployment.
 
-> **Défaut plus grave, constaté à l'audit — le job `rollback-production` ne peut
-> pas fonctionner.** ⚠️ _Ce défaut a depuis été **corrigé** ; le constat
-> ci-dessous décrit l'état antérieur et reste consigné parce qu'il explique
-> pourquoi le mécanisme du §6 a changé. La vérification du correctif est au
-> §14.10._
->
-> Le défaut du §6 n'abîme pas seulement le rollback qui suit
-> un déploiement _raté_ : il casse le rollback qui suit un déploiement
-> **réussi**, c'est-à-dire le cas d'usage même du job `rollback-production`.
->
-> Chaque déploiement CI insère **deux** révisions, dans cet ordre : `apply -k`
-> en crée une portant `PLACEHOLDER`, puis `deploy.sh` en crée une seconde
-> portant la vraie image. La « révision précédente » d'un déploiement sain est
-> donc toujours le `PLACEHOLDER`, jamais la version d'avant :
->
-> ```
-> $ kubectl -n microcrm-staging rollout history deployment/back
-> revision 10 -> microcrm/back:PLACEHOLDER
-> revision 11 -> microcrm/back:t2-bd4987d      # courante, saine
->
-> $ bash scripts/deploy/rollback.sh -n microcrm-staging -d back -t 40s
-> [...] INFO  Rollback de microcrm-staging/back vers la révision précédente
-> deployment.apps/back rolled back
-> error: timed out waiting for the condition
-> >>> CODE DE SORTIE = 3
-> $ kubectl -n microcrm-staging get deploy back -o jsonpath='{…image}'
-> microcrm/back:PLACEHOLDER
-> ```
->
-> Or `rollback-production` exécute exactement `rollback.sh -n … -d … -t …`,
-> **sans `-r` et sans moyen d'en passer un**. Le seul geste de secours prévu par
-> le pipeline ne peut donc jamais atteindre la version précédente : il vise une
-> image inexistante, échoue en `3`, et laisse le Deployment sur `PLACEHOLDER`.
-> `maxUnavailable: 0` évite la coupure (402 requêtes API mesurées, toutes en
-> `200`), mais la capacité de retour arrière est **nulle** tant que le défaut du
-> §6 n'est pas corrigé.
->
-> Corollaire : `revisionHistoryLimit: 3` est de fait divisé par deux, puisqu'une
-> révision sur deux est un `PLACEHOLDER`. La profondeur réelle de rollback est
-> d'environ un déploiement.
->
-> Dernier angle mort : pendant tout ce temps `kubectl get deploy` affiche
-> `READY 1/1  UP-TO-DATE 1  AVAILABLE 1` — l'ancien pod sain est compté. L'état
-> cassé ne se voit qu'en listant les pods (`ImagePullBackOff`) ou en lisant
-> l'image du Deployment. Une supervision branchée sur le résumé du Deployment ne
-> lèverait aucune alerte.
+### 14.7 Résilience — perte de pod
 
-### 14.7 Résilience — suppression de pod
+Après suppression des pods `back` et `front`, les ReplicaSets créent des
+remplaçants dans la seconde, `Ready` 10 à 15 s plus tard. Mesurée en continu, la
+coupure de l'API est réelle :
 
 ```
-$ kubectl -n microcrm-staging delete pod back-b6df7cd44-f2hkl front-68bb555464-qxdwm
-pod "back-b6df7cd44-f2hkl" deleted
-pod "front-68bb555464-qxdwm" deleted
+10:14:52.408  200      <- dernier succès
+10:14:53.534  503      <- pod supprimé
+10:15:09.601  200      <- rétabli
 ```
 
-Les deux ReplicaSets ont créé des remplaçants **immédiatement** (`Pending` dans
-la seconde qui suit), `Ready` 10 à 15 s plus tard, et le service était rétabli :
-API et front à `200`. Le back a rejoué `InitialDataFixture` — conséquence directe
-et attendue de la base en mémoire (§8.1) : **la suppression d'un pod back perd
-les données écrites depuis son démarrage.** La résilience porte sur la
-disponibilité du processus, pas sur celle des données.
+Soit **16,1 s d'indisponibilité totale de l'API** (98 requêtes en `503` sur
+350). C'est la conséquence directe du `replicas: 1` imposé par HSQLDB (§8.1) : à
+un seul pod, rien n'absorbe la perte, et aucun `PodDisruptionBudget` ne protège
+d'une éviction. Le back rejoue `InitialDataFixture` : **les données écrites
+depuis son démarrage sont perdues.** Le front, statique et à plusieurs replicas
+en production, n'est pas affecté.
 
-> **Précision apportée à l'audit — il y a bien une coupure, et elle se mesure.**
-> La formulation ci-dessus décrit l'état avant et après, mais pas l'intervalle.
-> Rejoué en interrogeant l'API en continu (une requête toutes les 150 ms)
-> pendant la suppression du pod `back` :
->
-> ```
-> 10:14:52.408  200      <- dernier succès
-> 10:14:53.534  503      <- pod supprimé
-> 10:15:09.601  200      <- rétabli
-> ```
->
-> Soit **16,1 s d'indisponibilité totale de l'API** (98 requêtes en `503` sur
-> 350). C'est la conséquence directe du `replicas: 1` imposé par HSQLDB (§8.1) :
-> à un seul pod, il n'y a rien pour absorber la perte, et aucun
-> `PodDisruptionBudget` ne protège d'une éviction. Le front, statique et
-> indépendant, n'a pas été affecté.
->
-> À retenir : `maxUnavailable: 0` protège les **déploiements** (§6, §14.6), il
-> ne protège pas d'une **perte de pod**. Ce sont deux propriétés distinctes, et
-> seule la première est acquise ici. La seconde exige la sortie de HSQLDB.
+`maxUnavailable: 0` protège les **déploiements** (§14.6), il ne protège pas
+d'une **perte de pod**. Seule la première propriété est acquise ; la seconde
+exige la sortie de HSQLDB.
 
-### 14.8 Ce que ce déploiement n'a pas vérifié
-
-- **Le registry privé et son `imagePullSecrets`.** Le Secret `gitlab-registry`
-  n'existe pas sur minikube ; le kubelet émet alors un avertissement — observé,
-  répété 5 fois sur 59 s — et **poursuit** :
-
-  ```
-  Warning  FailedToRetrieveImagePullSecret  kubelet
-    Unable to retrieve some image pull secrets (gitlab-registry);
-    attempting to pull the image may not succeed.
-  ```
-
-  Le pod démarre quand même parce que l'image est déjà présente sur le nœud
-  (`Container image "…" already present on machine`) et que
-  `imagePullPolicy: IfNotPresent` n'exige alors aucun tirage. **Ce n'est donc pas
-  une preuve que le chemin registry privé fonctionne** — il reste non testé, et
-  ne le sera que face à un vrai registry authentifié.
-
-- **La production.** Seul l'overlay `staging` a été appliqué. L'overlay
-  `production` n'est vérifié que par construction Kustomize et par les assertions
-  de `validate_k8s.sh`.
+### 14.8 Ce qui n'est pas vérifié
 
 - **Le multi-nœud et l'ordonnancement.** Un nœud unique : ni éviction, ni
   contrainte de placement, ni comportement en pénurie de ressources.
-
 - **Les valeurs de `resources`.** `metrics-server` n'est pas activé
-  (`kubectl top` renvoie `Metrics API not available`), donc les requests et
-  limits du §11 restent des estimations. Aucun `OOMKill` n'a été observé, ce qui
-  est un indice, pas une mesure. C'est toujours vrai au 2026-10-05 : les traces
-  OpenTelemetry, en service depuis ce jour-là, mesurent la latence de l'API, pas
-  la consommation des pods. Le seul chiffre de
-  mémoire disponible est le surcoût de l'agent, mesuré une fois hors cluster
-  (408 Mio contre 292, `MONITORING.md` §10.4).
-
-- **Le TLS.** L'Ingress est en clair. Les URL de la ConfigMap sont en `https://`
-  et sont servies telles quelles au navigateur : cohérent avec un environnement
-  qui aurait un certificat, non exercé ici.
-
-- **Le bundle Angular consommant réellement `/config.json`.** Le fichier est
-  servi avec la bonne valeur, ce qui est le maillon que le cluster pouvait
-  prouver. Que le navigateur le lise et appelle l'API est couvert par les tests
-  front (`src/app/config.ts`), pas par ce déploiement.
-
-- **La CI appliquant ces manifestes.** Les jobs `deploy-staging` /
-  `deploy-production` n'ont pas tourné : le déploiement a été fait à la main avec
-  les mêmes commandes qu'eux, depuis un poste, avec `KUBECONFIG` positionné.
-  _Levé depuis_ : les deux jobs ont abouti les 22 et 23 septembre 2026, avec des
-  images tirées du registry privé (`MONITORING.md` §9.1).
+  (`kubectl top` renvoie `Metrics API not available`) : requests et limits
+  restent des estimations. Aucun `OOMKill` n'a été observé, ce qui est un
+  indice, pas une mesure. Les traces OpenTelemetry mesurent la latence de l'API,
+  pas la consommation des pods ; le seul chiffre de mémoire disponible est le
+  surcoût de l'agent, mesuré une fois hors cluster (408 Mio contre 292,
+  [MONITORING.md](MONITORING.md) §10.4).
+- **Le TLS.** L'Ingress est en clair. Les URL de la ConfigMap sont en
+  `https://` et servies telles quelles au navigateur : cohérent avec un
+  environnement qui aurait un certificat, non exercé ici.
+- **Le bundle Angular consommant `/config.json` dans un navigateur.** Le fichier
+  est servi avec la bonne valeur ; que le navigateur le lise et appelle l'API
+  est couvert par les tests front (`src/app/config.ts`), pas par le cluster.
+- **L'échec du back interrompant le suivi du front** (§6) : déduit du
+  mécanisme, non rejoué.
+- **Les mesures fines (sondes, coupure, disponibilité)** ont été prises sur le
+  chemin manuel, avec la fonction `build_deploy_overlay` extraite du pipeline ;
+  les jobs de CI, eux, ne relèvent que leur succès ou leur échec.
 
 ### 14.9 Refaire la manipulation
 
 ```shell
-kubectl create namespace microcrm-staging
-docker build -t microcrm/back:t2-$(git rev-parse --short HEAD) ./back
-docker build -t microcrm/front:t2-$(git rev-parse --short HEAD) ./front
-minikube image load microcrm/back:t2-$(git rev-parse --short HEAD)
-minikube image load microcrm/front:t2-$(git rev-parse --short HEAD)
+kubectl create namespace microcrm-staging      # ou terraform apply (TERRAFORM.md)
+TAG="t2-$(git rev-parse --short HEAD)"
+docker build -t microcrm/back:$TAG ./back
+docker build -t microcrm/front:$TAG ./front
+minikube image load microcrm/back:$TAG
+minikube image load microcrm/front:$TAG
 minikube addons enable ingress
 
 # Overlay éphémère portant le tag réel — c'est ce que fait build_deploy_overlay
 # dans la CI (§6). Chemin RELATIF obligatoire : Kustomize refuse un chemin absolu.
-TAG="t2-$(git rev-parse --short HEAD)"
 mkdir -p .k8s-deploy-overlay
 cat > .k8s-deploy-overlay/kustomization.yaml <<EOF
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -1247,15 +1019,17 @@ images:
     newTag: $TAG
 EOF
 kubectl apply -k .k8s-deploy-overlay -n microcrm-staging
-export KUBECONFIG="$HOME/.kube/config"
-bash scripts/deploy/deploy.sh -n microcrm-staging -d back  -c back  \
-  -i microcrm/back:t2-$(git rev-parse --short HEAD)
-bash scripts/deploy/deploy.sh -n microcrm-staging -d front -c front \
-  -i microcrm/front:t2-$(git rev-parse --short HEAD)
+bash scripts/deploy/deploy.sh -n microcrm-staging -d back  -c back  -i microcrm/back:$TAG
+bash scripts/deploy/deploy.sh -n microcrm-staging -d front -c front -i microcrm/front:$TAG
 
+# Vérifier : historique sans PLACEHOLDER, routage par hôte, configuration du front
+kubectl -n microcrm-staging rollout history deployment/back
 kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 18080:80 &
 curl -H "Host: microcrm.staging.example.com"     http://127.0.0.1:18080/config.json
 curl -H "Host: api.microcrm.staging.example.com" http://127.0.0.1:18080/persons
+
+# Rollback, exactement comme rollback-production
+bash scripts/deploy/rollback.sh -n microcrm-staging -d back -t 180s
 ```
 
 Pour tout retirer sans toucher au reste du cluster :
@@ -1264,167 +1038,43 @@ Pour tout retirer sans toucher au reste du cluster :
 kubectl delete namespace microcrm-staging
 ```
 
-### 14.10 Seconde campagne — vérification du correctif (2026-08-10)
+### 14.10 Révisions et rollback : vérification du mécanisme d'overlay
 
-Cette campagne valide le mécanisme d'overlay éphémère décrit au §6. Namespace
-`microcrm-staging` **recréé à vide** pour que l'historique des révisions parte de
-zéro et ne doive rien à la campagne précédente. Les commandes rejouent
-fidèlement celles des jobs, avec la fonction `build_deploy_overlay` **extraite du
-`.gitlab-ci.yml` par un parseur YAML** — pas réécrite à la main — pour que ce
-soit bien le code du pipeline qui soit éprouvé.
+**Méthode.** Namespace `microcrm-staging` recréé à vide, pour que l'historique
+des révisions parte de zéro. La fonction `build_deploy_overlay` est **extraite
+de la configuration CI par un parseur YAML**, pas réécrite à la main, pour que
+ce soit le code du pipeline qui soit éprouvé. Substitution locale :
+`CI_REGISTRY_IMAGE=microcrm`, tag `t2-r1` puis `t2-r2`. L'API est interrogée en
+continu à travers l'Ingress, à ~9 requêtes par seconde, pendant toute
+l'opération.
 
-Substitution locale : `CI_REGISTRY_IMAGE=microcrm` et `CI_COMMIT_SHORT_SHA=t2-r1`
-puis `t2-r2`, faute de registry GitLab sur ce poste.
-
-#### L'overlay produit
+**Historique après deux déploiements :**
 
 ```
-$ build_deploy_overlay staging
-Overlay éphémère (staging) :
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - ../k8s/overlays/staging
-images:
-  - name: microcrm/back
-    newName: microcrm/back
-    newTag: t2-r1
-  - name: microcrm/front
-    newName: microcrm/front
-    newTag: t2-r1
-```
-
-#### Premier déploiement — plus aucun `ImagePullBackOff`
-
-```
-$ kubectl apply -k .k8s-deploy-overlay -n microcrm-staging
-configmap/microcrm-config created
-service/back created
-service/front created
-deployment.apps/back created
-deployment.apps/front created
-ingress.networking.k8s.io/microcrm created
-
-$ bash scripts/deploy/deploy.sh -n microcrm-staging -d back -c back -i microcrm/back:t2-r1 -t 180s
-[…] INFO  Déploiement de microcrm/back:t2-r1 sur microcrm-staging/back (conteneur : back)
-[…] INFO  Attente de la fin du rollout (timeout : 180s)
-Waiting for deployment "back" rollout to finish: 0 of 1 updated replicas are available...
-deployment "back" successfully rolled out
-[…] INFO  Déploiement réussi : microcrm-staging/back -> microcrm/back:t2-r1
-EXIT_BACK=0
-```
-
-Deux choses à relever dans cette sortie. D'abord, sur un cluster vierge, **aucun
-pod n'est passé par `ImagePullBackOff`** — la fenêtre décrite par l'ancienne
-version du §6 a disparu. Ensuite, `kubectl set image` n'a **rien affiché** : il
-n'imprime « image updated » que lorsqu'il modifie quelque chose. C'est la
-première indication que l'étape 4 est devenue un no-op.
-
-État après ce seul déploiement :
-
-```
-$ kubectl -n microcrm-staging rollout history deployment/back
-REVISION  CHANGE-CAUSE
-1         <none>
-   rev 1 -> microcrm/back:t2-r1
-
-$ kubectl -n microcrm-staging get rs \
-    -o custom-columns='NAME:.metadata.name,DESIRED:.spec.replicas,IMAGE:…'
-back-fb5c8fcd9     1   microcrm/back:t2-r1
-front-849b9c9597   1   microcrm/front:t2-r1
-
-$ # l'annotation porte-t-elle la vraie image ? (c'est la cause racine du défaut)
-$ kubectl -n microcrm-staging get deploy back \
-    -o jsonpath='{.metadata.annotations.kubectl\.kubernetes\.io/last-applied-configuration}' | …
-microcrm/back:t2-r1
-```
-
-**Une seule révision, un seul ReplicaSet, et l'annotation
-`last-applied-configuration` porte la vraie image.** C'est la correction de la
-cause racine, pas de son symptôme.
-
-#### Second déploiement — le critère principal
-
-Après un second déploiement complet au tag `t2-r2` :
-
-```
-$ # historique des deux Deployments, révision par révision
 --- deployment/back ---
    revision 1 -> microcrm/back:t2-r1
    revision 2 -> microcrm/back:t2-r2
 --- deployment/front ---
    revision 1 -> microcrm/front:t2-r1
    revision 2 -> microcrm/front:t2-r2
-
-$ # inventaire des images portées par TOUS les ReplicaSets du namespace
-   1 microcrm/back:t2-r1
-   1 microcrm/back:t2-r2
-   1 microcrm/front:t2-r1
-   1 microcrm/front:t2-r2
 ```
 
-**Deux déploiements, deux révisions, zéro révision `PLACEHOLDER`.** Sous
-l'ancien mécanisme il y en aurait eu quatre, dont deux placeholders. Le critère
-principal est rempli.
+Une révision et un ReplicaSet par déploiement, aucun `PLACEHOLDER`, et
+l'annotation `last-applied-configuration` porte l'image réelle : c'est la cause
+décrite au §6 qui est traitée, pas son symptôme. Sur le premier déploiement,
+aucun pod ne passe par `ImagePullBackOff`, et `kubectl set image` n'affiche rien
+(il n'imprime « image updated » que lorsqu'il modifie quelque chose) : l'étape 4
+est bien un no-op.
 
-#### Le rollback réparé — la preuve qui compte
+**Rollback sans `--to-revision`**, commandes identiques à celles de
+`rollback-production` : `rollback.sh` sort en `0` pour le back et le front, et
+les deux Deployments reviennent sur `t2-r1`.
 
-Commandes strictement identiques à celles du job `rollback-production`, c'est-à-dire
-**sans `--to-revision`** :
+**Idempotence.** Le même overlay appliqué deux fois : le premier `apply` répond
+`configured` (il réaligne l'annotation que le `rollout undo` a laissée sur
+`t2-r2`), le second `unchanged`. Aucune révision créée, aucun pod redémarré.
 
-```
-$ bash scripts/deploy/rollback.sh -n microcrm-staging -d back -t 180s
-[…] INFO  Rollback de microcrm-staging/back vers la révision précédente
-deployment.apps/back rolled back
-[…] INFO  Attente de la stabilisation (timeout : 180s)
-deployment "back" successfully rolled out
-[…] INFO  Rollback réussi : microcrm-staging/back
-EXIT_BACK=0
-
-$ bash scripts/deploy/rollback.sh -n microcrm-staging -d front -t 180s
-[…] INFO  Rollback réussi : microcrm-staging/front
-EXIT_FRONT=0
-
-$ kubectl -n microcrm-staging get deploy -o jsonpath='{…}'
-back=microcrm/back:t2-r1
-front=microcrm/front:t2-r1
-```
-
-**Les deux scripts sortent en `0` et ramènent `t2-r1`** — la version précédente
-réellement déployée, et non un placeholder. C'est exactement ce que
-`rollback-production` doit faire, et ce qu'il ne faisait pas.
-
-#### Idempotence
-
-Le même overlay appliqué deux fois de suite, sans redéploiement entre les deux :
-
-```
---- apply n°1 ---
-deployment.apps/back configured
-deployment.apps/front configured
---- apply n°2 ---
-deployment.apps/back unchanged
-deployment.apps/front unchanged
-
-$ kubectl -n microcrm-staging get deploy back -o jsonpath='generation / observedGeneration'
-generation=4 observed=4
-$ kubectl -n microcrm-staging get pods
-back-fb5c8fcd9-phsv4     1/1  Running  0  37s
-front-849b9c9597-9qvsq   1/1  Running  0  26s
-```
-
-Aucune révision créée, aucun pod redémarré (`RESTARTS 0`, âges inchangés). Le
-`configured` du premier `apply` ne fait que réaligner l'annotation
-`last-applied-configuration`, que le `rollout undo` précédent avait laissée sur
-`t2-r2` — `kubectl` prévient d'ailleurs explicitement de cet écart à chaque
-`rollout undo`. Le second `apply` répond `unchanged` : le système est stable.
-
-#### La coupure, mesurée et non décrite
-
-Reproche fondé adressé à la première campagne : une fenêtre d'indisponibilité
-**se mesure**, elle ne se déduit pas de ses extrémités. L'API a donc été
-interrogée en continu à travers l'Ingress pendant toute l'opération, à ~9 requêtes
-par seconde.
+**Disponibilité mesurée :**
 
 | Grandeur                                 | Valeur mesurée               |
 | ---------------------------------------- | ---------------------------- |
@@ -1435,57 +1085,15 @@ par seconde.
 | **Fenêtre d'indisponibilité _maximale_** | **0,20 s**                   |
 | Latence médiane / max des `200`          | 13 ms / 266 ms               |
 
-Le détail des échecs consécutifs, qui est la seule lecture honnête d'une
-coupure :
+Sur les 11,5 s du second déploiement, un seul échantillon en erreur ; sur les
+13,9 s du rollback, un seul. Le `502` vient de nginx au moment où l'ancien pod
+back cède la place. Les trois échecs de connexion viennent du
+`kubectl port-forward`, qui est l'appareil de mesure et non l'application ; deux
+surviennent hors de toute opération. **Ce qui est établi : au plus 0,20 s de
+coupure, et probablement moins.**
 
-```
-t+ 24.81s : 2 échantillons, durée <= 0,20s, codes=[502, 0]   <- bascule du pod back (fin du déploiement n°2)
-t+ 62.34s : 1 échantillon,  durée <= 0,10s, codes=[0]
-t+ 65.52s : 1 échantillon,  durée <= 0,10s, codes=[0]
-```
-
-Sur les 11,5 s du second déploiement : **un seul échantillon en erreur**. Sur les
-13,9 s du rollback : **un seul**. Il n'y a donc pas de « fenêtre de coupure » au
-sens habituel, mais un raté isolé de deux échantillons au moment où l'ancien pod
-back cède la place.
-
-**Attribution, à ne pas surinterpréter.** Le `502` vient de nginx : le backend
-était réellement indisponible à cet instant. Les trois `code=0` sont des échecs
-de connexion à mon `kubectl port-forward`, qui est l'appareil de mesure et non
-l'application — `port-forward` est connu pour laisser tomber des connexions. Les
-deux derniers surviennent d'ailleurs hors de toute opération. **Ce qui est établi
-est donc : au plus 0,20 s, et probablement moins.**
-
-**Ce que ce chiffre ne prouve pas.** Il ne montre aucune amélioration apportée
-par le correctif sur la disponibilité, et il ne faut pas le lire ainsi :
-l'ancien mécanisme ne coupait pas non plus (440 requêtes toutes en `200`, §6).
-`maxUnavailable: 0` protégeait déjà le service. **Le correctif porte sur la
-justesse de l'historique des révisions, donc sur la fiabilité du rollback — pas
-sur la disponibilité.**
-
-#### Les suites de tests
-
-```
-$ bash scripts/tests/validate_k8s.sh --autotest   -> 60 test(s) OK, 0 en échec   (exit 0)
-$ bash scripts/tests/run_tests.sh                 -> 95 test(s) OK, 0 en échec   (exit 0)
-```
-
-`validate_k8s.sh` continue de valider `k8s/base/` et les overlays, qui gardent
-leur placeholder : le correctif ne déplace rien dans les manifestes. Les 95
-assertions de `run_tests.sh` couvrent toujours `deploy.sh` et `rollback.sh`, que
-ce lot n'a pas modifiés.
-
-#### Ce que cette seconde campagne n'a pas vérifié
-
-- **Le vrai registry privé.** Toujours pas de registry GitLab : `newName` a été
-  substitué par `microcrm`, pas par un `$CI_REGISTRY_IMAGE` réel. Le rendu de
-  l'overlay est identique en forme, mais **le tirage d'image authentifié reste
-  non testé**, comme au §14.8.
-- **Les jobs eux-mêmes.** C'est la fonction `build_deploy_overlay` extraite du
-  `.gitlab-ci.yml` qui a été exécutée, dans un shell local — pas un runner GitLab
-  dans l'image `alpine/kubectl`. Le fait que cette image ne contienne que
-  `kubectl` a été vérifié par ailleurs, et le mécanisme n'utilise rien d'autre.
-- **L'échec du back interrompant le déploiement du front.** Conséquence déduite
-  au §6, non rejouée.
-- **La production.** Seul l'overlay `staging` a été appliqué ; `deploy-production`
-  reçoit la même correction mais n'a pas été exécuté.
+**Ce que ce chiffre ne prouve pas.** `maxUnavailable: 0` protège la
+disponibilité quel que soit le contenu de l'historique ; l'overlay éphémère
+garantit la **justesse de l'historique des révisions**, donc la fiabilité du
+rollback. Les deux propriétés sont distinctes, et c'est la seconde que cette
+vérification établit.

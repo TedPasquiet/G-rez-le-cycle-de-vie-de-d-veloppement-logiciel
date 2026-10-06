@@ -1,7 +1,7 @@
 # Documentation d'infrastructure — MicroCRM
 
 **Projet** : MicroCRM — P5, Expert DevOps, « Gérez le cycle de vie de développement logiciel »
-**Date** : 18 août 2026, mis à jour le 5 octobre 2026 · **Périmètre** : architecture, conteneurisation, infrastructure as code, exploitation
+**État décrit** : version 1.0.1 en production, 5 octobre 2026 · **Périmètre** : architecture, conteneurisation, infrastructure as code, exploitation
 
 Ce document décrit comment MicroCRM est construit, décrit et déployé, et par
 quelles procédures on le met à jour, on revient en arrière et on le reconstruit.
@@ -12,27 +12,15 @@ ce qui est ici résumé y est détaillé, avec les commandes et les sorties
 observées. Le document jumeau, `rapport-performance.md`, porte les mesures et
 les résultats.
 
-⚠️ **À lire avant tout le reste.** L'application a d'abord été déployée et
-exercée sur un cluster Kubernetes local, à la main, depuis un poste. **Elle est
-déployée depuis la CI depuis le 22 septembre 2026** — après sept échecs, un
-quota GitLab épuisé, puis un runner auto-hébergé et trois correctifs d'accès au
-cluster. Staging et production sont aujourd'hui posés par le pipeline, et un
-rollback de production a été joué. **La première release numérotée, 1.0.1, a
-été publiée et mise en production le 5 octobre 2026** par le chemin du tag :
-images promues sans reconstruction, Release GitLab créée par la CI (§8.1). Le
-recul est de trois journées de déploiement — les 22 et 23 septembre, le 5
-octobre — et le taux d'échec des changements est de **60 % sur 15
-tentatives**, dont trois échecs sur un cluster arrêté : le chemin automatisé
-existe, il n'est pas encore fiable, et la plateforme qui le porte non plus. Ce
-que la campagne manuelle porte encore seule — le comportement sous incident —
-est détaillé dans `rapport-performance.md`.
-
-**Ce que la mise à jour du 5 octobre décrit.** Le scan d'image avant le push,
-les rapports de sécurité en artefacts, la Release GitLab, l'alerting et les
-traces de l'API, écrits le 2 octobre, ont été fusionnés le 3 et tournent en CI :
-pipelines `#2909284076` (`develop`), `#2912362926` (`main`) et `#2913490784`
-(tag `v1.0.1`), verts sur leurs jobs automatiques. Les traces arrivent des pods
-de staging et de production.
+⚠️ **L'essentiel, avant le reste.** Staging et production sont déployés par le
+pipeline, sur un cluster Kubernetes local (minikube). La version 1.0.1 est en
+production depuis le 5 octobre 2026, publiée par le chemin du tag : images
+promues sans reconstruction, Release GitLab créée par la CI (§8.1). Un rollback
+de production a été joué depuis la CI. La limite principale est la plateforme :
+le runner et le cluster partagent un même poste, et le taux d'échec des
+changements est de **60 % sur 15 tentatives**, dont trois échecs dus à un
+cluster arrêté (§7). Le comportement sous incident n'est établi que par une
+campagne manuelle, détaillée dans `rapport-performance.md`.
 
 ## 1. L'application et ses composants
 
@@ -86,15 +74,15 @@ flowchart TB
 
     subgraph pipe["Pipeline GitLab CI : 10 étapes, 39 jobs"]
         direction LR
-        s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"]
+        s1["lint"] --> s2["test"] --> s3["quality"] --> s4["security"] --> s5["infra"] --> s6["build"] --> s7["package"] --> s8["perf"] --> s9["deploy"] --> s10["infra-apply"]
     end
 
-    s7 -->|"docker push<br/>tag = CI_COMMIT_SHORT_SHA, jamais latest"| reg[("Registry GitLab<br/>privé")]
-    s5 -.->|"terraform plan / apply<br/>manuels"| tf["Namespace, quota,<br/>limites, policies"]
+    s7 -->|"docker push<br/>tag = SHA du commit, seul tag déployé"| reg[("Registry GitLab<br/>privé")]
+    s10 -.->|"terraform apply<br/>manuel, un job par environnement"| tf["Namespace, quota,<br/>limites, policies"]
 
     s9 == "déclenchement MANUEL<br/>develop, main ou tag" ==> jobs
 
-    subgraph jobs["Étape deploy : 3 jobs, aboutis depuis le 2026-09-22"]
+    subgraph jobs["Jobs deploy-staging et deploy-production"]
         direction TB
         j1["1. kubectl create secret docker-registry"]
         j2["2. overlay éphémère Kustomize<br/>images: newName + newTag"]
@@ -116,10 +104,10 @@ flowchart TB
         ing --> pf
     end
 
-    poste(["Poste : docker build<br/>+ minikube image load"]) ==>|"chemin manuel,<br/>campagne K8S.md §14"| ns
+    poste(["Poste : docker build<br/>+ minikube image load"]) ==>|"chemin manuel,<br/>hors CI"| ns
 
-    classDef jamais stroke-dasharray: 5 5;
-    class tf jamais;
+    classDef manuel stroke-dasharray: 5 5;
+    class tf manuel;
 ```
 
 _Source versionnée : `docs/schemas/plateforme-deploiement.mmd`, reprise dans
@@ -129,12 +117,11 @@ Le schéma se lit de haut en bas : un push sur GitHub est recopié sur GitLab,
 dont le pipeline traverse ses étapes ; l'étape `package` envoie les images au
 registry, l'étape `deploy` les pose dans le namespace que Terraform a préparé.
 
-**Le cadre en tirets qui reste n'est pas une coquetterie graphique** : il marque
-ce qui ne suit pas le fil du pipeline — ici l'`apply` Terraform, qui demeure un
-geste manuel, placé dans la dernière étape. Il a été joué : en production depuis
-la CI le 23 septembre 2026, en staging et dans `logging` depuis un poste
-(`TERRAFORM.md` §4). L'étape `deploy` est sortie des tirets le 22 septembre 2026. Le trait épais du bas n'est plus le seul chemin qui produit des pods en
-marche, mais il reste celui de la campagne de vérification (`K8S.md` §14).
+**Les trois traits ont un sens.** Le trait plein suit le pipeline. Le trait
+épais marque un déclenchement manuel : les jobs de déploiement, et le chemin
+hors CI (`docker build` puis `minikube image load`) qui sert aux vérifications
+sur poste (`K8S.md` §14). Le pointillé marque l'`apply` Terraform, geste manuel
+placé dans la dernière étape, `infra-apply`.
 
 ### 2.1 Du dépôt au pipeline
 
@@ -209,8 +196,11 @@ Le front et le back n'ont ni le même cycle de vie, ni les mêmes dépendances, 
 la même charge. Les fusionner obligerait à redéployer l'un pour corriger
 l'autre, et imposerait un superviseur de processus dans le conteneur — donc un
 conteneur qui ne meurt plus quand son application meurt, ce qui **prive
-Kubernetes de son principal signal de panne**. Il n'y a donc pas de Dockerfile à
-la racine du dépôt : chaque application a le sien, dans son dossier.
+Kubernetes de son principal signal de panne**. Chaque application a donc son
+Dockerfile, dans son dossier (`back/Dockerfile`, `front/Dockerfile`), et aucun
+n'est à la racine. Le dépôt d'origine portait un Dockerfile unique, à la
+racine, dont une cible `standalone` réunissait front et back sous supervisord :
+cette cible n'est pas reprise, pour la raison ci-dessus.
 
 ### 3.2 Construction en deux étapes
 
@@ -235,13 +225,13 @@ taille devient un sujet.
 
 Les jobs `package-*` construisent avec `--context ./back` et `--context ./front`,
 or **Docker ne lit que le `.dockerignore` situé à la racine du contexte** :
-celui du dépôt ne s'applique jamais à ces builds. L'effet est loin d'être
-cosmétique.
+celui du dépôt ne s'applique jamais à ces builds. Chaque contexte a donc le
+sien, et l'effet est loin d'être cosmétique.
 
-| Contexte | Avant    | Après      |
-| -------- | -------- | ---------- |
-| `front`  | 1 195 Mo | **0,6 Mo** |
-| `back`   | 51 Mo    | **0,1 Mo** |
+| Contexte | Sans son `.dockerignore` | Avec       |
+| -------- | ------------------------ | ---------- |
+| `front`  | 1 195 Mo                 | **0,6 Mo** |
+| `back`   | 51 Mo                    | **0,1 Mo** |
 
 Côté front, l'essentiel venait du cache de compilation Angular (920 Mo) et de
 `node_modules` (329 Mo) — deux répertoires que l'image régénère de toute façon.
@@ -251,10 +241,9 @@ Côté front, l'essentiel venait du cache de compilation Angular (920 Mo) et de
 Les images de base sont épinglées (`gradle:8.14.5-jdk21`, `node:22-alpine`,
 `caddy:2.11.4-builder-alpine`, `alpine:3.24`) et **alignées sur les variables du
 `.gitlab-ci.yml`** : le code est compilé avec la version exacte qui a servi à le
-tester. Elles restent surchargeables au build par `--build-arg`. Cette exigence
-d'alignement a corrigé un défaut réel : le back se construisait en `jdk17`,
-s'exécutait sur un JRE 21 et était testé en CI sur `jdk21` — l'image livrée
-n'était pas produite par la chaîne qui la valide.
+tester. Elles restent surchargeables au build par `--build-arg`. Sans cet
+alignement, l'image livrée ne serait pas produite par la chaîne qui la valide :
+le Dockerfile d'origine compilait en `jdk17` pour exécuter sur un JRE 21.
 
 ### 3.5 Un utilisateur non privilégié dans les deux images
 
@@ -264,10 +253,8 @@ sous Kubernetes. Deux points ont demandé une vérification plutôt qu'une
 supposition :
 
 - **le back** crée son utilisateur avec `adduser -D -H app`, sans UID explicite.
-  La commande a été exécutée dans `alpine:3.19`, puis dans `alpine:3.24`, pour
-  lever le doute : `adduser`
-  attribue le premier UID libre à partir de 1000. C'est cette valeur qui est
-  figée dans le manifeste ;
+  Vérifié dans `alpine:3.24` : `adduser` attribue le premier UID libre à partir
+  de 1000. C'est cette valeur qui est figée dans le manifeste ;
 - **Caddy** ne démarre pas du tout en non-root avec toutes les capabilities
   retirées : `exec /usr/bin/caddy: operation not permitted`. La cause n'est pas
   le port 80 mais le binaire, qui porte la capability de fichier
@@ -421,10 +408,9 @@ place de quelqu'un) et **Ansible lui-même**.
 
 ### 4.3 Terraform — les environnements
 
-Terraform possède le _contenant_. Avant lui, créer un environnement voulait dire
-`kubectl create namespace` tapé par quelqu'un : le namespace n'était décrit
-nulle part, il n'avait aucun garde-fou de consommation, et le recréer n'était
-pas reproductible.
+Terraform possède le _contenant_. Sans lui, un environnement naîtrait d'un
+`kubectl create namespace` tapé par quelqu'un : décrit nulle part, sans
+garde-fou de consommation, et impossible à recréer à l'identique.
 
 L'arborescence sépare des **modules** (`namespace`, `network-policy`) et des
 **environnements** qui ne déclarent aucune ressource : ils composent les modules.
@@ -456,20 +442,18 @@ réelle sur le namespace `logging`** : les valeurs observées pendant un rollout
 correspondaient au mégaoctet près à celles calculées.
 
 **L'état vit dans l'état managé GitLab (backend `http`), un état par
-environnement, verrouillé.** Il a commencé en backend `local`, ce que l'option
-locale rendait naturel — aucun bucket, aucune base, aucun compte cloud pour
-l'héberger. Deux défauts ont imposé la bascule dès l'ouverture du dépôt à
-plusieurs personnes : **aucun verrou**, donc deux `apply` simultanés qui
-corrompent l'état, et surtout un plan de CI **muet sur la dérive** — l'état
-n'étant jamais commité, la CI repartait d'un état vide et annonçait « tout à
-créer » quel que soit le contenu du cluster. GitLab héberge ces états
-gratuitement, sur le même service que le dépôt, et la bascule n'a touché qu'un
-bloc `backend` suivi d'un `terraform init -migrate-state`.
+environnement, verrouillé.** Un backend `local` a deux défauts dès que plusieurs
+personnes travaillent sur le dépôt : **aucun verrou**, donc deux `apply`
+simultanés qui corrompent l'état, et un plan de CI **muet sur la dérive**.
+L'état n'étant jamais commité, la CI repartirait d'un état vide et annoncerait
+« tout à créer » quel que soit le contenu du cluster. GitLab héberge ces états
+gratuitement, sur le même service que le dépôt ; en CI, le backend
+s'authentifie avec `$CI_JOB_TOKEN`.
 
 Les états restent **séparés par environnement**, ce qui empêche une erreur de
 répertoire d'emporter la production : l'adresse est composée à partir du nom de
-l'environnement, jamais écrite en dur. Ce que cela coûte : l'état dépend
-maintenant du projet GitLab, et aucune sauvegarde n'est organisée hors de lui.
+l'environnement, jamais écrite en dur. Ce que cela coûte : l'état dépend du
+projet GitLab, et aucune sauvegarde n'est organisée hors de lui.
 
 L'accès au cluster depuis la CI ne passe pas par un kubeconfig stocké en
 variable — il n'aurait servi à rien, le cluster n'ayant aucune adresse joignable
@@ -487,17 +471,22 @@ rend l'écart lisible sans ouvrir les journaux du job (`TERRAFORM.md` §4.2).
 
 **Ce qui a été vérifié** : `validate` et `plan` sortent en `0` sur les
 environnements, contre le vrai cluster (6 ressources à créer par environnement
-vierge). **L'`apply` a été joué sur les trois environnements** : `staging` le
-22 septembre 2026 depuis un poste, à partir d'un namespace détruit ; `production`
-le 23 septembre depuis la CI ; `logging` depuis un poste (`TERRAFORM.md` §4).
-Une réserve : la `NetworkPolicy` d'APM Server, ajoutée depuis au module
-`logging`, n'est pas encore dans le cluster — cet `apply` est à rejouer.
+vierge). L'`apply` a été joué sur les trois environnements (`TERRAFORM.md` §9.4) :
+
+| Environnement | Date              | Depuis                                    |
+| ------------- | ----------------- | ----------------------------------------- |
+| `staging`     | 22 septembre 2026 | un poste, à partir d'un namespace détruit |
+| `production`  | 23 septembre 2026 | la CI (`terraform-apply-production`)      |
+| `logging`     | —                 | un poste                                  |
+
+Une réserve : la `NetworkPolicy` d'APM Server, décrite dans l'environnement
+`logging`, n'est pas dans le cluster (relevé du 6 octobre 2026 : aucune
+`NetworkPolicy` dans `logging`). Cet `apply` est à rejouer.
 
 ⚠️ **Deux mises en garde à l'exécution.**
 
-- Sur un namespace qui existe déjà — c'était le cas de `microcrm-staging`, créé à
-  la main pendant la campagne de déploiement — `terraform apply` échoue sur
-  `already exists`. L'adoption se fait **une fois**, par
+- Sur un namespace qui existe déjà, créé à la main par exemple,
+  `terraform apply` échoue sur `already exists`. L'adoption se fait **une fois**, par
   `terraform import 'module.namespace.kubernetes_namespace_v1.this' <ns>` ; le
   plan montre alors `1 to change` (Terraform pose ses labels) et `5 to add`. Un
   bloc `import` dans le code aurait été le mauvais outil : permanent et
@@ -573,15 +562,14 @@ Les jobs `deploy-staging` et `deploy-production` enchaînent quatre étapes :
 4. `deploy.sh` attend la fin du rollout et **revient tout seul à la version
    précédente** si le déploiement échoue ou traîne.
 
-**L'étape 2 est un correctif, pas un raffinement.** Avant elle, `apply -k`
-posait l'image _placeholder_ à chaque application, puis `deploy.sh` posait la
-vraie : chaque déploiement insérait **deux** révisions, si bien que la
-« révision précédente » d'un déploiement sain était toujours un placeholder
-inexistant. Le job `rollback-production`, qui n'a aucun moyen de viser une
-révision explicite, ne pouvait donc **jamais** fonctionner — et l'état cassé ne
-se voyait pas : `kubectl get deploy` affichait `READY 1/1 AVAILABLE 1` parce que
-l'ancien pod sain était compté. Vérifié après correction : deux déploiements,
-deux révisions, zéro placeholder, rollback sans argument en `0`.
+**L'étape 2 est ce qui rend le rollback possible.** Sans elle, `apply -k`
+poserait l'image _placeholder_ des manifestes, puis `deploy.sh` la vraie :
+chaque déploiement insérerait **deux** révisions, et la « révision précédente »
+d'un déploiement sain serait toujours un placeholder inexistant. Le job
+`rollback-production`, qui ne vise pas de révision explicite, ne pourrait
+jamais fonctionner, et rien ne le montrerait : `kubectl get deploy` afficherait
+`READY 1/1` parce que l'ancien pod sain est compté. Avec l'overlay : deux
+déploiements, deux révisions, zéro placeholder, rollback sans argument en `0`.
 
 ### 5.2 Sondes de santé
 
@@ -626,18 +614,11 @@ créer son répertoire de travail, et l'application ne démarre pas.
 Chaque point de ce socle est vérifié **au niveau conteneur** par
 `validate_k8s.sh`, parce qu'une valeur posée là écrase celle du pod.
 
-### 5.4 Ce que le déploiement local n'a pas pu vérifier
+### 5.4 Ce que le déploiement ne vérifie pas
 
-Cette liste décrit la campagne manuelle d'août. **Ses deux premiers points ont
-été levés depuis par la CI** : les 22 et 23 septembre 2026, staging et
-production ont été déployés par le pipeline, avec des images tirées du registry
-GitLab privé par `imagePullSecrets`. Les trois derniers restent vrais.
+Le registry privé et `imagePullSecrets` sont exercés par la CI, sur staging et
+sur production. Trois points restent hors de portée de cette plateforme :
 
-- **Le registry privé et `imagePullSecrets`** : les images étant chargées par
-  `minikube image load` et déjà présentes sur le nœud, le kubelet a signalé le
-  Secret manquant puis a poursuivi. Ce n'est pas une preuve que le chemin
-  fonctionne.
-- **L'overlay `production`**, vérifié seulement par construction et assertions.
 - **Le multi-nœud** : un seul nœud, donc ni éviction, ni contrainte de
   placement, ni comportement en pénurie.
 - **Les valeurs de `resources`**, faute de `metrics-server`.
@@ -692,13 +673,13 @@ la frontière du §4.1 ne souffre pas d'exception. Filebeat est un DaemonSet qui
 lit les fichiers de log du nœud, décode le JSON et ajoute les métadonnées
 Kubernetes.
 
-| Volet                     | État au 5 octobre 2026                                                                                                                                                          | Détail                |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| Logs centralisés          | **En service** depuis le 16 août. Filebeat ne collecte que `microcrm-staging` : la production n'est pas dans les logs                                                           | `MONITORING.md` §2-§4 |
-| Tableaux de bord          | **Cinq**, versionnés en NDJSON dans `k8s/elk/dashboards/` : supervision, DORA, sécurité, disponibilité, suivi des alertes                                                       | `MONITORING.md` §8    |
-| Alerting                  | **Huit règles** Kibana versionnées dans `k8s/elk/alerting/` — disponibilité, performance, sécurité — installées et déclenchées une fois. **Aucune notification hors de Kibana** | `MONITORING.md` §11   |
-| Traces de l'API           | **En service depuis le 5 octobre**, en staging et en production ; sans recul, sur du trafic provoqué                                                                            | `MONITORING.md` §10   |
-| Ressources (CPU, mémoire) | **Non mesurées.** Ni `metrics-server` ni Prometheus                                                                                                                             | `MONITORING.md` §12   |
+| Volet                     | État                                                                                                                                                                                      | Détail                |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| Logs centralisés          | **En service.** Filebeat ne collecte que `microcrm-staging` : la production n'est pas dans les logs                                                                                       | `MONITORING.md` §2-§4 |
+| Tableaux de bord          | **Cinq**, versionnés en NDJSON dans `k8s/elk/dashboards/` : supervision, DORA, sécurité, disponibilité, suivi des alertes                                                                 | `MONITORING.md` §8    |
+| Alerting                  | **Huit règles** Kibana versionnées dans `k8s/elk/alerting/` — disponibilité, performance, sécurité — installées, et déclenchées le 2 octobre 2026. **Aucune notification hors de Kibana** | `MONITORING.md` §11   |
+| Traces de l'API           | **En service** en staging et en production, sur du trafic provoqué                                                                                                                        | `MONITORING.md` §10   |
+| Ressources (CPU, mémoire) | **Non mesurées.** Ni `metrics-server` ni Prometheus                                                                                                                                       | `MONITORING.md` §12   |
 
 Un point de configuration mérite d'être connu par quiconque exploite cette
 plateforme : **la bascule texte → JSON du back tient à la seule clé
@@ -716,29 +697,20 @@ est arrêté.
 
 **Les traces, en trois phrases.** Un agent OpenTelemetry est embarqué dans
 l'image du back et activé par la ConfigMap ; APM Server reçoit ses traces et en
-déduit latence, débit et taux d'échec par route. La chaîne a été éprouvée depuis
-un conteneur lancé sur le poste, où elle mesure une latence de l'API qui
-n'existait nulle part. Elle est en service depuis le 5 octobre : staging tourne
-`back:5296658a`, la production `back:1.0.1`, et l'index `traces-apm*` reçoit
-des documents des deux environnements.
+déduit latence, débit et taux d'échec par route. L'index `traces-apm*` reçoit
+des documents des deux environnements (staging en `back:5296658a`, production en
+`back:1.0.1`). La seule latence chiffrée vient d'un conteneur lancé sur le
+poste : le trafic en service, provoqué, est trop faible pour une mesure.
 
-**Pourquoi rien n'avait été déployé du 23 septembre au 5 octobre.** Trois
-pipelines de `develop` avaient échoué, pour trois raisons différentes : aucun
-runner disponible (`#2892321711`, 29 septembre) ; `trivy-fs` et `terraform-plan`
-(`#2901472002`, 1er octobre) ; cinq CVE de Jackson dans l'image du back
-(`#2902337581`, 1er octobre). Le correctif, fusionné le 3 octobre, a remis
-`develop` au vert.
-
-**Ce que la livraison du 5 octobre a appris sur la plateforme.** Docker Desktop,
-qui porte à la fois le runner et minikube (8 Go, dont 6 réservés à minikube,
-partagés avec d'autres piles), a décroché ou redémarré quatre fois du 2 au 5
-octobre. Chaque fois, minikube est resté à moitié arrêté : un runner figé qui a
-retenu `develop`, deux `terraform-plan` en échec, trois `deploy-production` en
-échec. Rien ne signale aujourd'hui qu'un cluster est arrêté avant qu'un
-déploiement n'échoue dessus. Les remèdes — vérifier `kubectl get --raw /readyz`
-(ou `minikube status`) en tête des jobs de déploiement, un runner à
-`concurrent` > 1, une sonde externe sur le cluster, puis un cluster dédié —
-sont détaillés dans `rapport-performance.md` §7.3.
+**La limite de la plateforme.** Docker Desktop porte à la fois le runner et
+minikube (8 Go, dont 6 réservés à minikube, partagés avec d'autres piles).
+Quand il redémarre, minikube reste à moitié arrêté, et les jobs qui parlent au
+cluster échouent : le 5 octobre 2026, trois `deploy-production` sont tombés
+ainsi avant de passer sans modification. Rien ne signale qu'un cluster est
+arrêté avant qu'un déploiement n'échoue dessus. Les remèdes — vérifier
+`kubectl get --raw /readyz` (ou `minikube status`) en tête des jobs de
+déploiement, un runner à `concurrent` > 1, une sonde externe sur le cluster,
+puis un cluster dédié — sont détaillés dans `rapport-performance.md` §7.3.
 
 Le flux, les résultats de collecte et ce que la supervision ne couvre pas sont
 détaillés dans `rapport-performance.md` et dans `MONITORING.md`.
@@ -774,14 +746,14 @@ Mise en production, pas à pas (`RELEASE.md` §7) :
 6. Vérifier que l'application répond.
 7. En cas de problème : `rollback-production`.
 
-**Ce chemin par tag a abouti le 5 octobre 2026, avec `v1.0.1`.** Le premier tag,
-`v1.0.0`, avait échoué avant la promotion : l'image de test du front résolvait
-vers une variante arm64 sans Chrome sur le runner du projet. Pour `v1.0.1`, le
-pipeline de tag `#2913490784` a promu les images de `08a216b0` — `back:1.0.1`
-et `back:08a216b0` ont le même digest, comme `front:1.0.1` et
-`front:08a216b0` —, le job `release` a créé la Release GitLab, et
-`deploy-production` a mis la version en service à 14 h 10 UTC, après deux échecs
-sur un cluster arrêté. Compte rendu : `RELEASE.md` §7.5.
+| Preuve     | Pipeline de tag `#2913490784` (`v1.0.1`, 5 octobre 2026)                                                                            |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Promotion  | Images du commit `08a216b0` retaguées : `back:1.0.1` et `back:08a216b0` ont le même digest, comme `front:1.0.1` et `front:08a216b0` |
+| Release    | Release GitLab `v1.0.1` créée par le job `release`                                                                                  |
+| Production | `deploy-production` réussi à 14 h 10 UTC                                                                                            |
+
+Compte rendu complet : `RELEASE.md` §7.5. Le tag `v1.0.0` ne porte ni image
+ni Release : la première version livrée est 1.0.1.
 
 Une modification de la ConfigMap ne redémarre **pas** les pods : `configmap.yaml`
 est une ressource ordinaire et non un `configMapGenerator`, choix fait pour la
@@ -876,7 +848,7 @@ cd ansible && ansible-playbook site.yml
 # 2. Le namespace, son quota, ses limites, ses policies (Terraform)
 cd terraform/environments/staging && terraform apply
 
-# 3. L'application (Kustomize)
+# 3. L'application (Kustomize ; l'image réelle vient de l'overlay éphémère, voir ci-dessous)
 kubectl apply -k k8s/overlays/staging -n "$NAMESPACE"
 kubectl -n "$NAMESPACE" rollout status deployment/back  --timeout=300s
 kubectl -n "$NAMESPACE" rollout status deployment/front --timeout=300s
@@ -886,29 +858,26 @@ kubectl -n "$NAMESPACE" port-forward svc/back 18081:8080 &
 curl -s http://127.0.0.1:18081/persons | head -c 200
 ```
 
-**Cette procédure a été exécutée de bout en bout le 22 septembre 2026**, à
-partir d'une destruction réelle du namespace de staging. Le compte rendu est
-dans `RELEASE.md` §9.5 : `ansible ok=23 changed=0 failed=0`, 6 ressources
-Terraform créées, rollout des deux Deployments en 11 secondes, `/persons` qui
-répond et `/actuator/health` à `UP`. Ce document écrivait jusque-là qu'elle
-n'avait jamais été jouée.
+| Date              | Ce qui a été joué                                        | Résultat (`RELEASE.md` §9.5)                                                                                                                                 |
+| ----------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 22 septembre 2026 | Destruction réelle du namespace de staging, étapes 1 à 4 | `ansible ok=23 changed=0 failed=0`, 6 ressources Terraform créées, rollout des deux Deployments en 11 secondes, `/persons` répond, `/actuator/health` à `UP` |
 
-Trois écarts ont été constatés ce jour-là, et ils valent d'être connus :
+Trois conditions à respecter :
 
-- **L'étape 3, telle qu'elle est écrite ci-dessus, est incomplète.** Les
-  manifestes du dépôt portent délibérément une image `PLACEHOLDER` : appliqués
-  tels quels, ils déploieraient une image inexistante. L'exécution a repris
-  l'**overlay éphémère** du pipeline (§5.1), qui pose l'image réelle.
+- **L'étape 3 demande l'image réelle.** Les manifestes du dépôt portent
+  délibérément une image `PLACEHOLDER` : appliqués tels quels, ils déploieraient
+  une image inexistante. Il faut l'**overlay éphémère** du pipeline (§5.1), qui
+  pose l'image réelle.
 - **Le namespace doit être absent**, sinon `terraform apply` s'arrête sur
   `already exists` et demande l'import du §4.3.
 - **Les images doivent être disponibles pour le cluster** — en local par
   `minikube image load`, depuis la CI par le registry dont le `Secret` est
-  recréé par le job. L'exercice a utilisé des images chargées localement.
+  recréé par le job. L'exercice joué utilise des images chargées localement.
 
 **Ce que l'exercice ne couvre pas** : la stack `logging`. La reconstruire
 demande en plus le Secret de la clé de chiffrement de Kibana, l'installation
 des règles d'alerte et l'import des tableaux de bord (`MONITORING.md` §13) ;
-cet enchaînement-là n'a pas été rejoué sur un cluster neuf.
+cet enchaînement-là n'est pas éprouvé sur un cluster neuf.
 
 ### 8.5 Variables à créer dans GitLab
 
@@ -925,12 +894,10 @@ Seules celles-ci restent hors du dépôt. Tout le reste vit dans le bloc
 | `PROD_NAMESPACE`     | Variable         | **oui**   | Namespace de production                      |
 | `CI_REGISTRY*`       | automatiques     | —         | Fournies par GitLab                          |
 
-**Il n'y a plus de variable `KUBE_CONFIG`.** Elle portait un kubeconfig de
-poste, qui désigne le serveur d'API en `127.0.0.1` : une adresse injoignable
-depuis un conteneur de job. Depuis le 23 septembre 2026, les jobs de déploiement
-passent par le tunnel de l'agent GitLab pour Kubernetes, comme les jobs
-Terraform (`RELEASE.md` §6). Si la variable existe encore dans un projet, elle
-n'est plus lue.
+**Aucune variable ne porte de kubeconfig.** Un kubeconfig de poste désigne le
+serveur d'API en `127.0.0.1` : une adresse injoignable depuis un conteneur de
+job. Les jobs de déploiement passent par le tunnel de l'agent GitLab pour
+Kubernetes, comme les jobs Terraform (`RELEASE.md` §6).
 
 `PROD_NAMESPACE` doit être **protégée** : sans cela, n'importe quelle branche de
 travail lirait les coordonnées de production. Et les deux namespaces sont
@@ -962,13 +929,12 @@ un vrai serveur d'API et crée de vrais objets. Il n'y a ni plan simulé ni
 dry-run présenté comme une preuve : ce qui manque est le fournisseur, pas la
 mécanique.
 
-⚠️ **Une nuance, et elle s'est vérifiée : gratuit ne veut pas dire sans limite.**
-Pendant deux mois, les pipelines du projet se sont arrêtés sur
-`ci_quota_exceeded`. La sortie a été un **runner auto-hébergé**, qui ne consomme
-plus aucune minute du Free Tier — ce qui confirme la nuance plutôt que de la
-lever : l'option locale supprime la facture, pas la contrainte de ressource, elle
-la déplace vers le poste, qui porte désormais l'exécution des jobs en plus du
-cluster.
+⚠️ **Une nuance : gratuit ne veut pas dire sans limite.** Le quota de minutes
+partagées de l'offre gratuite de GitLab ne suffit pas à ce pipeline
+(`ci_quota_exceeded`). Les jobs tournent donc sur un **runner auto-hébergé**,
+qui ne consomme aucune minute. L'option locale supprime la facture, pas la
+contrainte de ressource : elle la déplace vers le poste, qui porte l'exécution
+des jobs en plus du cluster.
 
 ### 9.2 Ce qui bougerait chez un fournisseur
 
@@ -1013,7 +979,7 @@ projet a délibérément refusé de payer.
 | Le stockage managé et sauvegardé | Le seul PVC est celui d'Elasticsearch, servi par le disque du poste : pas de snapshot, pas de réplication, pas de restauration éprouvée.                                                                                                                                                                         |
 | L'IAM et les droits fins         | Sur le poste, un seul kubeconfig, celui de l'administrateur, avec tous les droits. Deux RBAC existent : celui de Filebeat, et celui de l'agent GitLab — un `ClusterRole` unique, à l'échelle du cluster, qui porte à la fois l'infrastructure et l'application. La forme correcte serait un agent par périmètre. |
 | La maîtrise des coûts            | Zéro dépense, donc zéro arbitrage. Les quotas sont dimensionnés contre la capacité du nœud (7,75 Gio d'allocatable, partagés avec des projets voisins), jamais contre un budget.                                                                                                                                 |
-| La montée en charge automatique  | Ni HPA, ni `metrics-server`, ni autoscaler de nœuds — il manque jusqu'au signal sur lequel un autoscaler déciderait. Les traces de l'API, une fois déployées, donneront la latence et le débit, pas le CPU ni la mémoire.                                                                                        |
+| La montée en charge automatique  | Ni HPA, ni `metrics-server`, ni autoscaler de nœuds — il manque jusqu'au signal sur lequel un autoscaler déciderait. Les traces de l'API donnent la latence et le débit, pas le CPU ni la mémoire.                                                                                                               |
 | Le cloisonnement réseau          | Décrit, mais inerte faute d'un CNI qui l'implémente (§6).                                                                                                                                                                                                                                                        |
 | **Une production**               | L'environnement `production` vise le même minikube dans un autre namespace. Il démontre qu'un second environnement se décrit par les mêmes modules et d'autres valeurs — pas qu'une production existe.                                                                                                           |
 

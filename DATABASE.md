@@ -17,9 +17,8 @@ The schema is derived entirely from the JPA-annotated entity classes in
 
 ## Which engine runs where
 
-Saying "the engine is HSQLDB" is no longer accurate on its own. The engine is
-chosen at runtime by three standard Spring variables — no profile, no extra
-properties file:
+The engine is not fixed: it is chosen at runtime by three standard Spring
+variables — no profile, no extra properties file:
 
 | Context                              | Engine                 | How it is selected                                                                         |
 | ------------------------------------ | ---------------------- | ------------------------------------------------------------------------------------------ |
@@ -48,16 +47,16 @@ throwaway container.
 
 Source: `Person.java`
 
-| Column      | Type        | Notes                                    |
-| ----------- | ----------- | ---------------------------------------- |
-| `id`        | `long` (PK) | `@GeneratedValue(strategy = AUTO)`       |
-| `firstName` | `String`    |                                          |
-| `lastName`  | `String`    |                                          |
-| `email`     | `String`    | Queryable via `findByEmail`              |
-| `phone`     | `String`    |                                          |
-| `bio`       | `String`    |                                          |
-| `createdAt` | `timestamp` | `@CreationTimestamp` — set on insert     |
-| `updatedAt` | `timestamp` | `@UpdateTimestamp` — set on every update |
+| Column      | Type        | Notes                                                          |
+| ----------- | ----------- | -------------------------------------------------------------- |
+| `id`        | `long` (PK) | `@GeneratedValue(strategy = AUTO)`                             |
+| `firstName` | `String`    |                                                                |
+| `lastName`  | `String`    |                                                                |
+| `email`     | `String`    | Unique (`@Column(unique = true)`); queryable via `findByEmail` |
+| `phone`     | `String`    |                                                                |
+| `bio`       | `String`    |                                                                |
+| `createdAt` | `timestamp` | `@CreationTimestamp` — set on insert                           |
+| `updatedAt` | `timestamp` | `@UpdateTimestamp` — set on every update                       |
 
 On delete, the `@PreRemove` hook (`remoteFromOrganization`) detaches the person
 from every organization it belongs to before the row is removed.

@@ -1,15 +1,20 @@
 # Architecture finale — MicroCRM
 
-> ⚠️ **Ce document décrit l'architecture cible, pas l'état implémenté.** Plusieurs
-> éléments qu'il présente n'existent pas dans le dépôt au 2 octobre 2026 : la
-> base PostgreSQL persistante (la base vit en mémoire, dans HSQLDB), le
-> déploiement automatique en staging (il est manuel), la signature des images
-> (elles sont taguées par SHA, pas signées), les tests post-déploiement en
-> TestInfra (aucun), et des indicateurs DORA injectés par le pipeline (ils sont
-> calculés par un job mais injectés depuis un poste). Les traces de l'API sont,
-> elles, en service depuis le 2026-10-05. L'état réel, et l'écart avec cette cible, sont dans
-> `docs/documentation-ci-cd-complete.md` (§8.4 et §8.5) ; le chemin pour s'en
-> rapprocher est dans `docs/plan-optimisation-release.md`.
+> ⚠️ **Portée : ce document décrit l'architecture cible, pas l'état livré.**
+> Dans la version 1.0.1, six éléments de cette cible ne sont pas en place.
+
+| Élément de la cible                           | État livré                                                               |
+| --------------------------------------------- | ------------------------------------------------------------------------ |
+| Base PostgreSQL persistante et ses migrations | Base en mémoire (HSQLDB) ; PostgreSQL sert seulement aux tests CI        |
+| Déploiement automatique en staging            | `deploy-staging` est manuel                                              |
+| Images signées, base miroitée en interne      | Images taguées par SHA, non signées ; bases tirées des registres publics |
+| Déploiement progressif (canary)               | `RollingUpdate` Kubernetes, avec retour arrière automatique              |
+| Tests post-déploiement en TestInfra           | Aucun                                                                    |
+| Indicateurs DORA injectés par le pipeline     | Calculés par le job `dora-metrics`, injectés depuis un poste             |
+
+L'état réel et ses limites sont décrits dans
+`docs/documentation-ci-cd-complete.md` (§8.4) ; le chemin
+pour rejoindre la cible est dans `docs/plan-optimisation-release.md`.
 
 **Plateforme de déploiement de l'équipe Orion.** Ce document décrit
 l'architecture du projet dans son état abouti — c'est-à-dire visé : les composants, leur agencement,
@@ -204,8 +209,7 @@ maîtrise la chaîne d'approvisionnement de ses images.
 
 ## 6. La chaîne de vérification
 
-Neuf étapes, dont quatre entièrement consacrées à établir qu'un changement est
-livrable. Chacune est **bloquante** : une étape rouge arrête le pipeline, et
+Dix étapes, dont cinq consacrées à établir qu'un changement est livrable. Chacune est **bloquante** : une étape rouge arrête le pipeline, et
 aucun artefact n'atteint le registry.
 
 ```mermaid

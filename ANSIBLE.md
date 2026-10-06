@@ -4,28 +4,27 @@ Ansible prépare ce qui existe **avant** que Terraform ou Kustomize n'aient
 quelque chose à quoi parler : l'outillage du poste et le cluster minikube.
 
 **État : les deux rôles tournent, sont idempotents et passent `ansible-lint`.**
-C'est le seul lot du projet dont le critère de validation soit intégralement
-atteint sur cette machine — parce qu'il agit sur cette machine, et pas sur une
-infrastructure qui n'existe pas.
+Ansible agit sur le poste lui-même : tout ce qu'il promet se vérifie sur cette
+machine.
 
-| Vérification                       | Résultat                                           |
-| ---------------------------------- | -------------------------------------------------- |
-| `ansible-lint` sur tout `ansible/` | `0 failure(s), 0 warning(s)` — profil `production` |
-| 1re exécution de `site.yml`        | `ok=23 changed=0 failed=0`                         |
-| 2e exécution consécutive           | `ok=23 changed=0 failed=0`                         |
-| `site.yml --check`                 | `ok=23 changed=0 failed=0`                         |
+| Vérification                                    | Résultat                                           |
+| ----------------------------------------------- | -------------------------------------------------- |
+| `ansible-lint` sur tout `ansible/`              | `0 failure(s), 0 warning(s)` — profil `production` |
+| 1re exécution de `site.yml`                     | `ok=23 changed=0 failed=0`                         |
+| 2e exécution consécutive                        | `ok=23 changed=0 failed=0`                         |
+| `site.yml --check`                              | `ok=23 changed=0 failed=0`                         |
+| Reconstruction de staging (2026-09-22), étape 1 | `ok=23 changed=0 failed=0` (`RELEASE.md` §9.5)     |
+| Job `ansible-lint` de la CI                     | à chaque pipeline (§9)                             |
 
 ## 1. Le problème que ça résout
 
-Deux documents du projet listaient des prérequis que **personne ne possédait**.
+Déployer sur un cluster vierge suppose un cluster, un contrôleur d'Ingress, un
+contexte `minikube` courant, et des outils (`kubectl`, `helm`, `terraform`…) dans
+des versions compatibles. Écrits comme prérequis dans une documentation, ces
+points restent à la charge du lecteur, qui doit deviner comment y arriver et
+quelles versions le projet attend.
 
-`K8S.md` §10, pour déployer sur un cluster vierge : « Prérequis : un cluster […]
-et un contrôleur d'Ingress installé ». `TERRAFORM.md` §10 : « Prérequis :
-minikube démarré, contexte `minikube` courant ». Deux phrases dans deux
-documents, à charge pour le lecteur de deviner comment y arriver — et rien qui
-dise quelles versions d'outils le projet attend.
-
-Ansible transforme ces phrases en code exécutable et rejouable.
+Ansible les transforme en code exécutable et rejouable.
 
 ## 2. La frontière — quatre couches, aucun recouvrement
 
@@ -96,7 +95,7 @@ Les versions exactes sont figées là où elles comptent vraiment et où c'est
 possible : les images d'outillage du `.gitlab-ci.yml`, qui sont ce que la CI
 exécute réellement. Le poste, lui, doit seulement être **assez récent**.
 
-Le champ `version_relevee` date le relevé fait sur ce poste. Quand la version
+Le champ `version_relevee` garde le relevé fait sur ce poste. Quand la version
 mesurée en diverge, le récapitulatif le signale — sans jamais s'en servir pour
 décider.
 
@@ -112,7 +111,8 @@ l'exécute.
 
 ## 6. ⚠️ Le rôle `cluster` ne détruit jamais rien
 
-C'est la décision la plus importante du lot, et elle mérite d'être défendue.
+C'est la décision la plus importante de la partie Ansible, et elle mérite d'être
+défendue.
 
 minikube ne sait pas redimensionner un profil existant : changer `--cpus` ou
 `--memory` suppose un `minikube delete` suivi d'un `minikube start`, donc la
@@ -167,26 +167,21 @@ L'idempotence ne va pas de soi, et trois règles la produisent :
 `assert` et `debug`, eux, ne signalent jamais `changed` — c'est ce qui les rend
 utilisables pour tout ce qui vérifie et tout ce qui affiche.
 
-## 8. Trois pièges rencontrés, et ce qu'ils ont coûté
+## 8. Trois pièges, et ce qu'ils imposent au code
 
-Ils sont documentés parce qu'ils se reproduiront.
+Ils sont documentés parce qu'ils se reproduisent sur tout projet Ansible.
 
 **Un booléen qui passe par `vars:` devient une chaîne.** `false` y ressort en
-« False », qui n'est pas vide, donc **vrai** pour `selectattr`. Le rôle
-`outillage` classait ainsi docker parmi les outils gérés par Homebrew et lui
-opposait une version minimale qu'il n'a pas. Le contournement par `| bool`
-fonctionnait, mais ansible-core l'a déprécié — « the bool filter coerced invalid
-value (str) to False, this feature will be removed from ansible-core 2.23 » — il
-avait donc une date de péremption. La correction est d'évaluer le test là où il
-est utilisé, où il produit un vrai booléen.
+« False », qui n'est pas vide, donc **vrai** pour `selectattr`. Le filtre
+`| bool` corrige la valeur, mais ansible-core l'a déprécié pour cet usage
+(« this feature will be removed from ansible-core 2.23 »). Le rôle `outillage`
+évalue donc le test là où il est utilisé, où il produit un vrai booléen.
 
-**`stdout_callback = yaml` fait échouer le playbook entier.** Ce greffon venait
-de `community.general` et en a été **retiré** en 12.0.0 ; le poste est en 13.1.0.
-L'échec survient avant la première tâche. Le remplaçant est une option du
-greffon par défaut d'ansible-core — et son nom de clé ini est
-`callback_result_format`, **pas** `result_format`. Ce second piège a coûté un
-aller-retour : une clé mal nommée est acceptée sans broncher et purement
-ignorée, la sortie restant en JSON sans qu'aucun message ne le signale.
+**`stdout_callback = yaml` fait échouer le playbook entier**, avant la première
+tâche : ce greffon a été retiré de `community.general` en 12.0.0. `ansible.cfg`
+emploie à la place l'option du greffon par défaut d'ansible-core,
+`callback_result_format = yaml`. Le nom de clé compte : `result_format`, mal
+nommé, est accepté sans message et purement ignoré.
 
 **`ansible.cfg` n'est lu que si le répertoire courant est `ansible/`.** Un
 `ansible-playbook ansible/site.yml` lancé depuis la racine du dépôt l'ignore en
@@ -204,12 +199,17 @@ présument rien de la connexion.
 poste Linux. Le rendre portable demanderait un chemin par gestionnaire de
 paquets, pour un gain nul tant que le projet n'a qu'un poste.
 
-**Rien n'exécute Ansible dans le pipeline.** Un job `ansible-lint` appartient à
-T6, pas à ce lot. Et le playbook lui-même n'a pas vocation à tourner en CI : il
-prépare un poste de développement, pas un exécuteur.
+**Le pipeline vérifie Ansible, il ne l'exécute pas.** Le job `ansible-lint`
+(étape `infra`, image `$PYTHON_IMAGE` avec `ansible` 14.1.0 et `ansible-lint`
+26.8.0 figés) lance `scripts/ci/ansible_check.sh` : `--syntax-check` du
+playbook, puis `ansible-lint`, depuis `ansible/` pour que `ansible.cfg` soit
+lu. Le playbook lui-même n'a pas vocation à tourner en CI : il prépare un poste
+de développement, pas un exécuteur.
 
-**La stack ELK n'est pas provisionnée.** C'est la cible naturelle du prochain
-rôle, et le périmètre de T7.
+**La stack ELK n'est pas dans Ansible, et c'est conforme à la frontière.** Son
+namespace `logging` est créé par Terraform, son contenu par
+`kubectl apply -k k8s/elk` ([MONITORING.md](MONITORING.md)) : Ansible
+s'arrête au cluster (§2).
 
 ## 10. Rejouer
 
