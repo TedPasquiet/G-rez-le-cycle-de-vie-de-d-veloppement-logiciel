@@ -1,8 +1,7 @@
 # Alerting — règles d'alerte Kibana, versionnées
 
-Jusqu'ici la stack de supervision se regardait : rien ne prévenait. Ce
-répertoire ajoute huit règles d'alerte couvrant la disponibilité, la performance
-et la sécurité.
+Huit règles d'alerte couvrant la disponibilité, la performance et la sécurité
+de MicroCRM. Le raisonnement d'ensemble est dans `MONITORING.md` §11.
 
 **Le livrable n'est pas une liste dans _Stack Management > Rules_, ce sont les
 fichiers de `rules/`.** Une règle créée à la souris vit dans l'index `.kibana`
@@ -22,27 +21,26 @@ a disparu. Même raisonnement que pour les tableaux de bord (`../dashboards/`).
 
 ## Le mécanisme retenu, et pourquoi
 
-**Règles Kibana natives, type `.es-query` en ES|QL.** Vérifié sur cette stack
-(8.19.7, licence `basic`, `xpack.security.enabled: false`) : elles s'exécutent
-sans clé d'API ni utilisateur. ElastAlert n'a donc pas été déployé — un
-composant de moins à faire tourner et à mettre à jour.
+**Règles Kibana natives, type `.es-query` en ES|QL.** Sur cette stack (8.19.7,
+licence `basic`, `xpack.security.enabled: false`), elles s'exécutent sans clé
+d'API ni utilisateur. ElastAlert n'est donc pas nécessaire — un composant de
+moins à faire tourner et à mettre à jour.
 
-Trois choses ont dû être réglées, et chacune est un piège si on l'ignore :
+Trois réglages sont nécessaires, et chacun est un piège si on l'ignore :
 
 **1. La clé de chiffrement.** Sans `xpack.encryptedSavedObjects.encryptionKey`,
-Kibana tire une clé au hasard à chaque démarrage. Constaté avant correction :
-`GET /api/alerting/_health` renvoyait `"has_permanent_encryption_key": false`
-et `GET /api/actions/connectors` répondait **500**. La clé est un secret et ce
-dépôt est public : elle n'est écrite dans aucun fichier. Elle vit dans le Secret
-`kibana-encryption-key`, créé par `install_alerting.py --secret` avec une valeur
-aléatoire, et le Deployment la lit par `secretKeyRef` (`optional: true`, pour
-qu'un `kubectl apply -k` sur un cluster neuf donne tout de même un Kibana qui
-démarre).
+Kibana tire une clé au hasard à chaque démarrage : `GET /api/alerting/_health`
+renvoie `"has_permanent_encryption_key": false` et `GET /api/actions/connectors`
+répond **500**. La clé est un secret et ce dépôt est public : elle n'est écrite
+dans aucun fichier. Elle vit dans le Secret `kibana-encryption-key`, créé par
+`install_alerting.py --secret` avec une valeur aléatoire, et le Deployment la
+lit par `secretKeyRef` (`optional: true`, pour qu'un `kubectl apply -k` sur un
+cluster neuf donne tout de même un Kibana qui démarre).
 
-⚠️ Conséquence à connaître : la clé ne survit pas à un `minikube delete`. Sur un
-cluster reconstruit, une nouvelle clé est tirée et les règles sont réinstallées
-depuis les fichiers — rien n'est perdu, précisément parce que les règles ne
-vivent pas dans l'instance.
+⚠️ La clé ne survit pas à un `minikube delete`. Sur un cluster reconstruit, une
+nouvelle clé est tirée et les règles sont réinstallées depuis les fichiers —
+rien n'est perdu, précisément parce que les règles ne vivent pas dans
+l'instance.
 
 **2. Les connecteurs.** La licence `basic` n'ouvre que deux types de
 notification, relu sur l'instance par `GET /api/actions/connector_types` :
@@ -105,36 +103,32 @@ faite dans l'interface est écrasée à la prochaine installation — c'est voul
 
 ## Les huit règles
 
-Toutes s'évaluent **chaque minute**. Les statistiques ci-dessous ont été
-relevées le 2026-10-02 dans Elasticsearch.
+Toutes s'évaluent **chaque minute**. Les statistiques qui justifient les seuils
+ont été relevées le 2026-10-02 dans Elasticsearch.
 
 ### Ce que les données permettent, et ce qu'elles ne permettent pas
 
 À lire avant le tableau, parce que cela borne tout le reste :
 
-- **Filebeat ne collecte que `microcrm-staging`.** 92 175 documents, un seul
-  namespace. Aucune règle fondée sur les logs ne voit la production.
+- **Filebeat ne collecte que `microcrm-staging`.** Aucune règle fondée sur les
+  logs ne voit la production.
 - **Le journal d'accès du front ne contient que les sondes de Kubernetes** en
   temps normal (41 430 requêtes en 7 jours, toutes `kube-probe`, toutes `GET /`,
-  toutes en 200) : il n'y a pas d'Ingress. C'est un battement de cœur régulier —
-  18 requêtes par minute — ce qui en fait un bon signal de disponibilité.
+  toutes en 200). C'est un battement de cœur régulier — 18 requêtes par minute —
+  ce qui en fait un bon signal de disponibilité.
 - **Le front ne renvoie jamais de 4xx** : c'est une SPA, tout chemin inconnu
   renvoie 200. Un « pic de 404 » ne peut pas exister côté front. En revanche le
   chemin demandé est journalisé (`caddy.request.uri`), et c'est lui qu'on
   surveille.
 - **Le back ne journalise pas ses accès**, et ne journalise rien pour un 400 ou
-  un 404 (vérifié). Il journalise une ligne `WARN` avec `error.type` quand une
-  requête se termine en exception — donc en 500.
+  un 404. Il journalise une ligne `WARN` avec `error.type` quand une requête se
+  termine en exception — donc en 500.
 - **L'application n'a pas d'authentification** : un 401 ou un 403 ne peut pas se
   produire. La règle « sécurité » côté API compte donc les 4xx en général.
-- **Les back déployés envoient des traces depuis le 2026-10-05.** Au moment du
-  relevé (2026-10-02), les images de staging (`bf272532`) et de production
-  (`9f4168b3`) précédaient l'instrumentation OpenTelemetry, et les seules traces
-  venaient de conteneurs lancés sur le poste. Depuis le 2026-10-05, staging
-  tourne `back:5296658a` et la production `back:1.0.1`, et `traces-apm*` reçoit
-  des documents `service.environment` `staging` et `production`. Les trois
-  règles « traces APM », qui regroupent par environnement, **surveillent donc
-  désormais les deux** — mais elles n'y ont pas été re-déclenchées.
+- **Les trois règles « traces APM » regroupent par `service.environment`.** Les
+  back de staging et de production émettent des traces : ces règles
+  surveillent les deux environnements. Leurs seuils, en revanche, sont calés sur
+  des traces d'essai lancées sur le poste.
 
 ### Disponibilité
 
@@ -155,23 +149,22 @@ intérêt (rien n'a été servi, en effet).
 
 **`dispo-back-redemarrages`** — compte les lignes `Starting MicroCRMApplication`.
 _Pourquoi ce seuil :_ 12 démarrages en 47 jours, jamais plus d'un par quart
-d'heure sauf une fois (2, le 2026-08-16). Un déploiement normal en produit un
-seul. On compte `Starting…` et non `Started…` pour voir aussi un back qui meurt
-avant d'avoir fini de démarrer. _Limite :_ un back arrêté sans redémarrer
-(`replicas: 0`) n'écrit rien et n'est **pas** détecté par cette règle : le back
-n'a pas de battement de cœur dans ses logs. C'est `dispo-api-5xx` et les traces
-qui couvriront ce cas quand le back déployé sera instrumenté.
+d'heure sauf une fois. Un déploiement normal en produit un seul. On compte
+`Starting…` et non `Started…` pour voir aussi un back qui meurt avant d'avoir
+fini de démarrer. _Limite :_ un back arrêté sans redémarrer (`replicas: 0`)
+n'écrit rien et n'est **pas** détecté par cette règle : le back n'a pas de
+battement de cœur dans ses logs. `dispo-api-5xx` ne le voit pas non plus — un
+back absent ne produit pas de trace.
 
 **`dispo-back-echecs-requetes`** — lignes du back portant `log.level: ERROR` ou
 un `error.type`. _Pourquoi ce seuil :_ aucune ligne de ce genre en 47 jours
 avant l'essai (374 lignes avec un niveau : 325 INFO, 49 WARN, 0 ERROR ; les WARN
 de démarrage n'ont pas d'`error.type`). Chaque occurrence est une requête
-terminée en 500. _Constat fait en la testant :_ `GET /persons/abc` renvoie 500
-(`ConversionFailedException`) au lieu de 400 — un défaut de l'application, que
-cette règle rend visible.
+terminée en 500. _Défaut applicatif rendu visible :_ `GET /persons/abc` renvoie
+500 (`ConversionFailedException`) au lieu de 400 ; il n'est pas corrigé.
 
 **`dispo-api-5xx`** — transactions HTTP en 5xx, par `service.environment`.
-Même signal que la précédente, vu par les traces : c'est elle qui couvrira la
+Même signal que la précédente, vu par les traces : c'est elle qui couvre la
 production. _Pourquoi ce seuil :_ 0 réponse 5xx sur les 401 transactions
 relevées avant l'essai.
 
@@ -186,19 +179,17 @@ relevées avant l'essai.
 624 tranches de 5 minutes (7 jours), le p95 médian est de 1,54 ms et 90 % des
 tranches sont sous 2,75 ms. 100 ms, c'est 65 fois la médiane. 12 tranches le
 dépassent ; avec le plancher de 20 requêtes il en reste 4, toutes à des moments
-où la machine était saturée — dont l'incident du 2026-10-02 vers 14 h 30 UTC
-(p95 de 388 ms sur 75 requêtes), constaté par ailleurs. Le plancher écarte les
-tranches de quelques requêtes au réveil de la machine, où un seul point lent
-fait le percentile. _Limite :_ c'est la latence du serveur de fichiers statiques,
-mesurée surtout sur les sondes ; elle ne dit rien de l'API.
+où la machine était saturée (la pire : p95 de 388 ms sur 75 requêtes). Le
+plancher écarte les tranches de quelques requêtes au réveil de la machine, où un
+seul point lent fait le percentile. _Limite :_ c'est la latence du serveur de
+fichiers statiques, mesurée surtout sur les sondes ; elle ne dit rien de l'API.
 
 **`perf-api-p95`** — `transaction.duration.us`, par environnement. _Pourquoi ce
 seuil :_ sur 401 transactions relevées avant l'essai, p95 de 5,6 ms et 17,4 ms
 selon l'environnement, maximum de 97 ms. 250 ms, c'est 14 fois le p95 le plus
-élevé et 2,5 fois le maximum. ⚠️ L'échantillon est petit et vient de conteneurs lancés
-sur le poste, pas d'un trafic réel : **ce seuil est à recaler** dès que le back
-instrumenté, en service depuis le 2026-10-05, aura tourné quelques jours en
-staging.
+élevé et 2,5 fois le maximum. ⚠️ L'échantillon est petit et vient de conteneurs
+lancés sur le poste, pas d'un trafic réel : **ce seuil est à recaler** sur
+quelques jours de traces de staging.
 
 ### Sécurité
 
@@ -220,15 +211,15 @@ exposé à Internet, ce seuil de 1 sonnerait en permanence et devrait être rele
 **`secu-api-rafale-4xx`** — réponses 400 à 499 de l'API, par environnement :
 énumération d'identifiants, requêtes forgées. _Pourquoi ce seuil :_ le trafic
 nominal relevé n'en produit aucune (0 sur 98 transactions) ; une énumération en
-produit des dizaines (40 et 64 observées en cinq minutes). 20 laisse passer quelques liens
-périmés. _Limite :_ ce seuil repose sur peu de données, et le 4xx est un signal
-indirect — l'application n'ayant pas d'authentification, il n'existe ni 401 ni
-403 à compter.
+produit des dizaines (40 et 64 observées en cinq minutes). 20 laisse passer
+quelques liens périmés. _Limite :_ ce seuil repose sur peu de données, et le 4xx
+est un signal indirect — l'application n'ayant pas d'authentification, il
+n'existe ni 401 ni 403 à compter.
 
 ## Preuve de déclenchement — 2026-10-02
 
-Les huit règles ont été déclenchées puis se sont rétablies, sur le cluster.
-Heures UTC, relevées dans l'index `microcrm-alerts` :
+Les huit règles ont été déclenchées puis se sont rétablies. Heures UTC,
+relevées dans l'index `microcrm-alerts` :
 
 | Règle                          | Provoquée par                                                                  | Déclenchée | Valeur   | Rétablie |
 | ------------------------------ | ------------------------------------------------------------------------------ | ---------- | -------- | -------- |
@@ -241,17 +232,16 @@ Heures UTC, relevées dans l'index `microcrm-alerts` :
 | `perf-front-p95`               | front de staging bridé à 10 m CPU (redimensionnement à chaud) sous charge      | 19:45:44   | 909,1 ms | 19:51:45 |
 | `dispo-front-muet`             | `kubectl scale deploy/front --replicas=0 -n microcrm-staging`                  | 19:50:39   | 0        | 19:51:39 |
 
-Ce qu'il faut savoir pour ne pas sur-lire ce tableau :
+Pour ne pas sur-lire ce tableau :
 
-- Les trois règles « traces APM » ont été prouvées sur un conteneur
-  `microcrm-back:otel` lancé sur le poste (`service.environment: demo-alerting`),
-  pas sur un pod du cluster : les back déployés n'émettaient pas encore de
-  traces le 2026-10-02. Ils en émettent depuis le 2026-10-05 ; l'essai n'a pas
-  été refait sur eux.
+- Les trois règles « traces APM » sont prouvées sur un conteneur lancé sur le
+  poste (`service.environment: demo-alerting`), pas sur un pod du cluster ;
+  l'essai n'a pas été refait sur les back déployés.
 - `dispo-back-redemarrages` affiche 3 et non 2 parce que `minikube start` avait
   lui-même démarré le back douze minutes plus tôt.
-- Le front n'a pas pu être ralenti par un client lent (le `port-forward` absorbe
-  la lenteur) : il a fallu lui retirer du CPU. Limite remise à 200 m ensuite.
+- Le front ne peut pas être ralenti par un client lent (le `port-forward`
+  absorbe la lenteur) : il faut lui retirer du CPU. Sa limite a été remise à
+  200 m ensuite.
 - Staging a été rendu à son état initial : `front` et `back` à 1 replica, mêmes
   images. La production n'a été lue qu'en lecture.
 
@@ -312,8 +302,8 @@ relit `microcrm-alerts` et pousse les nouvelles lignes — c'est la suite logiqu
 règles ne s'évaluent plus et aucune alerte ne le dit. Un tableau de bord vide se
 lit alors comme « tout va bien ».
 
-**La production n'est pas couverte par les règles fondées sur les logs**, et ne
-le sera par les règles APM qu'après déploiement d'un back instrumenté.
+**La production n'est couverte que par les trois règles sur traces.** Les cinq
+règles fondées sur les logs ne voient que staging.
 
 **Aucune métrique d'infrastructure** : ni CPU, ni mémoire, ni disque, ni état
 des pods. Un `CrashLoopBackOff` n'est vu que par ses effets (redémarrages

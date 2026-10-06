@@ -4,7 +4,7 @@
 
 # MicroCRM (P5 - Expert DevOps - Gérez le cycle de vie de développement logiciel)
 
-MicroCRM est une application de démonstration basique ayant pour être objectif de servir de socle pour le module "P5 - Expert DevOps".
+MicroCRM est une application de démonstration basique ayant pour objectif de servir de socle pour le module "P5 - Expert DevOps".
 
 L'application MicroCRM est une implémentation simplifiée d'un ["CRM" (Customer Relationship Management)](https://fr.wikipedia.org/wiki/Gestion_de_la_relation_client). Les fonctionnalités sont limitées à la création, édition et la visualisations des individus liés à des organisations.
 
@@ -33,6 +33,20 @@ domaine. Chaque étape ne laisse passer que ce qu'elle a vérifié.
 Le raisonnement derrière ce découpage — pourquoi `infra` avant `build`, pourquoi
 `infra-apply` en dernier, pourquoi la performance est un pipeline enfant — est
 dans [docs/pipeline-ci.md](./docs/pipeline-ci.md).
+
+**Les outils**, toutes versions figées dans
+[`.gitlab/ci/variables.yml`](./.gitlab/ci/variables.yml) ; leur choix est
+justifié dans [VEILLE.md](./VEILLE.md).
+
+| Domaine               | Outils                                                                 |
+| --------------------- | ---------------------------------------------------------------------- |
+| Intégration continue  | GitHub (dépôt principal), miroir GitLab CI, runner Docker auto-hébergé |
+| Tests                 | JUnit et JaCoCo (back), Karma (front), PIT (mutation), k6              |
+| Qualité               | ESLint, Checkstyle, ShellCheck, SonarCloud, SpotBugs                   |
+| Sécurité              | OWASP Dependency-Check, Trivy (dépôt et images)                        |
+| Conteneurs et cluster | Docker, Kubernetes (minikube), Kustomize, Helm, agent GitLab           |
+| Infrastructure        | Terraform (état hébergé par GitLab), Ansible                           |
+| Supervision           | Elasticsearch, Kibana, Filebeat, OpenTelemetry et Elastic APM          |
 
 **Configuration, tests et déploiement du pipeline** :
 [VARIABILISATION.md](./VARIABILISATION.md) pour les valeurs externalisées,
@@ -177,10 +191,10 @@ déploie `back:X.Y.Z` et `front:X.Y.Z`. Si l'image du commit n'existe pas, la
 promotion échoue, et c'est voulu : on ne reconstruit pas, on repose le tag au
 bon endroit.
 
-Ce chemin a été joué pour la release 1.0.1, le 5 octobre 2026 : `back:1.0.1`
-et `back:08a216b0` ont le même digest, la Release GitLab `v1.0.1` a été créée
-par le job, et la production tourne en `1.0.1` — compte rendu, incidents de
-plateforme compris, dans [RELEASE.md](./RELEASE.md) §7.5.
+Preuve : release 1.0.1 jouée le 5 octobre 2026 (pipelines #2909284076,
+#2912362926, #2913490784) ; `back:1.0.1` et `back:08a216b0` ont le même digest,
+la Release GitLab `v1.0.1` est créée par le job `release`, la production tourne
+en `1.0.1` ([RELEASE.md](./RELEASE.md) §7.5).
 
 Détail, et que faire quand la promotion échoue : [RELEASE.md](./RELEASE.md)
 §2.1, §2.2 et §7.
@@ -194,6 +208,8 @@ Détail, et que faire quand la promotion échoue : [RELEASE.md](./RELEASE.md)
 | Même chose en staging, ou hors CI, depuis un poste | `scripts/deploy/rollback.sh`, ci-dessous                       |
 
 ```shell
+export KUBECONFIG=~/.kube/config   # le script l'exige ; en CI, l'agent le fournit
+
 # Revenir à la révision précédente (back puis front)
 bash scripts/deploy/rollback.sh -n microcrm-production -d back
 bash scripts/deploy/rollback.sh -n microcrm-production -d front
@@ -204,13 +220,12 @@ bash scripts/deploy/rollback.sh -n microcrm-production -d back --to-revision 7
 ```
 
 Codes de sortie : `0` rétabli, `1` erreur de configuration, `3` le rollback
-lui-même a échoué. Deux pièges, observés :
+lui-même a échoué. Deux pièges :
 
 - **Ne pas enchaîner un rollback manuel après un rollback automatique** : la
   version saine est déjà revenue, « la précédente » est redevenue la mauvaise.
 - **Un rollback ramène l'image, pas la ConfigMap.** Revenir à une image
-  construite avant l'ajout de l'agent OpenTelemetry (commit `143adb7`) alors
-  que la ConfigMap porte `JAVA_TOOL_OPTIONS=-javaagent:…` donne un pod qui ne
+  qui ne contient pas l'agent OpenTelemetry alors que la ConfigMap porte `JAVA_TOOL_OPTIONS=-javaagent:…` donne un pod qui ne
   démarre pas : retirer d'abord cette clé ([MONITORING.md](./MONITORING.md)
   §10.5).
 
@@ -268,9 +283,8 @@ aux étapes 2 et 4. Pour la supervision :
 `scripts/ci/terraform_check.sh --apply -e logging`, puis
 `kubectl apply -k k8s/elk -n logging`.
 
-Cette procédure a été jouée de bout en bout le 2026-09-22, à partir d'un
-namespace réellement détruit : compte rendu dans [RELEASE.md](./RELEASE.md)
-§9.4-9.5. Détail : [ANSIBLE.md](./ANSIBLE.md), [TERRAFORM.md](./TERRAFORM.md)
+Preuve : procédure jouée de bout en bout le 22 septembre 2026, à partir d'un
+namespace détruit ([RELEASE.md](./RELEASE.md) §9.4-9.5). Détail : [ANSIBLE.md](./ANSIBLE.md), [TERRAFORM.md](./TERRAFORM.md)
 §10, [K8S.md](./K8S.md) §14.9.
 
 ### 7. Vérifier
@@ -348,7 +362,7 @@ bash scripts/tests/validate_k8s.sh   # valide k8s/ et helm/, sans cluster
 | [QUALITY.md](./QUALITY.md)                                               | **Plan de tests et de sécurité** : Sonar, SpotBugs, Dependency-Check, Trivy, k6, supervision, couverture                           |
 | [ARCHITECTURE.md](./ARCHITECTURE.md)                                     | Architecture de l'application et de la plateforme, **schémas IaC**                                                                 |
 | [RELEASE.md](./RELEASE.md)                                               | **Plan d'automatisation des releases** : versionnage SemVer, déploiement, rollback, sauvegarde et restauration                     |
-| [K8S.md](./K8S.md)                                                       | Manifestes Kubernetes, overlays Kustomize, campagnes de déploiement                                                                |
+| [K8S.md](./K8S.md)                                                       | Manifestes Kubernetes, overlays Kustomize, preuves de déploiement                                                                  |
 | [HELM.md](./HELM.md)                                                     | Le chart, et pourquoi il vient en plus de Kustomize                                                                                |
 | [TERRAFORM.md](./TERRAFORM.md)                                           | Namespaces, quotas, policies, état partagé                                                                                         |
 | [ANSIBLE.md](./ANSIBLE.md)                                               | Provisionnement du poste et du cluster                                                                                             |
@@ -372,8 +386,8 @@ Ce [monorepo](https://en.wikipedia.org/wiki/Monorepo) contient les 2 composantes
 - La partie serveur (ou "backend"), en Java SpringBoot 3;
 - La partie cliente (ou "frontend"), en Angular 20.
 
-Une intégration basique avec Gitlab CI est définie via le fichier [`.gitlab-ci.yml`](./.gitlab-ci.yml).
-La configuration du pipeline et les valeurs à externaliser sont détaillées dans
+Le pipeline GitLab CI est défini par [`.gitlab-ci.yml`](./.gitlab-ci.yml) et
+les fichiers de `.gitlab/ci/` (voir plus haut). La configuration du pipeline et les valeurs à externaliser sont détaillées dans
 [VARIABILISATION.md](./VARIABILISATION.md).
 
 ### Démarrer avec les sources
@@ -468,8 +482,10 @@ rien à installer, rien à démarrer.
 
 ##### Contre PostgreSQL, comme le fait la CI
 
-Le moteur réellement déployé est PostgreSQL, et c'est sur lui que le job
-`test-back` exécute la suite. Le choix du moteur ne tient à aucun profil ni
+PostgreSQL est le moteur cible d'un déploiement avec une base réelle, et c'est
+sur lui que le job `test-back` exécute la suite. Les environnements Kubernetes
+de démonstration tournent, eux, sur la base HSQLDB en mémoire de l'image
+([DATABASE.md](./DATABASE.md)). Le choix du moteur ne tient à aucun profil ni
 fichier de configuration : il tient aux trois variables standard de Spring.
 Absentes, HSQLDB ; présentes, PostgreSQL.
 

@@ -1,30 +1,15 @@
 # Terraform — l'infrastructure de MicroCRM
 
 Description de ce que Terraform possède dans ce projet, de la frontière qui le
-sépare de Kustomize, et de ce que cette première version ne fait pas.
+sépare de Kustomize, de la façon dont la CI l'exécute, et de ce qu'il ne fait
+pas.
 
-**État : les trois environnements sont appliqués.** Ce document a longtemps
-écrit que les configurations « se planifiaient sans avoir été appliquées » ;
-ce n'est plus vrai depuis le 2026-09-22. `staging` a été appliqué depuis un
-poste ce jour-là, à partir d'un namespace réellement détruit (6 ressources
-créées, compte rendu dans `RELEASE.md` §9.5), `production` l'a été **depuis la
-CI** le 2026-09-23, et `logging` depuis un poste. Les trois états sont partagés
-(§4). Ce qui reste non vérifié est au §9.4. La distinction est maintenue tout
-au long du document : ce qui a été observé est présenté comme tel, le reste est
-annoncé comme non vérifié.
-
-L'état est **partagé et verrouillé** (état managé GitLab, §4), et le pipeline
-joue Terraform à quatre jobs (§9.5) : `plan` automatique et bloquant sur les
-merge requests, `apply` manuel et nommé par environnement. L'accès au cluster
-depuis la CI passe par l'**agent GitLab pour Kubernetes** (§4.1) — aucun
-kubeconfig n'est stocké en variable de projet.
-
-⚠️ **Adopter un namespace qui existe déjà demande une étape préalable** (§10.1).
-C'était le cas de staging, créé à la main pendant la campagne du `K8S.md` §14 :
-sans import, l'`apply` échoue sur `namespaces "microcrm-staging" already exists`.
-Le cas a été réglé autrement le 2026-09-22 — le namespace a été détruit puis
-recréé par Terraform — mais il se représentera sur toute infrastructure
-existante.
+Terraform décrit trois namespaces : `microcrm-staging`, `microcrm-production`
+et `logging` (la stack ELK). Leurs états sont **partagés et verrouillés** (état
+managé GitLab, §4). Le pipeline joue Terraform en cinq jobs (§9.5) : `validate`,
+`plan` automatique et bloquant, et un `apply` manuel par environnement. L'accès
+au cluster depuis la CI passe par l'**agent GitLab pour Kubernetes** (§4.1) :
+aucun kubeconfig n'est stocké en variable de projet.
 
 | Élément   | Version                                                        |
 | --------- | -------------------------------------------------------------- |
@@ -34,23 +19,34 @@ existante.
 | État      | backend `http` — état managé GitLab, un par environnement (§4) |
 | Accès CI  | agent GitLab pour Kubernetes `microcrm` (§4.1)                 |
 
+**Les trois environnements sont appliqués**, par deux chemins :
+
+| Environnement | Application                                                     | Date       |
+| ------------- | --------------------------------------------------------------- | ---------- |
+| `staging`     | depuis un poste, sur un namespace détruit (6 ressources créées) | 2026-09-22 |
+| `production`  | `terraform-apply-production`, **depuis la CI**, à 07:25:32 UTC  | 2026-09-23 |
+| `logging`     | depuis un poste                                                 | —          |
+
+Les états de `staging` et de `logging`, produits en local, ont été migrés vers
+l'état partagé (§4.4) ; leur plan sort à « No changes ». Ce qui reste non
+vérifié est au §9.4.
+
 ## 1. Le problème que ça résout
 
-Avant ce lot, la création d'un environnement se faisait à la main. `K8S.md` §10
-le dit sans détour : la première étape d'un déploiement sur un cluster vierge est
-`kubectl create namespace "$STAGING_NAMESPACE"`, tapé par quelqu'un. Trois
-conséquences :
+Sans Terraform, la création d'un environnement est une commande tapée à la main
+(`kubectl create namespace "$STAGING_NAMESPACE"`). Trois conséquences :
 
-- **Le namespace n'était décrit nulle part.** Personne ne pouvait dire, en
-  lisant le dépôt, quels environnements existent ni ce qui les distingue.
+- **Le namespace n'est décrit nulle part.** Personne ne peut dire, en lisant le
+  dépôt, quels environnements existent ni ce qui les distingue.
 - **Aucun garde-fou de consommation.** Un back qui fuit ou un `replicas: 10`
   posé par erreur assèche le nœud, et emporte l'autre environnement avec lui.
-- **Recréer un environnement n'était pas reproductible.** La procédure vivait
-  dans une section de documentation, pas dans du code exécutable.
+- **Recréer un environnement n'est pas reproductible.** La procédure vit dans
+  une documentation, pas dans du code exécutable.
 
-Terraform décrit maintenant ces environnements. Le dépôt seul suffit à les
-recréer, et `terraform plan` répond à la question « qu'est-ce qui a bougé depuis
-la dernière fois ? » sans avoir à comparer des `kubectl describe` à la main.
+Terraform décrit ces environnements. Le dépôt seul suffit à les recréer
+(`RELEASE.md` §9.4), et `terraform plan` répond à la question « qu'est-ce qui a
+bougé depuis la dernière fois ? » sans comparer des `kubectl describe` à la
+main.
 
 ## 2. Pourquoi Terraform, et pas Kustomize pour tout
 
@@ -83,11 +79,14 @@ le dernier `kubectl apply` a posé.
 | `Deployment`, `Service`, `Ingress`, `ConfigMap` | **Kustomize** | change à chaque commit, appliqué par la CI                     |
 | `Secret` du registry                            | **la CI**     | voir ci-dessous                                                |
 
+La règle vaut aussi pour la stack ELK : le namespace `logging` est créé par
+Terraform, ce qu'il contient par `kubectl apply -k k8s/elk`.
+
 **Le Secret du registry ne passera jamais par Terraform.** Ce n'est pas un
 oubli : `terraform.tfstate` contient en clair tout ce que les providers ont lu,
 y compris les attributs marqués `sensitive` — le masquage ne vaut que pour
-l'affichage. Le Secret continue donc d'être recréé par les jobs de déploiement
-depuis `$CI_REGISTRY_USER` / `$CI_REGISTRY_PASSWORD` (K8S.md §12).
+l'affichage. Le Secret est donc recréé par les jobs de déploiement depuis
+`$CI_REGISTRY_USER` / `$CI_REGISTRY_PASSWORD` (K8S.md §12).
 
 **Comment on lit la frontière dans le cluster.** Les ressources Terraform
 portent `app.kubernetes.io/managed-by: terraform`, les ressources Kustomize
@@ -104,32 +103,28 @@ endroits : `terraform/environments/<env>/terraform.tfvars` et la variable
 GitLab `$STAGING_NAMESPACE` / `$PROD_NAMESPACE`. Rien ne compare les deux.
 Terraform crée le namespace, la CI y déploie, et les deux ne se parlent pas. En
 cas de divergence, le job de déploiement échoue sur un namespace inexistant — ou
-pire, en crée un second, sans quota ni policy. C'est la dette la plus concrète
-de ce lot ; la refermer est du ressort de T6 (§11).
+pire, en crée un second, sans quota ni policy. Une variable vide, elle, fait
+échouer le job (garde-fou `exige_namespace`, `RELEASE.md` §6). C'est la dette
+la plus concrète de cette partie (§11).
 
 ## 4. L'état : où il vit, et pourquoi
 
 **État managé GitLab (backend `http`), un état par environnement, verrouillé.**
 
-Ce n'était pas le choix d'origine. Le projet a démarré en backend `local`, un
-fichier par environnement sur un seul poste — ce que la décision D2 (tout en
-local) rendait naturel, faute de bucket ou de compte cloud. Deux défauts ont
-imposé la bascule dès que le dépôt a été ouvert à plusieurs personnes :
+Un backend `local` — un fichier par environnement sur un poste — aurait deux
+défauts rédhibitoires :
 
-- **aucun verrou** : deux `apply` simultanés corrompaient l'état. Sans risque
-  tant qu'une seule personne appliquait depuis un seul poste, certain d'arriver
-  à deux ;
-- **un plan qui ne prouvait rien** : l'état n'étant jamais commité, la CI
-  repartait d'un état VIDE et annonçait « tout à créer » quel que soit le
-  contenu réel du cluster. Le job `terraform-plan` ne pouvait structurellement
-  détecter aucune dérive — il était d'ailleurs en `manual` + `allow_failure`.
+- **aucun verrou** : deux `apply` simultanés corrompent l'état ;
+- **un plan qui ne prouve rien** : l'état n'étant jamais commité, la CI
+  repartirait d'un état vide et annoncerait « tout à créer » quel que soit le
+  contenu réel du cluster. Aucune dérive ne serait détectable.
 
 GitLab héberge gratuitement des états Terraform sur le Free Tier, sur le même
 service que le dépôt. C'est ce qui est employé ici, avec **un état par
 environnement** : `…/terraform/state/staging`, `…/production`, `…/logging`. La
 séparation n'est pas une commodité, c'est le garde-fou qui empêche une erreur de
 répertoire d'emporter le mauvais environnement — avec un état unique, un
-`terraform destroy` lancé dans staging aurait pu détruire la production.
+`terraform destroy` lancé dans staging pourrait détruire la production.
 
 **Ce qui est écrit dans le dépôt, et ce qui n'y est pas.** Le bloc `backend` de
 chaque `versions.tf` ne porte que les méthodes du contrat GitLab, vraies pour
@@ -164,30 +159,9 @@ faux `terraform` qui journalise `TF_HTTP_ADDRESS`.
 Le jeton de job n'est pas un secret à gérer : il est émis pour un job, expire
 avec lui, et ne donne accès qu'à ce projet. Rien à créer, rien à faire tourner.
 
-**Où en est chaque état — mise à jour du 2026-09-23.** Le paragraphe qui suivait
-annonçait « l'`apply` n'a jamais été joué » ; ce n'est plus vrai, et les trois
-environnements ne sont pas arrivés au même point par le même chemin.
-
-| Environnement | Comment son état a été rempli                                                                  |
-| ------------- | ---------------------------------------------------------------------------------------------- |
-| `production`  | `terraform-apply-production` **depuis la CI**, le 2026-09-23 à 07:25:32                        |
-| `staging`     | appliqué depuis un poste, puis **migré** vers l'état partagé (`terraform init -migrate-state`) |
-| `logging`     | même chemin que staging, migré le 2026-09-23                                                   |
-
-Conséquence directe : `terraform-apply-staging` et `terraform-apply-logging`
-n'ont **jamais** été joués depuis la CI. Ils le seront sans rien créer — leur
-plan sort désormais à « No changes », puisque l'état partagé décrit déjà des
-ressources qui existent.
-
-Ce que la migration a évité mérite d'être écrit, parce que c'est le piège que ce
-paragraphe annonçait dans l'autre sens : tant qu'un environnement avait son état
-en local et ses ressources dans le cluster, l'état partagé le croyait vide. Un
-`apply` depuis la CI aurait planifié « 6 to add » puis échoué sur
-`already exists` (§10.1). C'est exactement ce qui serait arrivé à `logging`.
-
-C'est à partir de maintenant que « 0 to add » devient une information, et qu'une
-modification faite à la main dans le cluster apparaît en dérive dans le plan de
-la merge request suivante.
+Parce que l'état partagé décrit les ressources qui existent, « 0 to add » est
+une information : une modification faite à la main dans le cluster apparaît en
+dérive dans le plan de la merge request suivante.
 
 **Le verrou, et qui le prend.** `apply` le prend, `plan` ne le prend pas
 (`-lock=false`, posé par le script). Un plan ne persiste aucun état, il n'a rien
@@ -199,48 +173,34 @@ plus deux `apply` d'un même environnement de démarrer ensemble : le verrou fai
 
 ### 4.1 Le chemin d'accès au cluster depuis la CI
 
-L'état partagé ne suffisait pas à rendre `terraform-plan` utilisable : encore
-faut-il que le runner atteigne le cluster. Il ne l'atteignait pas, et l'échec
-était lisible :
+**Le problème.** Le cluster du projet est un minikube, sur un poste, derrière
+une box : aucune adresse joignable depuis Internet. Un kubeconfig rangé dans une
+variable de projet n'y change rien — le fichier arrive dans le job, l'adresse
+qu'il contient (`127.0.0.1`, qui désigne le conteneur du job lui-même) reste
+injoignable. Une variable protégée serait de plus absente des branches non
+protégées.
 
-```
-Error: Invalid attribute in provider configuration
-  on providers.tf line 8, in provider "kubernetes":
-'config_path' refers to an invalid path: "/root/.kube/config"
-```
-
-Trois causes empilées, chacune suffisante :
-
-1. l'image d'outillage tourne en `root` : `~/.kube/config` s'y résout en
-   `/root/.kube/config`, qui n'existe pas ;
-2. le `KUBECONFIG: $KUBE_CONFIG` que portait le job n'était de toute façon
-   **jamais lu par Terraform**, dont le `config_path` est explicite dans
-   `providers.tf` — une variable d'environnement ne peut pas gagner contre un
-   attribut écrit ;
-3. le contexte visé, `minikube`, n'existe dans aucun kubeconfig de CI.
-
-Et une quatrième, indépendante : `$KUBE_CONFIG` est une variable **protégée**,
-donc absente des branches non protégées.
-
-**Ce qui est employé à la place : l'agent GitLab pour Kubernetes**
-(`.gitlab/agents/microcrm/config.yaml`). Le cluster du projet est un minikube,
-sur un poste, derrière une box : aucune adresse joignable depuis Internet. Un
-kubeconfig rangé dans une variable n'y changeait rien — le fichier arrivait bien
-dans le job, l'adresse qu'il contenait restait injoignable. L'agent inverse le
-sens de la connexion : il tourne DANS le cluster et ouvre une connexion
-**sortante** vers GitLab ; les jobs passent par ce tunnel. Trois conséquences :
+**La solution : l'agent GitLab pour Kubernetes**
+(`.gitlab/agents/microcrm/config.yaml`). L'agent inverse le sens de la
+connexion : il tourne DANS le cluster et ouvre une connexion **sortante** vers
+GitLab ; les jobs passent par ce tunnel. Trois conséquences :
 
 - aucun port à ouvrir, aucune API Kubernetes à exposer ;
 - aucun kubeconfig à stocker en variable, donc rien à faire tourner le jour où
   quelqu'un quitte l'équipe ;
-- l'accès ne dépend plus d'une variable protégée : il vaut sur les branches de
+- l'accès ne dépend pas d'une variable protégée : il vaut sur les branches de
   fonctionnalité et dans les pipelines de merge request. C'est ce qui permet à
   `terraform-plan` d'être automatique.
 
-GitLab injecte alors `$KUBECONFIG` dans le job, **à l'exécution**. Les deux
-lignes qui recollent Terraform dessus sont dans le gabarit `.terraform_infra` du
-`.gitlab-ci.yml`, en `before_script` et pas dans un bloc `variables:` — qui est
-résolu avant le démarrage du job, donc avant que `$KUBECONFIG` existe :
+Les jobs Terraform **et** les jobs de déploiement (`deploy-*`,
+`rollback-production`) passent par ce tunnel. Aucune variable `KUBE_CONFIG`
+n'est lue.
+
+GitLab injecte `$KUBECONFIG` dans le job, **à l'exécution**. Les deux lignes qui
+recollent Terraform dessus sont dans le gabarit `.terraform_infra` de
+`.gitlab/ci/templates.yml`, en `before_script` et pas dans un bloc
+`variables:` — qui est résolu avant le démarrage du job, donc avant que
+`$KUBECONFIG` existe :
 
 ```yaml
 - export TF_VAR_kubeconfig_path="$KUBECONFIG"
@@ -248,16 +208,18 @@ résolu avant le démarrage du job, donc avant que `$KUBECONFIG` existe :
 ```
 
 Le nom du contexte est imposé par GitLab : `<chemin du projet>:<nom de
-l'agent>`. Il est recomposé, jamais écrit en dur.
+l'agent>`. Il est recomposé, jamais écrit en dur. L'attribut `config_path` de
+`providers.tf` est explicite : c'est pour cela qu'il est alimenté par une
+variable Terraform, et non par la variable d'environnement `KUBECONFIG`, qu'il
+ignorerait.
 
 **Installation, une fois.**
 
-⚠️ **Le fichier de configuration doit être sur la branche par défaut** (`main`).
-GitLab lit `.gitlab/agents/<nom>/config.yaml` sur la branche par défaut du
-projet, et nulle part ailleurs : commité sur `develop` seulement, l'agent
-n'apparaît pas dans la liste et son `ci_access` ne s'applique pas. C'est le
-premier piège de cette installation, et il ne produit aucun message d'erreur —
-seulement un agent absent du menu.
+⚠️ **Prérequis : le fichier de configuration doit être sur la branche par
+défaut** (`main`). GitLab lit `.gitlab/agents/<nom>/config.yaml` sur la branche
+par défaut du projet, et nulle part ailleurs : commité sur `develop` seulement,
+l'agent n'apparaît pas dans la liste et son `ci_access` ne s'applique pas, sans
+aucun message d'erreur.
 
 1. `git push` de `.gitlab/agents/microcrm/` jusqu'à `main` ;
 2. `kubectl apply -f .gitlab/agents/microcrm/rbac.yaml` (voir ci-dessous) ;
@@ -267,7 +229,7 @@ seulement un agent absent du menu.
    ajoutant `--set rbac.useExistingRole=gitlab-agent-microcrm`** ;
 5. l'agent doit apparaître « connected ».
 
-Installation réellement jouée, pour mémoire — le namespace et le nom de release
+La commande installée sur ce cluster — le namespace et le nom de release
 viennent de la commande que GitLab affiche, et ils déterminent le nom du
 ServiceAccount (`microcrm-gitlab-agent`) :
 
@@ -279,66 +241,63 @@ helm upgrade --install microcrm gitlab/gitlab-agent \
   --set rbac.useExistingRole=gitlab-agent-microcrm
 ```
 
-**Les droits de l'agent dans le cluster — l'étape qu'on oublie.** Le fichier
-`config.yaml` dit QUI peut emprunter le tunnel ; il ne dit pas ce que le tunnel
-permet de faire. Par défaut, le chart Helm lie le ServiceAccount de l'agent à
-**`cluster-admin`** — la documentation GitLab l'écrit elle-même, « for
-simplicity ». Autrement dit : n'importe quel job de CI de ce projet, sur
-n'importe quelle branche, pourrait tout faire sur le cluster, alors que les
-seuls jobs qui passent par l'agent manipulent quatre types d'objets.
+**Les droits de l'agent dans le cluster.** Le fichier `config.yaml` dit QUI peut
+emprunter le tunnel ; il ne dit pas ce que le tunnel permet de faire. Par
+défaut, le chart Helm lie le ServiceAccount de l'agent à **`cluster-admin`** —
+la documentation GitLab l'écrit elle-même, « for simplicity ». N'importe quel
+job de CI de ce projet, sur n'importe quelle branche, pourrait alors tout faire
+sur le cluster.
 
-`.gitlab/agents/microcrm/rbac.yaml` porte donc un `ClusterRole` restreint à ces
-quatre types (`namespaces`, `resourcequotas`, `limitranges`,
-`networkpolicies`), plus la découverte de l'API, et l'option
-`rbac.useExistingRole` le substitue à `cluster-admin`.
+`.gitlab/agents/microcrm/rbac.yaml` porte donc un `ClusterRole` restreint, que
+l'option `rbac.useExistingRole` substitue à `cluster-admin` :
 
-⚠️ **Ce que l'installation a appris, et qu'aucune lecture n'aurait donné.**
+| Objets                                                           | Droits                                                        | Pour qui                      |
+| ---------------------------------------------------------------- | ------------------------------------------------------------- | ----------------------------- |
+| `namespaces`, `resourcequotas`, `limitranges`, `networkpolicies` | lecture, création, modification, suppression                  | Terraform (`destroy` compris) |
+| `deployments`, `services`, `configmaps`, `ingresses`             | lecture, création, modification ; **pas de suppression**      | jobs de déploiement           |
+| `replicasets`                                                    | lecture seule                                                 | `rollout history` et `undo`   |
+| `secrets`                                                        | `get`, `create`, `update`, `patch` ; **ni `list` ni `watch`** | le Secret du registry         |
+| découverte de l'API (`/api`, `/apis`, `/version`…)               | `get`                                                         | le provider Kubernetes        |
+
+Deux choix se lisent dans ce tableau. Un job de déploiement n'a pas le droit de
+supprimer un objet applicatif : `kubectl apply -k` et `rollout undo` n'en ont
+pas besoin, et un job qui peut détruire peut détruire par erreur. Et les
+Secrets ne s'énumèrent pas : lire un secret dont on connaît le nom est une
+chose, les parcourir tous en est une autre (risque R3 de `AUDIT.md`).
+
 `rbac.useExistingRole` **remplace** la liaison vers `cluster-admin`, il n'ajoute
 rien : ce que `cluster-admin` couvrait par accident doit être redonné
-explicitement. Or l'agent a des besoins qui n'ont rien à voir avec Terraform. Au
-premier démarrage, ses journaux ont répété :
+explicitement. Le chart déploie deux réplicas de l'agent, qui s'élisent un
+leader au moyen d'un `Lease` et consignent le résultat dans un `Event`. Le
+fichier porte donc aussi un `Role` **namespacé** (dans le namespace de l'agent
+seulement) pour `leases` et `events` ; sans lui, les journaux de l'agent
+répètent `leases.coordination.k8s.io … is forbidden`.
 
-```
-leases.coordination.k8s.io "agent-3175822-lock" is forbidden:
-  User "system:serviceaccount:gitlab-agent-microcrm:microcrm-gitlab-agent"
-  cannot get resource "leases" in API group "coordination.k8s.io"
-```
-
-Le chart déploie **deux réplicas** depuis sa version 1.17, qui s'élisent un
-leader au moyen d'un `Lease` — et consignent le résultat dans un `Event`. Le
-fichier porte donc aussi un `Role` **namespacé** (pas un `ClusterRole` : ces
-objets vivent dans le namespace de l'agent, autoriser ceux du cluster entier
-n'aurait aucun sens) pour `leases` et `events`. Après quoi : zéro refus, bail
-acquis, leader élu.
-
-C'est la démonstration de ce qui rend un rôle minimal difficile — il ne se
-vérifie pas en le lisant, seulement en le faisant tourner. Le contrôle qui vaut
-n'est donc pas la lecture du fichier mais l'interrogation du cluster :
+Un rôle minimal ne se vérifie pas en le lisant, mais en interrogeant le
+cluster :
 
 ```shell
 SA=system:serviceaccount:gitlab-agent-microcrm:microcrm-gitlab-agent
-kubectl auth can-i create namespaces     --as="$SA"      # yes
-kubectl auth can-i create resourcequotas --as="$SA"      # yes
-kubectl auth can-i create networkpolicies --as="$SA"     # yes
-kubectl auth can-i create deployments    --as="$SA" -A   # no  ← le but
-kubectl auth can-i get    secrets        --as="$SA" -A   # no  ← le but
-kubectl auth can-i create clusterroles   --as="$SA" -A   # no  ← le but
+kubectl auth can-i create namespaces     --as="$SA"                     # yes
+kubectl auth can-i create deployments    --as="$SA" -n microcrm-staging # yes
+kubectl auth can-i delete deployments    --as="$SA" -n microcrm-staging # no
+kubectl auth can-i list   secrets        --as="$SA" -A                  # no
+kubectl auth can-i create clusterroles   --as="$SA"                     # no
 ```
 
-Vérifié sur le cluster : les trois premiers répondent `yes`, les trois derniers
-`no`, et les journaux de l'agent ne contiennent plus aucun `forbidden`.
+Réponses relevées sur le cluster le 2026-10-06 : celles indiquées en
+commentaire.
 
-Ce rôle ne couvre pas les objets applicatifs : les jobs de déploiement passent
-encore par `$KUBE_CONFIG`, pas par l'agent. Le jour où ils basculeront sur le
-tunnel — souhaitable, pour les mêmes raisons — le bon geste sera un **second
-agent avec son propre rôle**, plutôt qu'un rôle unique qui grossit.
+⚠️ **Limite : un seul agent, à l'échelle du cluster.** Le `ClusterRole` est lié
+par un `ClusterRoleBinding` : ses droits ne sont pas bornés aux namespaces du
+projet, et le même agent porte l'infrastructure et l'application. Un agent par
+périmètre, chacun avec son rôle, resterait la bonne forme (§11).
 
-⚠️ **Ce que ça coûte, et qu'il faut savoir défendre** : `terraform-plan` est
-bloquant, et il parle à un cluster qui vit sur un poste. Minikube éteint, le job
-échoue et le pipeline est rouge — l'échec est réel (personne ne peut plus rien
-affirmer sur la dérive), mais il est subi. Sur un cluster qui tourne en
-permanence, la question ne se pose pas. Tant que ce n'est pas le cas, la
-soupape est une ligne : `allow_failure: true` sous la règle
+⚠️ **Ce que ça coûte : `terraform-plan` est bloquant, et il parle à un cluster
+qui vit sur un poste.** Minikube éteint, le job échoue et le pipeline est rouge
+— l'échec est réel (personne ne peut plus rien affirmer sur la dérive), mais il
+est subi. Sur un cluster qui tourne en permanence, la question ne se pose pas.
+La soupape est une ligne : `allow_failure: true` sous la règle
 `$CI_MERGE_REQUEST_ID` du job, qui rend le plan consultatif sans le désactiver.
 
 ### 4.2 Le plan relu, et le widget des merge requests
@@ -356,9 +315,9 @@ le rend dangereux : il n'apparaît nulle part.
 | `<env>/plan.json`  | trois entiers, par environnement | la lecture humaine, en artefact        |
 | `plan-global.json` | la somme des trois               | le widget des merge requests de GitLab |
 
-Les deux sont produits par environnement, publiés en artefact par
-`terraform-plan`, et récupérés par les jobs d'apply via `needs:`. Trois détails
-qui ne sont pas des détails :
+Les fichiers sont produits par environnement, publiés en artefact par
+`terraform-plan`, et récupérés par les jobs d'apply via `needs:`. Quatre
+détails qui ne sont pas des détails :
 
 - **`--require-plan`**, que passent les jobs de CI : sans plan enregistré, ils
   **échouent** au lieu de replanifier. Un artefact expiré ou un job relancé seul
@@ -378,11 +337,11 @@ qui ne sont pas des détails :
   ERROR: Uploading artifacts as "terraform" … only one file can be sent as raw
   ```
 
-  Deux issues étaient possibles : un job de plan par environnement (trois lignes
+  Deux issues sont possibles : un job de plan par environnement (trois lignes
   de widget, mais la liste des environnements écrite en dur dans le YAML), ou
-  une somme. C'est la somme qui est retenue — la découverte des environnements
-  est une règle du lot (§5), et le détail par environnement reste lisible dans
-  le journal du job et dans les `plan.json` publiés en artefact.
+  une somme. C'est la somme qui est retenue — les environnements sont découverts
+  par le script (§5), et le détail par environnement reste lisible dans le
+  journal du job et dans les `plan.json` publiés en artefact.
 
 - **`access: 'developer'` sur l'artefact.** Un plan binaire embarque les valeurs
   lues dans l'état : même sensibilité que l'état lui-même. Laissé en accès
@@ -397,19 +356,13 @@ muet se remarque bien moins qu'un job rouge, mais il ne justifie pas de faire
 
 ### 4.3 Les empreintes de providers, pour toutes les plateformes
 
-`.terraform.lock.hcl` est versionné (§5), mais il ne l'était utilement que pour
-le poste : il ne contenait qu'une empreinte `h1:`, celle de `darwin_arm64`. En
-CI, sur `linux_amd64`, Terraform le disait à chaque exécution —
-
-```
-Terraform has made some changes to the provider dependency selections recorded
-in the .terraform.lock.hcl file.
-```
-
-— et complétait le fichier à la volée. Un lock qui se complète tout seul ne
-verrouille rien : c'est le cas où l'on croit figer une version alors qu'on
-accepte ce que le registre propose. Les quatre plateformes qui exécutent
-réellement ce projet y sont donc inscrites :
+`.terraform.lock.hcl` est versionné (§5), et il porte les empreintes des quatre
+plateformes qui exécutent réellement ce projet : `darwin_arm64` et
+`darwin_amd64` pour les postes, `linux_amd64` et `linux_arm64` pour la CI. Un
+lock qui ne couvre que le poste est complété à la volée en CI — Terraform
+l'annonce par « Terraform has made some changes to the provider dependency
+selections » — et un lock qui se complète tout seul ne verrouille rien : on
+croit figer une version alors qu'on accepte ce que le registre propose.
 
 ```shell
 terraform -chdir=terraform/environments/staging providers lock \
@@ -422,10 +375,10 @@ provider, et à commiter.
 
 ### 4.4 Migrer un état local existant
 
-Un poste qui a déjà appliqué possède un `terraform.tfstate` local. Le bloc
-`backend` ayant changé, le prochain `init` refuse de continuer (« Backend
-configuration changed ») — ce que le script rappelle en clair quand l'init
-échoue. La migration se joue **une fois par environnement** :
+Un poste qui a appliqué avec un backend local possède un `terraform.tfstate`.
+Avec le bloc `backend "http"`, le prochain `init` refuse de continuer
+(« Backend configuration changed ») — ce que le script rappelle en clair quand
+l'init échoue. La migration se joue **une fois par environnement** :
 
 ```shell
 export TF_STATE_BASE_URL='https://gitlab.com/api/v4/projects/<id>/terraform/state'
@@ -440,13 +393,19 @@ for env in staging production logging; do
 done
 ```
 
-Terraform demande confirmation, puis pousse l'état existant vers GitLab. Le
-fichier local reste sur le disque, désormais inutilisé — le supprimer n'est utile
-qu'après avoir vérifié que `terraform plan` ne propose plus de tout recréer.
+Terraform prend le verrou, demande confirmation, puis pousse l'état existant
+vers GitLab. Le fichier local reste sur le disque, inutilisé — le supprimer
+n'est utile qu'après avoir vérifié que `terraform plan` répond « No changes ».
 
-⚠️ **À ne pas faire dans le désordre** : migrer depuis un poste dont l'état est
-en retard écraserait l'état partagé. Si plusieurs postes ont appliqué, un seul
-migre, les autres suppriment leur état local avant leur premier `init`.
+C'est le chemin suivi par `staging` (2026-09-22) et `logging` (2026-09-23) :
+après migration, leur plan répond `No changes. Your infrastructure matches the
+configuration.` Sans migration, l'état partagé croirait l'environnement vide :
+un `apply` depuis la CI planifierait « 6 to add » puis échouerait sur
+`already exists` (§10.1).
+
+⚠️ **Attention à l'ordre** : migrer depuis un poste dont l'état est en retard
+écraserait l'état partagé. Si plusieurs postes ont appliqué, un seul migre, les
+autres suppriment leur état local avant leur premier `init`.
 
 ## 5. L'arborescence
 
@@ -464,22 +423,28 @@ terraform/
     │   ├── terraform.tfvars    ← la seule chose qui distingue les environnements
     │   ├── main.tf             composition des modules
     │   └── outputs.tf
-    └── production/             mêmes fichiers, autres valeurs
+    ├── production/             mêmes fichiers, autres valeurs
+    └── logging/                namespace de la stack ELK + policy d'APM Server
 ```
 
-Les environnements **ne déclarent aucune ressource** : ils composent des
-modules. C'est ce qui garantit que staging et production ne peuvent pas diverger
-autrement que par leurs valeurs — sans quoi le premier cesserait de valider quoi
-que ce soit du second.
+Les environnements applicatifs **ne déclarent aucune ressource** : ils composent
+des modules. C'est ce qui garantit que staging et production ne peuvent pas
+diverger autrement que par leurs valeurs — sans quoi le premier cesserait de
+valider quoi que ce soit du second.
 
-`.terraform.lock.hcl` **est versionné**, dans les trois environnements. Il fige
-la version _et_ les empreintes des providers, pour les quatre plateformes qui
-exécutent ce projet (§4.3 — un lock qui ne couvre que le poste se laisse
-compléter en CI, donc ne verrouille rien). Hors du dépôt, deux exécutions ne
-tourneraient pas forcément avec le même code de provider — même raisonnement que
-les images d'outillage figées du `.gitlab-ci.yml`. En revanche les modules n'ont
-pas de lock : Terraform ne consulte jamais celui d'un module appelé, l'y laisser
-donnerait l'illusion d'épingler quelque chose.
+`logging` est un namespace de plateforme, pas un environnement de
+l'application. Il réutilise le module `namespace` mais **pas** le module
+`network-policy`, dont les règles nomment les pods `back` et `front` : appliqué
+ici, il fermerait le namespace sans rouvrir aucun flux d'ELK. Il déclare une
+seule policy, `allow-microcrm-to-apm-server`, qui ne sélectionne que les pods
+d'APM Server et n'admet que les namespaces applicatifs sur le port 8200.
+
+`.terraform.lock.hcl` **est versionné**, dans les trois environnements, pour
+les quatre plateformes (§4.3). Hors du dépôt, deux exécutions ne tourneraient
+pas forcément avec le même code de provider — même raisonnement que les images
+d'outillage figées de la CI. En revanche les modules n'ont pas de lock :
+Terraform ne consulte jamais celui d'un module appelé, l'y laisser donnerait
+l'illusion d'épingler quelque chose.
 
 ## 6. Ce que les modules créent
 
@@ -506,6 +471,10 @@ _rejeté_. Il vaut 2 CPU / 1Gi, exactement les `limits` du back de production �
 le plafond est atteint, pas franchi. Toute baisse de ces valeurs doit être
 vérifiée contre les `resources.limits` des manifestes `k8s/`.
 
+Le module accepte une liste fermée de valeurs d'`environment` (`staging`,
+`production`, `logging`), validée au plan : une faute de frappe échoue avant
+d'atteindre le cluster.
+
 ### 6.2 `modules/network-policy`
 
 Un refus global du trafic entrant, puis la réouverture des deux seuls flux dont
@@ -521,9 +490,9 @@ qui lit ces policies pour comprendre l'architecture.
 
 **L'egress n'est pas restreint.** Le restreindre casserait la résolution DNS —
 CoreDNS vit dans `kube-system`, hors de portée d'une règle qui ne parlerait que
-du namespace applicatif — pour un gain nul : le back sert une base en mémoire et
-le front des fichiers statiques, aucun des deux n'émet d'appel sortant qu'on
-chercherait à contenir.
+du namespace applicatif — pour un gain faible : le back sert une base en
+mémoire et le front des fichiers statiques. Le seul flux sortant du back est
+l'envoi des traces vers APM Server, dans `logging`.
 
 ⚠️ **Ces policies sont créées mais inertes sur un minikube par défaut.**
 L'application d'une NetworkPolicy appartient au CNI, pas à la ressource. Le CNI
@@ -546,20 +515,21 @@ devenir `Ready`, et un déploiement qui expire alors que l'application va bien.
 ## 7. Ce qui varie entre les environnements
 
 Tout tient dans `terraform.tfvars`. Si une différence de comportement entre les
-deux environnements ne se lit pas ici, c'est qu'elle s'est glissée ailleurs, et
+environnements ne se lit pas ici, c'est qu'elle s'est glissée ailleurs, et
 c'est un défaut.
 
-| Réglage                    | staging            | production            |
-| -------------------------- | ------------------ | --------------------- |
-| Namespace                  | `microcrm-staging` | `microcrm-production` |
-| `pods`                     | 10                 | 20                    |
-| `requests.cpu` / `.memory` | 1 / 1536Mi         | 2 / 2Gi               |
-| `limits.cpu` / `.memory`   | 3 / 2Gi            | 6 / 3Gi               |
-| LimitRange                 | identique          | identique             |
-| NetworkPolicy              | actives            | actives               |
+| Réglage                    | staging            | production            | logging         |
+| -------------------------- | ------------------ | --------------------- | --------------- |
+| Namespace                  | `microcrm-staging` | `microcrm-production` | `logging`       |
+| `pods`                     | 10                 | 20                    | 12              |
+| `requests.cpu` / `.memory` | 1 / 1536Mi         | 2 / 2Gi               | 2 / 4Gi         |
+| `limits.cpu` / `.memory`   | 3 / 2Gi            | 6 / 3Gi               | 6 / 6Gi         |
+| `LimitRange` `max`         | 2 CPU / 1Gi        | 2 CPU / 1Gi           | 2 CPU / 2Gi     |
+| NetworkPolicy              | module complet     | module complet        | APM Server seul |
 
-Le `LimitRange` est volontairement identique : si la production tolérait des
-conteneurs que staging refuse, staging cesserait de valider quoi que ce soit.
+Le `LimitRange` est volontairement identique entre staging et production : si
+la production tolérait des conteneurs que staging refuse, staging cesserait de
+valider quoi que ce soit.
 
 ## 8. Ce qui n'est pas dans le dépôt, et pourquoi
 
@@ -571,15 +541,15 @@ conteneurs que staging refuse, staging cesserait de valider quoi que ce soit.
 | `Secret` du registry            | la CI                                    | mot de passe, voir §3                                                                                   |
 | Registry local                  | —                                        | la décision D3 a retenu `minikube image load` (K8S.md §14.1) : il n'y a pas de registry local à décrire |
 
-**Et pourquoi pas le provider `docker`.** La feuille de route l'évoquait, et le
-brief parle de « gestion de ressources conteneurisées à l'aide de Terraform ».
-Il n'est pas utilisé, pour une raison qu'il faut savoir défendre : la
-construction des images appartient à la CI (`scripts/ci/build_and_push.sh`) et,
-en local, à `docker compose`. Faire de Terraform un troisième chemin de build
-créerait un état qui suit des identifiants d'image qu'il ne sait pas
-reconstruire de façon reproductible, et deux façons concurrentes de produire la
-même chose. Les « ressources conteneurisées » que gère Terraform ici sont les
-objets Kubernetes qui les hébergent, pas les images elles-mêmes.
+**Et pourquoi pas le provider `docker`.** Le brief parle de « gestion de
+ressources conteneurisées à l'aide de Terraform ». Le provider `docker` n'est
+pas utilisé, pour une raison qu'il faut savoir défendre : la construction des
+images appartient à la CI (`scripts/ci/build_and_push.sh`) et, en local, à
+`docker compose`. Faire de Terraform un troisième chemin de build créerait un
+état qui suit des identifiants d'image qu'il ne sait pas reconstruire de façon
+reproductible, et deux façons concurrentes de produire la même chose. Les
+« ressources conteneurisées » que gère Terraform ici sont les objets Kubernetes
+qui les hébergent, pas les images elles-mêmes.
 
 ## 9. Les limites assumées
 
@@ -593,73 +563,59 @@ apparaît, seule change la valeur de `kube_context`.
 
 ### 9.2 L'état est verrouillé, le cluster reste sur un poste
 
-Le défaut d'origine — un état local, sans verrou, qui rendait tout plan de CI
-muet sur la dérive — est corrigé : §4. Ce qui reste, et qu'il faut savoir dire :
-
-- **l'état dépend du projet GitLab.** Il n'est plus sur un poste, il est chez
-  GitLab. Perdre le projet, c'est perdre l'état — et donc devoir réimporter les
-  ressources (§10.1) plutôt que les recréer. Aucune sauvegarde hors GitLab n'est
-  organisée ;
-- **le cluster, lui, vit toujours sur un poste.** `terraform-plan` est bloquant
-  et parle à ce cluster par le tunnel de l'agent : minikube éteint, le pipeline
-  est rouge. La soupape et son coût sont décrits en §4.1.
+- **L'état dépend du projet GitLab.** Perdre le projet, c'est perdre l'état — et
+  donc devoir réimporter les ressources (§10.1) plutôt que les recréer. Aucune
+  sauvegarde hors GitLab n'est organisée.
+- **Le cluster vit sur un poste.** `terraform-plan` est bloquant et parle à ce
+  cluster par le tunnel de l'agent : minikube éteint, le pipeline est rouge. La
+  soupape et son coût sont décrits en §4.1.
 
 ### 9.3 Les NetworkPolicy ne filtrent rien sur ce cluster
 
-Voir §6.2. C'est la limite la plus facile à mal présenter en soutenance : le lot
-décrit un cloisonnement, il ne le prouve pas.
+Voir §6.2. C'est la limite la plus facile à mal présenter : le dépôt décrit un
+cloisonnement, il ne le prouve pas.
 
 ### 9.4 Ce que l'`apply` a vérifié, et ce qu'il laisse ouvert
 
-Cette section s'intitulait « L'`apply` n'a pas été joué ». Il l'a été : staging
-le 2026-09-22 depuis un poste, production le 2026-09-23 depuis la CI
-(`terraform-apply-production`), `logging` depuis un poste (§4). Les trois
-points qu'elle laissait ouverts ont reçu une réponse, de force inégale :
-
-| Ce qui restait à vérifier                                      | Ce qui a été observé                                                                                                                                                                                                  |
+| Ce qui est vérifié                                             | Observation                                                                                                                                                                                                           |
 | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Le quota laisse passer un déploiement complet                  | **Oui en staging** : après déploiement, `pods 2/10`, `requests.memory 544Mi/1536Mi`, `limits.memory 832Mi/2Gi` (`RELEASE.md` §9.5). **Oui dans `logging`**, observé pendant un rollout de Kibana (`MONITORING.md` §6) |
-| Le `LimitRange` ne rejette aucun conteneur                     | Aucun rejet observé : les deux Deployments ont atteint leur rollout en 11 s                                                                                                                                           |
-| Terraform ne signale pas de dérive après un `kubectl apply -k` | `terraform plan` a répondu « No changes » le 2026-09-22, après le déploiement de l'application                                                                                                                        |
+| Le `LimitRange` ne rejette aucun conteneur                     | Aucun rejet observé : les deux Deployments ont atteint leur rollout en 11 s (2026-09-22)                                                                                                                              |
+| Terraform ne signale pas de dérive après un `kubectl apply -k` | `terraform plan` répond « No changes » après le déploiement de l'application (2026-09-22)                                                                                                                             |
+| La gouvernance est en place                                    | les trois namespaces portent `app.kubernetes.io/managed-by=terraform` (relevé du 2026-10-06)                                                                                                                          |
 
 Ce qui reste non vérifié :
 
-- **`terraform-apply-staging` et `terraform-apply-logging` n'ont jamais été joués
-  depuis la CI.** Leur état a été rempli depuis un poste puis migré ; leur plan
-  sort à « No changes », donc le job n'aurait rien à faire.
-- **La `NetworkPolicy` d'APM Server n'est pas dans le cluster.** Elle a été
-  ajoutée au module `logging` après le dernier `apply` de cet environnement, et
-  `kubectl -n logging get networkpolicy` ne renvoyait rien le 2026-10-02
-  (`MONITORING.md` §10.4). L'`apply` de `logging` est à rejouer.
-- **`terraform-plan` a échoué sur le pipeline `#2901472002` de `develop`**
-  (2026-10-01). La cause n'a pas été recherchée.
+- **`terraform-apply-staging` et `terraform-apply-logging` n'ont jamais été
+  joués depuis la CI.** Leur état a été rempli depuis un poste puis migré ; leur
+  plan sort à « No changes », donc le job n'aurait rien à faire.
+- **La `NetworkPolicy` d'APM Server n'est pas dans le cluster.** Elle est
+  décrite dans `terraform/environments/logging/main.tf`, mais
+  `kubectl -n logging get networkpolicy` ne renvoie rien (relevé du 2026-10-06,
+  `MONITORING.md` §10.4) : l'`apply` de `logging` est à rejouer.
 
 ### 9.5 Ce que le pipeline fait, et ne fait pas
 
-Quatre jobs exécutent `terraform` (`.gitlab-ci.yml`, étape `infra`) :
+Cinq jobs exécutent `terraform` (`.gitlab/ci/infra.yml`) :
 
-| Job                          | Quand                            | Accès                         |
-| ---------------------------- | -------------------------------- | ----------------------------- |
-| `terraform-validate`         | toutes branches, MR, tags        | aucun — `init -backend=false` |
-| `terraform-plan`             | MR, `develop`, `main` — bloquant | état partagé + cluster        |
-| `terraform-apply-<env>` (×3) | `main`, **manuel**               | état partagé + cluster        |
+| Job                          | Étape         | Quand                                    | Accès                         |
+| ---------------------------- | ------------- | ---------------------------------------- | ----------------------------- |
+| `terraform-validate`         | `infra`       | toutes branches, MR, tags                | aucun — `init -backend=false` |
+| `terraform-plan`             | `infra`       | MR, `develop`, `main` — bloquant         | état partagé + cluster        |
+| `terraform-apply-<env>` (×3) | `infra-apply` | `main`, **manuel**, un par environnement | état partagé + cluster        |
 
-Les trois jobs d'apply appliquent le plan **relu**, pas un plan recalculé au
+Les trois jobs d'apply sont manuels et **sans** `allow_failure` : un apply
+interrompu laisse l'infrastructure dans un état intermédiaire, et le pipeline
+doit le dire. Or un job manuel sans `allow_failure` bloque le pipeline à son
+étape : placés dans `infra`, ils arrêteraient tout pipeline de `main` avant
+`build`. Ils sont donc dans la dernière étape, `infra-apply`, où ils restent
+bloquants sans rien retenir en amont. Ils appliquent le plan **relu**, pas un plan recalculé au
 moment du clic : `terraform-plan` publie son `plan.cache` en artefact, et
 `--require-plan` fait échouer l'apply s'il manque (§4.2).
 
-**Les jobs de déploiement passent eux aussi par l'agent, depuis le
-2026-09-23.** Cette section écrivait le contraire : `deploy-staging` et
-`deploy-production` utilisaient `$KUBE_CONFIG`, une variable protégée portant un
-kubeconfig de poste, donc une adresse `127.0.0.1` injoignable depuis un
-conteneur de job. Ils utilisent maintenant le tunnel de l'agent, comme les jobs
-Terraform, et la variable n'est plus lue (`RELEASE.md` §6). Cinq déploiements
-ont abouti par ce chemin les 22 et 23 septembre (`MONITORING.md` §9.1).
-
 Ce qui n'est pas fait : rien ne compare le nom du namespace écrit dans
 `terraform.tfvars` et celui de la variable GitLab que lisent les jobs de
-déploiement. Terraform crée le namespace, la CI y déploie, et les deux ne se
-parlent pas.
+déploiement (§3).
 
 ## 10. Rejouer
 
@@ -684,47 +640,9 @@ export TF_HTTP_UNLOCK_ADDRESS="$TF_HTTP_ADDRESS/lock"
 cd terraform/environments/staging
 terraform init      # une fois, ou après tout changement de module ou de backend
 terraform validate
-terraform plan      # 6 ressources à créer sur un cluster vierge
+terraform plan      # 6 ressources à créer sur un cluster vierge, « No changes » ici
 terraform apply     # demande confirmation
 ```
-
-### 10.1 ⚠️ Adopter un namespace qui existe déjà
-
-**Sur ce poste, `terraform apply` échouerait en staging tel quel.** Le namespace
-`microcrm-staging` existe depuis la campagne de déploiement du `K8S.md` §14, il
-porte l'application en marche, et il n'a jamais été créé par Terraform :
-
-```
-$ kubectl get ns microcrm-staging --show-labels
-NAME               STATUS   AGE    LABELS
-microcrm-staging   Active   5d3h   kubernetes.io/metadata.name=microcrm-staging
-```
-
-Terraform ne sait rien de cet objet : son plan propose de le _créer_, et l'API
-répondrait `namespaces "microcrm-staging" already exists`. C'est le cas normal
-quand on introduit l'IaC sur une infrastructure existante, et il ne se règle pas
-en supprimant le namespace — ce qui emporterait l'application déployée.
-
-L'adoption se fait une fois, avant le premier `apply` :
-
-```shell
-cd terraform/environments/staging
-terraform import 'module.namespace.kubernetes_namespace_v1.this' microcrm-staging
-terraform plan   # doit désormais montrer : 1 to change (les labels), 5 to add
-```
-
-Le `1 to change` est attendu et se lit : Terraform pose ses labels d'identité
-sur un namespace qui n'en avait pas. Les cinq créations sont le quota, le
-LimitRange et les trois policies.
-
-Un environnement dont le namespace n'existe pas encore — la production, ici —
-n'a rien à importer.
-
-**Pourquoi pas un bloc `import` dans le code plutôt que cette commande.** Un
-bloc `import` est permanent et inconditionnel : sur un cluster vierge, où
-l'objet visé n'existe pas, il fait échouer le `plan` lui-même
-(`Cannot import non-existent remote object`). Il transformerait une adoption
-ponctuelle en dépendance durable à l'état d'un cluster précis.
 
 Vérifier ce qui a été créé :
 
@@ -736,7 +654,42 @@ kubectl get networkpolicy     -n microcrm-staging
 ```
 
 Vérifier ensuite ce qu'un plan ne peut pas dire (§9.4) — que l'application passe
-sous le quota — en enchaînant sur le déploiement décrit dans `K8S.md` §14.9.
+sous le quota — en enchaînant sur un déploiement (`RELEASE.md` §9.4, ou le job
+`deploy-staging`).
+
+### 10.1 ⚠️ Adopter un namespace qui existe déjà
+
+**Cas typique : un namespace créé à la main avant Terraform**, qui porte déjà
+l'application. Terraform ne sait rien de cet objet : son plan propose de le
+_créer_, et l'API répond `namespaces "microcrm-staging" already exists`. C'est
+le cas normal quand on introduit l'IaC sur une infrastructure existante, et il
+ne se règle pas en supprimant le namespace — ce qui emporterait l'application
+déployée. On le reconnaît à l'absence du label `managed-by=terraform` :
+
+```shell
+kubectl get ns microcrm-staging --show-labels
+# un namespace non adopté ne porte que kubernetes.io/metadata.name=microcrm-staging
+```
+
+L'adoption se fait une fois, avant le premier `apply` :
+
+```shell
+cd terraform/environments/staging
+terraform import 'module.namespace.kubernetes_namespace_v1.this' microcrm-staging
+terraform plan   # doit montrer : 1 to change (les labels), 5 to add
+```
+
+Le `1 to change` est attendu et se lit : Terraform pose ses labels d'identité
+sur un namespace qui n'en avait pas. Les cinq créations sont le quota, le
+LimitRange et les trois policies.
+
+Un environnement dont le namespace n'existe pas encore n'a rien à importer.
+
+**Pourquoi pas un bloc `import` dans le code plutôt que cette commande.** Un
+bloc `import` est permanent et inconditionnel : sur un cluster vierge, où
+l'objet visé n'existe pas, il fait échouer le `plan` lui-même
+(`Cannot import non-existent remote object`). Il transformerait une adoption
+ponctuelle en dépendance durable à l'état d'un cluster précis.
 
 Pour tout retirer :
 
@@ -744,26 +697,26 @@ Pour tout retirer :
 terraform destroy   # supprime le namespace, donc TOUT ce qu'il contient
 ```
 
-⚠️ `terraform destroy` détruit le namespace, et Kubernetes supprime en cascade
-tout ce qui s'y trouve — y compris ce que Terraform n'a jamais créé, c'est-à-dire
-l'application déployée par la CI. C'est la conséquence directe du partage du §3 :
-Terraform possède le contenant, et détruire un contenant emporte son contenu.
+⚠️ **Attention : `terraform destroy` détruit le namespace**, et Kubernetes
+supprime en cascade tout ce qui s'y trouve — y compris ce que Terraform n'a
+jamais créé, c'est-à-dire l'application déployée par la CI. C'est la
+conséquence directe du partage du §3 : Terraform possède le contenant, et
+détruire un contenant emporte son contenu.
 
-## 11. La suite
+## 11. Ce qui reste à faire
 
-- **T6 — fait.** Les quatre jobs de l'étape `infra` sont en place (§9.5), avec
-  l'état partagé (§4) et l'agent Kubernetes (§4.1). Reste la couture du §3 : la
-  CI lit encore `$STAGING_NAMESPACE` au lieu de `terraform output -raw
-namespace`.
-- **Faire passer les jobs de déploiement par l'agent**, avec leur propre agent
-  et leur propre rôle : `deploy-staging` et `deploy-production` s'appuient encore
-  sur un kubeconfig en variable protégée (§9.5). Un agent par périmètre vaut
-  mieux qu'un rôle qui grossit — le rôle de `microcrm` est délibérément limité
-  aux quatre types d'objets de Terraform (§4.1).
+- **Refermer la couture du §3** : faire lire aux jobs de déploiement
+  `terraform output -raw namespace` au lieu de `$STAGING_NAMESPACE` /
+  `$PROD_NAMESPACE`.
+- **Un agent par périmètre.** Le rôle de l'agent `microcrm` couvre
+  l'infrastructure et l'application, à l'échelle du cluster (§4.1). Un second
+  agent pour les jobs de déploiement, avec un rôle lié aux seuls namespaces
+  applicatifs, réduirait ce que peut un job compromis.
+- **Rejouer l'`apply` de `logging`**, pour poser la policy d'APM Server, et
+  jouer une fois `terraform-apply-staging` et `terraform-apply-logging` depuis
+  la CI (§9.4).
 - **Resserrer la fenêtre du plan relu.** `expire_in: 1 week` est un compromis :
   assez long pour un apply cliqué le lendemain, assez court pour qu'un plan
   oublié ne traîne pas. Un `apply` qui suivrait automatiquement le plan, dans le
   même pipeline, rendrait la question sans objet — au prix de la relecture
   humaine qu'on cherche justement à garder.
-- **T11** — schéma de la frontière : ce que Terraform crée, ce que Kustomize
-  déploie, et où passe la ligne.

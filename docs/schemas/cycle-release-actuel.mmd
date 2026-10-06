@@ -1,4 +1,5 @@
-%% Schéma — Le cycle de release actuel, tel que décrit par les deux équipes.
+%% Schéma — Le cycle de release de départ, tel que décrit par les deux équipes
+%% (état initial relevé par l'audit).
 %% Source versionnée du bloc Mermaid de docs/plan-optimisation-release.md §1.1.
 %% 7 étapes Dev, 3 étapes Ops, et entre les deux : un email. Le retour à
 %% l'envoyeur après scan Trivy est l'irritant cité par les deux équipes.
@@ -15,7 +16,7 @@ flowchart TB
         d1 --> d2 --> d3 --> d4 --> d5 --> d6 --> d7
     end
 
-    subgraph MUR["La frontière, aujourd'hui"]
+    subgraph MUR["La frontière, au départ"]
         m1["Email<br/>+ échanges de vive voix"]:::pain
     end
 

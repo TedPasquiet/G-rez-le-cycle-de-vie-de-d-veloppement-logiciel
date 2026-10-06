@@ -194,12 +194,6 @@ en montée en compétence, pas en budget logiciel.
 
 ## 8. Pistes non retenues à ce stade
 
-> **Ce que cette liste est devenue.** Elle décrit l'état de la veille au moment
-> où elle a été faite. Deux de ses pistes ont été réalisées depuis, en tout ou
-> en partie, et une troisième a avancé sans aboutir. Elles sont laissées à leur
-> place, annotées, parce qu'une veille dont on efface les lignes ne dit plus ce
-> qui a été arbitré.
-
 Écartées pour rester dans le périmètre, mais pertinentes pour la suite :
 
 - **Tests E2E** (Cypress, Playwright) — la vraie lacune de la stratégie de test
@@ -208,24 +202,14 @@ en montée en compétence, pas en budget logiciel.
 - **Supervision applicative** (Spring Boot Actuator + Prometheus/Grafana) —
   indispensable dès qu'un vrai trafic arrive ; permettrait aussi des sondes
   Kubernetes fiables, donc un rollback automatique réellement déclenché.
-  **Réalisé en partie, par une autre voie** : Actuator et les trois sondes sont
-  en place ([K8S.md](K8S.md) §5), les logs sont centralisés dans une stack ELK
-  avec cinq tableaux de bord et huit règles d'alerte, et des traces
-  OpenTelemetry sont en service depuis le 2026-10-05
-  ([MONITORING.md](MONITORING.md)). Prometheus et Grafana ne sont pas installés :
-  le CPU et la mémoire des pods ne sont toujours mesurés par rien.
+  Mise en œuvre, avec ELK à la place de Prometheus/Grafana : voir
+  [MONITORING.md](MONITORING.md).
 - **Déploiement progressif** (blue/green, canary) — limite le rayon d'impact d'une
   régression, mais suppose une infrastructure plus mature.
 - **Infrastructure as Code** (Terraform, Ansible) — aujourd'hui le cluster est
-  supposé préexistant ; le décrire en code le rendrait reproductible.
-  **Réalisé** : Ansible provisionne le poste et le cluster, Terraform les
-  namespaces, quotas, limites et policies ([ANSIBLE.md](ANSIBLE.md),
-  [TERRAFORM.md](TERRAFORM.md)). Un environnement a été détruit puis reconstruit
-  depuis le dépôt le 2026-09-22 ([RELEASE.md](RELEASE.md) §9.5).
+  supposé préexistant ; le décrire en code le rendrait reproductible. Mise en
+  œuvre : voir [ANSIBLE.md](ANSIBLE.md) et [TERRAFORM.md](TERRAFORM.md).
 - **Renovate / Dependabot** — mise à jour automatisée des dépendances, complément
   naturel du SCA : détecter une CVE sert peu si personne ne met à jour.
 - **Génération automatique du changelog** — directement exploitable, puisque les
-  Conventional Commits sont déjà en place. **Toujours pas fait** : le job
-  `release` crée bien une Release GitLab sur chaque tag, mais sa description
-  nomme le commit et les images, pas la liste des changements
-  ([RELEASE.md](RELEASE.md) §2.2).
+  Conventional Commits sont déjà en place.
